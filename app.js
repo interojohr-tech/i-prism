@@ -1,0 +1,16608 @@
+const STORAGE_KEY = "company-review-system-v2";
+const SCHEMA_VERSION = 4;
+const SESSION_KEY = "company-review-session-v1";
+const ADMIN_ID = "admin";
+const ADMIN_PW = "inter1234!";
+const GRADES = ["S", "A", "B", "C", "D"];
+// API 키는 서버가 HTML에 주입 (window.__OPENAI_API_KEY__) 또는 환경변수 참조
+const OPENAI_API_KEY = window.__OPENAI_API_KEY__ || "";
+let _bulkAbortController = null; // 일괄 AI 생성 강제 중지용
+const COMPONENTS = ["performance", "competency", "attitude"];
+const GRADE_COLORS = {
+  S: "#2f80ed",
+  A: "#8ec5ff",
+  B: "#4aa3a2",
+  C: "#f7b55f",
+  D: "#ff6b6b",
+};
+
+const ROLE_LABELS = {
+  admin: "어드민",
+  president: "사장",
+  chairman: "회장",
+  divisionHead: "본부장",
+  teamLead: "팀장",
+  member: "팀원",
+};
+
+const EVALUATEE_ROLES = ["member", "teamLead", "divisionHead"];
+
+// 평가 사이클 진행 상태 라벨
+const CYCLE_STATUS_LABELS = { active: "진행중", paused: "중지", done: "평가 완료" };
+function cycleStatusLabel(status) { return CYCLE_STATUS_LABELS[status] || (status === "active" ? "진행중" : "중지"); }
+// 평가 완료(잠금) 상태: 결과 공개 설정 외 데이터 수정 불가
+function isCycleLocked(cycle = activeCycle()) { return cycle && cycle.status === "done"; }
+// 모든 사이클이 평가 완료면 "진행 중 평가 없음"
+function allCyclesDone() { return Array.isArray(state.cycles) && state.cycles.length > 0 && state.cycles.every((c) => c.status === "done"); }
+
+// ── 독려/안내 메일 자동 발송 설정 ──
+const MAIL_START_STAGES = [
+  ["self", "자기평가"], ["first", "1차 평가"], ["second", "2차 평가"],
+  ["upward", "상향평가"], ["peer", "동료평가"], ["grade", "등급 확정"], ["feedback", "피드백 공개"],
+];
+const MAIL_REMINDER_STAGES = [
+  ["self", "자기평가"], ["first", "1차 평가"], ["second", "2차 평가"], ["upward", "상향평가"], ["peer", "동료평가"],
+];
+function defaultMailSettings() {
+  const start = {};
+  MAIL_START_STAGES.forEach(([k, l]) => {
+    start[k] = {
+      enabled: true,
+      subject: `[인사평가] ${l} 일정이 시작되었습니다`,
+      body: `안녕하세요.\n\n${l} 일정이 시작되었습니다.\n기한 내에 ${l}를 완료해 주시기 바랍니다.\n\n감사합니다.`,
+    };
+  });
+  const reminder = {};
+  MAIL_REMINDER_STAGES.forEach(([k, l]) => {
+    reminder[k] = {
+      enabled: false,
+      daysBefore: 3,
+      subject: `[인사평가] ${l} 마감 임박 안내`,
+      body: `안녕하세요.\n\n${l} 마감이 임박했습니다.\n아직 완료하지 않으셨다면 기한 내에 완료해 주시기 바랍니다.\n\n감사합니다.`,
+    };
+  });
+  return {
+    start,
+    reminder,
+    bulk: {
+      subject: "[인사평가] 평가 미완료 안내",
+      body: "안녕하세요.\n\n아직 완료하지 않은 평가가 있습니다.\n기한 내에 평가를 완료해 주시기 바랍니다.\n\n감사합니다.",
+    },
+  };
+}
+// 저장된 설정에 누락 필드 보강 (구버전 호환)
+function ensureMailSettings() {
+  const def = defaultMailSettings();
+  const cur = state.mailSettings || {};
+  cur.start = { ...def.start, ...(cur.start || {}) };
+  MAIL_START_STAGES.forEach(([k]) => { cur.start[k] = { ...def.start[k], ...(cur.start[k] || {}) }; });
+  cur.reminder = { ...def.reminder, ...(cur.reminder || {}) };
+  MAIL_REMINDER_STAGES.forEach(([k]) => { cur.reminder[k] = { ...def.reminder[k], ...(cur.reminder[k] || {}) }; });
+  cur.bulk = { ...def.bulk, ...(cur.bulk || {}) };
+  state.mailSettings = cur;
+  return cur;
+}
+
+const COMPONENT_LABELS = {
+  performance: "업적평가",
+  competency: "역량평가",
+  attitude: "자세·태도평가",
+};
+
+const TITLE_ORDER = [
+  ["사원"],
+  ["주임", "주임연구원"],
+  ["대리", "전임연구원"],
+  ["과장", "선임연구원"],
+  ["차장", "책임연구원"],
+  ["부장", "수석연구원"],
+];
+
+const DEFAULT_REPORT_VISIBILITY = {
+  finalGrade: true,
+  finalScore: false,
+  summary: false,
+  upwardSummary: false,
+  peerSummary: false,
+  finalFeedback: true,
+  feedbackUpward: true,
+  feedbackPeer: true,
+};
+
+const STAGE_LABELS = {
+  self: "자기평가",
+  first: "1차 평가",
+  second: "2차 평가",
+  final: "최종 평가",
+  upward: "상향평가",
+  peer: "동료평가",
+};
+
+const TAB_LABELS = {
+  home: "HOME",
+  self: "내 평가",
+  tasks: "평가하기",
+  resultSubmit: "종합평가",
+  results: "최종 평가 결과 확인",
+  report: "내 리포트",
+  approval: "최종 승인",
+  admin: "평가 관리",
+  cycleDashboard: "평가 진행 현황",
+  finalAdjust: "최종 결과/리포트 공개",
+  feedbackMgmt: "피드백 관리",
+  organization: "조직 관리",
+  goals: "목표 관리",
+  goalApproval: "목표 승인 관리",
+  goalCycles: "목표 사이클 운영",
+  myDashboard: "나의 성장 기록",
+  memberDashboard: "구성원 성장 기록",
+  evalDashboard: "평가 운영 현황",
+};
+
+// 목표 상태
+const GOAL_STATUSES = ["pending", "onTrack", "atRisk", "done", "stopped"];
+const GOAL_STATUS_LABELS = { pending: "대기", onTrack: "순항", atRisk: "난항", done: "완료", stopped: "중단" };
+const GOAL_STATUS_COLORS = { pending: "#6b7280", onTrack: "#2563eb", atRisk: "#d97706", done: "#059669", stopped: "#dc2626" };
+const GOAL_LEVELS = ["company", "division", "team", "individual"];
+const GOAL_LEVEL_LABELS = { company: "회사", division: "본부", team: "팀", individual: "개인" };
+
+const ADMIN_SECTION_LABELS = {
+  progress:    "① 사이클 관리",
+  people:      "② 평가권한 설정",
+  weights:     "③ 가중치 · 등급",
+  templates:   "④ 평가 템플릿",
+  reports:     "⑤ 리포트 설정",
+};
+const ADMIN_SECTION_DESCS = {
+  progress:    "평가 사이클을 생성하고 각 단계별 기간을 설정합니다.",
+  people:      "피평가자별 1차·2차 평가자를 지정하고 상향·동료평가 배정을 관리합니다.",
+  weights:     "역할별 평가 구성요소 가중치와 등급 배분 기준을 설정합니다.",
+  templates:   "업적·역량·자세태도·상향·동료평가 질문 템플릿을 구성합니다.",
+  reports:     "평가 완료 후 리포트에 공개할 항목을 설정합니다.",
+};
+
+const DEFAULT_GRADE_DESCRIPTIONS = {
+  S: "100% 이상 / 매우 우수",
+  A: "90%~100% 미만 / 우수",
+  B: "80%~90% 미만 / 보통",
+  C: "70%~80% 미만 / 미흡",
+  D: "70% 미만 / 매우 미흡",
+};
+
+const WEIGHT_COMPONENTS = [...COMPONENTS, "upward", "peer"];
+const WEIGHT_COMPONENT_LABELS = {
+  ...COMPONENT_LABELS,
+  upward: "상향평가",
+  peer: "동료평가",
+};
+const TEMPLATE_KINDS = [...COMPONENTS, "upward", "peer"];
+
+let state = loadState();
+
+// 서버 모드에서, 서버 DB가 비어 있는데 localStorage에 데이터가 있으면 자동 마이그레이션
+(function migrateLocalStorageToServer() {
+  if (typeof fetch === "undefined") return;
+  if (window.__INITIAL_STATE__) return; // 이미 서버 데이터가 있음
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return;
+    const parsed = JSON.parse(stored);
+    if (!parsed || parsed.schemaVersion !== SCHEMA_VERSION) return;
+    // 서버로 업로드
+    fetch("/api/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: stored,
+    }).then(() => {
+      console.log("localStorage 데이터를 서버로 마이그레이션 완료");
+    }).catch(() => {});
+  } catch (e) {}
+})();
+
+function defaultTemplates() {
+  return {
+    performance: {
+      label: "업적평가",
+      question: "주요 업무 실적",
+      guide:
+        "○ 평가기간 동안 본인의 업무 실적을 자유롭게 기술해 주시기 바랍니다.\n○ 평가자는 평가 시, 해당 업무실적이 팀 사업목표 달성에 미치는 공헌성을 고려하여 평가합니다.",
+      items: [
+        {
+          name: "주요 업무 실적 및 상세 내용",
+          guide: "업적 이름, 기대한 목표, 주요 업무 실적과 상세 내용을 작성합니다.",
+          required: true,
+        },
+      ],
+      grades: defaultGradeScale(),
+      useWeight: true,
+      useComment: true,
+      useFile: false,
+    },
+    competency: {
+      label: "역량평가",
+      question: "역량 행동지표",
+      guide: "관련 범주와 규정을 준수하며 정확한 행정 처리로 조직 기반을 관리하는 능력",
+      items: [
+        { name: "행정 전문성 및 관리 효율화", guide: "데이터 처리 및 서류 작성 시 오류가 없도록 철저히 검토하여 수행한다.", required: true },
+        { name: "문제 해결", guide: "업무상 문제를 구조화하고 현실적인 해결안을 제시한다.", required: true },
+        { name: "협업", guide: "타 부서와 협업하며 공동 목표 달성을 위해 필요한 정보를 공유한다.", required: true },
+        { name: "실행력", guide: "정해진 일정과 품질 기준을 지키며 업무를 완수한다.", required: true },
+      ],
+      grades: defaultGradeScale(),
+      useWeight: false,
+      useComment: true,
+      useFile: false,
+    },
+    attitude: {
+      label: "자세·태도평가",
+      question: "자세·태도",
+      guide: "주어진 역할에 책임을 다하고 회사의 원칙과 자원을 소중히 여기며, 맡은 바 업무를 끝까지 완수하는 태도",
+      items: [
+        { name: "[책임감/성실] 규정준수", guide: "회사의 프로세스와 규정을 준수한다.", required: true },
+        { name: "[책임감/성실] 이행책임", guide: "맡은 업무와 약속사항은 기한 내에 이행한다.", required: true },
+        { name: "[책임감/성실] 자원 절약", guide: "회사의 비용이나 소모품을 내 물건처럼 아끼며 낭비를 최소화한다.", required: true },
+        { name: "[책임감/성실] 우직함", guide: "다소 번거로운 업무라도 책임감을 갖고 성실히 수행한다.", required: true },
+        { name: "[협업 및 팀워크] 동료 배려", guide: "조직 전체 목표를 위해 본인의 업무가 아니더라도 동료를 자발적으로 돕는다.", required: true },
+        { name: "[협업 및 팀워크] 긍정 소통", guide: "대화 시 항상 친절한 언어를 사용하여 조직 내 원활한 소통을 돕는다.", required: true },
+        { name: "[협업 및 팀워크] 대외 응대", guide: "내외부 고객을 상대할 때 밝고 신속한 태도로 응대하여 신뢰를 준다.", required: true },
+        { name: "[자기발전 및 정직함] 피드백 수용", guide: "상사나 동료의 조언을 성장의 기회로 삼아 실제 행동에 즉시 반영한다.", required: true },
+        { name: "[자기발전 및 정직함] 사실기반 보고", guide: "오류 발생 시 사실을 먼저 말한다.", required: true },
+        { name: "[자기발전 및 정직함] 자기계발", guide: "전문성을 높이기 위해 교육 참여나 학습 활동을 스스로 실천한다.", required: true },
+      ],
+      grades: defaultGradeScale(),
+      useWeight: false,
+      useComment: true,
+      useFile: false,
+    },
+  };
+}
+
+function defaultGradeScale() {
+  return GRADES.map((grade) => ({
+    grade,
+    score: { S: 100, A: 90, B: 80, C: 70, D: 60 }[grade],
+    description: DEFAULT_GRADE_DESCRIPTIONS[grade],
+  }));
+}
+
+function defaultEvaluatorWeights() {
+  return {
+    member: { first: 60, second: 40, final: 0 },
+    teamLead: { first: 60, second: 40, final: 0 },
+    divisionHead: { first: 100, second: 0, final: 0 },
+  };
+}
+
+function defaultTemplateVariants() {
+  const templates = defaultTemplates();
+  return Object.fromEntries(
+    COMPONENTS.map((component) => [
+      component,
+      [
+        {
+          id: `${component}-default`,
+          ...templates[component],
+        },
+      ],
+    ]),
+  );
+}
+
+function defaultUpwardTemplate() {
+  return {
+    label: "상향평가",
+    question: "조직장 리더십 및 협업 평가",
+    guide: "구성원이 조직장의 목표 제시, 소통, 공정성, 성장 지원 역량을 평가합니다.",
+    items: [
+      { name: "목표와 방향을 명확히 제시한다.", guide: "팀 또는 본부의 목표와 우선순위를 구성원에게 명확히 설명합니다.", required: true },
+      { name: "구성원의 성장을 지원한다.", guide: "업무 피드백과 코칭을 통해 구성원이 성장할 수 있도록 돕습니다.", required: true },
+      { name: "공정하고 일관성 있게 의사결정한다.", guide: "원칙에 따라 투명하게 판단하고 구성원을 존중합니다.", required: true },
+      { name: "소통과 협업을 촉진한다.", guide: "구성원의 의견을 듣고 조직 내외부 협업이 원활히 이뤄지도록 지원합니다.", required: true },
+    ],
+    grades: defaultGradeScale(),
+    useComment: true,
+  };
+}
+
+function defaultPeerTemplate() {
+  return {
+    label: "동료평가",
+    question: "동료 협업 평가",
+    guide: "함께 일한 동료의 협업, 책임감, 소통 태도를 기준으로 평가합니다.",
+    items: [
+      { name: "협업 기여", guide: "공동 목표 달성을 위해 정보를 공유하고 필요한 도움을 제공합니다.", required: true },
+      { name: "책임감", guide: "맡은 역할과 약속을 성실히 이행하며 팀에 신뢰를 줍니다.", required: true },
+      { name: "소통 태도", guide: "동료와 존중하는 태도로 소통하고 갈등을 건설적으로 해결합니다.", required: true },
+    ],
+    grades: defaultGradeScale(),
+    useComment: true,
+  };
+}
+
+function defaultOrganizationNodes() {
+  const node = (id, name, parentId = "", type = "team") => ({ id, name, parentId, type });
+  return [
+    node("org-root-interojo", "인터로조", "", "root"),
+    node("org-executive-office", "임원실", "org-root-interojo", "division"),
+    node("org-compliance", "Compliance실", "org-root-interojo", "division"),
+    node("org-ip-strategy", "IP전략팀", "org-compliance"),
+    node("org-legal", "법무팀", "org-compliance"),
+    node("org-global-business", "글로벌비지니스본부", "org-root-interojo", "division"),
+    node("org-america-europe", "미주/유럽팀", "org-global-business"),
+    node("org-asia-cis", "아시아/중동/CIS팀", "org-global-business"),
+    node("org-japan", "일본팀", "org-global-business"),
+    node("org-china", "중국팀", "org-global-business"),
+    node("org-china-corp", "중국법인", "org-global-business"),
+    node("org-cfo", "CFO", "org-root-interojo", "division"),
+    node("org-finance-hq", "재경본부", "org-cfo", "division"),
+    node("org-accounting", "회계팀", "org-finance-hq"),
+    node("org-finance", "재무팀", "org-finance-hq"),
+    node("org-coo", "COO", "org-root-interojo", "division"),
+    node("org-eye-business", "안과사업담당", "org-coo", "division"),
+    node("org-clinical-business", "클리니컬사업본부", "org-coo", "division"),
+    node("org-production", "생산본부", "org-coo", "division"),
+    node("org-production-tech", "생산기술본부", "org-coo", "division"),
+    node("org-rnd", "기술연구소", "org-coo", "division"),
+    node("org-clinical-training", "임상교육원", "org-coo", "division"),
+    node("org-quality", "품질경영본부", "org-coo", "division"),
+    node("org-csm", "CSM", "org-coo", "division"),
+    node("org-management-support", "경영지원본부", "org-coo", "division"),
+    node("org-planning", "기획팀", "org-coo"),
+  ];
+}
+
+function fallbackUsers() {
+  const erp = (typeof window !== "undefined" && window.HR_IMPORTED_DATA && Array.isArray(window.HR_IMPORTED_DATA.users))
+    ? window.HR_IMPORTED_DATA.users : [];
+  if (!erp.length) return [
+    { id: "u-admin", employeeNo: "ADMIN", name: "한관리", email: "admin@interojo.com", role: "admin", title: "HR Admin", division: "경영지원본부", team: "인사팀", active: true },
+    { id: "u-president", employeeNo: "230128", name: "박수근", email: "superkorean@interojo.com", role: "president", title: "사장", division: "COO", team: "COO", active: true },
+    { id: "u-chairman", employeeNo: "CHAIR", name: "노시철", email: "nsc@interojo.com", role: "chairman", title: "회장", division: "임원실", team: "임원실", active: true },
+  ];
+  const builtUsers = erp.map((e, idx) => {
+    const uid = e.id || `u-${e.employeeNo || idx}`;
+    const team = e.dept || e.division || "";
+    const division = e.division || e.dept || "";
+    return {
+      id: uid, employeeNo: e.employeeNo || "", name: e.name || "",
+      email: e.email || "", phone: e.phone || "",
+      role: e.role || "member", title: e.title || "", position: e.position || "",
+      grade: e.grade || "",
+      division, team,
+      active: e.active !== false, joinDate: e.joinDate || "",
+    };
+  });
+  if (!builtUsers.some(u => u.role === "chairman")) {
+    builtUsers.push({ id: "u-chairman", employeeNo: "CHAIR", name: "노시철", email: "nsc@interojo.com", role: "chairman", title: "회장", division: "임원실", team: "임원실", active: true });
+  }
+  return builtUsers;
+}
+
+function fallbackOrganizationNodes() {
+  const erp = (typeof window !== "undefined" && window.HR_IMPORTED_DATA && Array.isArray(window.HR_IMPORTED_DATA.organizationNodes))
+    ? window.HR_IMPORTED_DATA.organizationNodes : null;
+  return erp && erp.length ? erp : defaultOrganizationNodes();
+}
+
+function createDefaultState() {
+  const users = fallbackUsers();
+  const organizationNodes = fallbackOrganizationNodes();
+  alignUsersToOrganizationNodes(users, organizationNodes);
+  const cycle = createCycle("2026년 정기 인사평가", users);
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    currentUserId: users.find((user) => user.role === "admin")?.id || users[0]?.id,
+    activeCycleId: cycle.id,
+    users,
+    organizationNodes,
+    cycles: [cycle],
+    templates: defaultTemplates(),
+    templateVariants: defaultTemplateVariants(),
+    upwardTemplate: defaultUpwardTemplate(),
+    upwardTemplateVariants: [{ id: "upward-default", ...defaultUpwardTemplate() }],
+    peerTemplate: defaultPeerTemplate(),
+    peerTemplateVariants: [{ id: "peer-default", ...defaultPeerTemplate() }],
+    roleWeights: {
+      member: { performance: 45, competency: 30, attitude: 20, upward: 0, peer: 5 },
+      teamLead: { performance: 40, competency: 25, attitude: 20, upward: 10, peer: 5 },
+      divisionHead: { performance: 55, competency: 20, attitude: 10, upward: 10, peer: 5 },
+    },
+    evaluatorWeights: defaultEvaluatorWeights(),
+    gradeThresholds: { S: 95, A: 90, B: 80, C: 70, D: 0 },
+    distributionMatrix: {
+      S: { S: 10, A: 35, B: 35, C: 15, D: 5 },
+      A: { S: 0, A: 30, B: 30, C: 20, D: 20 },
+      B: { S: 0, A: 20, B: 30, C: 25, D: 25 },
+      C: { S: 0, A: 10, B: 25, C: 35, D: 30 },
+      D: { S: 0, A: 5, B: 20, C: 35, D: 40 },
+    },
+    reportVisibility: { ...DEFAULT_REPORT_VISIBILITY },
+    peerCount: 3,
+    maxAchievements: 0,
+    mailSettings: defaultMailSettings(),
+    goalCycles: [createGoalCycle("2026년", "2026-01-01", "2026-12-31", true)],
+    goals: [],
+    dataSource: null,
+    ui: {
+      tab: "home",
+      adminSection: "progress",
+      selectedTaskKey: "",
+      taskViewMode: "person",
+      templateComponent: "performance",
+      templateSelections: {},
+      selectedNewEmployeeOrgNode: "",
+      selectedOrgMemberId: "",
+      approvalDetailId: "",
+      approvalSortField: "score",
+      approvalSortDir: "desc",
+      activeGoalCycleId: "",
+      goalDetailId: "",
+      goalTab: "all",
+    },
+  };
+}
+
+function createGoalCycle(name, start, end, approvalEnabled = true, memberScope = "team") {
+  return {
+    id: `gcycle-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name,
+    start: start || "",
+    end: end || "",
+    approvalEnabled: !!approvalEnabled,
+    readOnly: false,
+    status: "active",
+    memberScope: memberScope || "team",   // 팀원 목표 조회 범위: self / teamLead / team
+    createdAt: new Date().toISOString(),
+  };
+}
+
+const GOAL_MEMBER_SCOPE_LABELS = {
+  self: "본인 목표만",
+  teamLead: "본인 + 팀장 목표",
+  team: "같은 팀 구성원 전체",
+};
+
+function createCycle(name, users = state?.users || []) {
+  const id = `cycle-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const cycle = {
+    id,
+    name,
+    status: "active",
+    selfStart: "2026-05-20",
+    selfEnd: "2026-05-31",
+    firstStart: "2026-06-01",
+    firstEnd: "2026-06-07",
+    secondStart: "2026-06-08",
+    secondEnd: "2026-06-14",
+    upwardStart: "2026-06-08",
+    upwardEnd: "2026-06-14",
+    peerStart: "2026-06-08",
+    peerEnd: "2026-06-14",
+    gradeStart: "2026-06-15",
+    gradeEnd: "2026-06-21",
+    feedbackStart: "2026-06-22",
+    feedbackEnd: "2026-06-30",
+    resultsVisible: false,
+    useUpward: true,   // 상향평가 진행 여부
+    usePeer: true,     // 동료평가 진행 여부
+    createdAt: new Date().toISOString(),
+    usersSnapshot: clone(users),
+    evaluations: {},
+    templateAssignments: {},
+    upwardAssignments: buildDefaultUpwardAssignments(users),
+    peerAssignments: buildDefaultPeerAssignments(users),
+    resultSubmissions: {},
+  };
+  users.forEach((user) => {
+    if (isEvaluatee(user)) cycle.evaluations[user.id] = makeEmptyEvaluation(user.id);
+  });
+  return cycle;
+}
+
+function makeEmptyEvaluation(userId) {
+  const review = () => ({
+    performance: {
+      score: "",
+      grade: "",
+      comment: "",
+      itemScores: {},
+      achievements: [{ name: "", goal: "", detail: "", weight: 100, score: "", grade: "" }],
+    },
+    competency: { score: "", grade: "", comment: "", itemScores: {} },
+    attitude: { score: "", grade: "", comment: "", itemScores: {} },
+    overallFeedback: "",
+  });
+  return {
+    userId,
+    self: review(),
+    first: review(),
+    second: review(),
+    final: review(),
+    status: { self: "draft", first: "pending", second: "pending", final: "pending" },
+    adjustment: { grade: "", gradeManual: false, feedback: "", reason: "", adjustedAt: "" },
+    orgAdjustment: { grade: "", gradeManual: false, reason: "", submittedBy: "", submittedAt: "" },
+    published: false,
+    aiFeedback: {
+      overall: "", upward: "", peer: "",
+      strengths: [], weaknesses: [],
+      suggestions: "",
+      ref1Title: "", ref1Url: "", ref1Source: "", ref1Desc: "",
+      ref2Title: "", ref2Url: "", ref2Source: "", ref2Desc: "",
+      generatedAt: null,
+    },
+  };
+}
+
+// ── 로그인 세션 관리 ─────────────────────────────────────────────────────────
+
+function getSession() {
+  try {
+    const s = sessionStorage.getItem(SESSION_KEY);
+    return s ? JSON.parse(s) : null;
+  } catch(e) { return null; }
+}
+
+function setSession(userId) {
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ userId, loggedInAt: new Date().toISOString() }));
+  } catch(e) {}
+}
+
+function clearSession() {
+  try { sessionStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
+
+function isLoggedIn() {
+  const session = getSession();
+  if (!session?.userId) return false;
+  // admin은 항상 유효
+  if (session.userId === "u-admin") return true;
+  // 일반 사용자: state가 로드된 후 해당 userId가 존재하는지 확인
+  try {
+    return Boolean(state && userById(session.userId));
+  } catch(e) { return true; } // state 미로드 상태면 일단 통과
+}
+
+function tryLogin(inputId, inputPw) {
+  const id = (inputId || "").trim();
+  const pw = (inputPw || "").trim();
+  if (!id || !pw) return { ok: false, msg: "아이디와 비밀번호를 입력해 주세요." };
+
+  // 어드민 계정
+  if (id === ADMIN_ID) {
+    if (pw !== ADMIN_PW) return { ok: false, msg: "비밀번호가 올바르지 않습니다." };
+    setSession("u-admin");
+    return { ok: true, userId: "u-admin" };
+  }
+
+  // 일반 사용자: ID=사번, PW=user.password (기본값 "1234@")
+  const matched = state.users.find(u =>
+    u.role !== "admin" &&
+    u.active !== false &&
+    !isRetired(u) &&
+    String(u.employeeNo || "").trim() === id &&
+    (u.password || "1234@") === pw
+  );
+  if (!matched) return { ok: false, msg: "사번 또는 비밀번호가 올바르지 않습니다." };
+  setSession(matched.id);
+  return { ok: true, userId: matched.id };
+}
+
+function renderLoginPage(errorMsg = "") {
+  return `
+    <div class="login-bg">
+      <div class="login-card">
+        <div class="login-logo">
+          <div class="login-logo-wordmark">I-PRISM</div>
+          <div class="login-logo-subtitle">Interojo Performance Review<br />&amp; Improvement System</div>
+        </div>
+        <form class="login-form" onsubmit="event.preventDefault(); App.doLogin();">
+          <div class="field">
+            <label for="login_id">아이디</label>
+            <input id="login_id" type="text" autocomplete="username" autofocus />
+          </div>
+          <div class="field">
+            <label for="login_pw">비밀번호</label>
+            <input id="login_pw" type="password" autocomplete="current-password" />
+          </div>
+          ${errorMsg ? `<div class="login-error">${esc(errorMsg)}</div>` : ""}
+          <button type="submit" class="button login-btn">로그인</button>
+        </form>
+        <p class="login-hint">아이디=사번, 비밀번호 분실 시 인사총무팀 문의</p>
+      </div>
+    </div>
+  `;
+}
+
+function loadState() {
+  try {
+    // 서버 모드: 서버가 주입한 초기 상태 사용
+    if (window.__INITIAL_STATE__) {
+      const parsed = window.__INITIAL_STATE__;
+      if (parsed && parsed.schemaVersion === SCHEMA_VERSION) return normalizeState(parsed);
+    }
+    // 로컬 fallback (개발 환경 / 오프라인)
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return normalizeState(createDefaultState());
+    const parsed = JSON.parse(stored);
+    if (parsed.schemaVersion !== SCHEMA_VERSION) return normalizeState(createDefaultState());
+    return normalizeState(parsed);
+  } catch (error) {
+    console.warn("Failed to load state", error);
+    return normalizeState(createDefaultState());
+  }
+}
+
+function normalizeState(nextState) {
+  const defaults = createDefaultState();
+  nextState.schemaVersion = SCHEMA_VERSION;
+  nextState.users = Array.isArray(nextState.users) ? nextState.users : defaults.users;
+  nextState.organizationNodes = normalizeOrganizationNodes(nextState.organizationNodes);
+  alignUsersToOrganizationNodes(nextState.users, nextState.organizationNodes);
+  normalizeUserRoles(nextState.users);
+  mergeHrExtraIntoUsers(nextState.users);
+  nextState.cycles = Array.isArray(nextState.cycles) && nextState.cycles.length ? nextState.cycles : defaults.cycles;
+  nextState.activeCycleId = nextState.activeCycleId || nextState.cycles[0].id;
+  nextState.templates = normalizeTemplates(nextState.templates || defaults.templates);
+  nextState.templateVariants = normalizeTemplateVariants(nextState.templateVariants, nextState.templates);
+  nextState.templates = Object.fromEntries(COMPONENTS.map((component) => [component, clone(nextState.templateVariants[component][0])]));
+  nextState.upwardTemplateVariants = normalizeSpecialTemplateVariants("upward", nextState.upwardTemplateVariants, nextState.upwardTemplate || defaults.upwardTemplate);
+  nextState.peerTemplateVariants = normalizeSpecialTemplateVariants("peer", nextState.peerTemplateVariants, nextState.peerTemplate || defaults.peerTemplate);
+  nextState.upwardTemplate = clone(nextState.upwardTemplateVariants[0]);
+  nextState.peerTemplate = clone(nextState.peerTemplateVariants[0]);
+  nextState.roleWeights = normalizeRoleWeights(nextState.roleWeights || defaults.roleWeights, defaults.roleWeights);
+  nextState.evaluatorWeights = normalizeEvaluatorWeights(nextState.evaluatorWeights || defaults.evaluatorWeights, defaults.evaluatorWeights);
+  nextState.gradeThresholds = { ...defaults.gradeThresholds, ...(nextState.gradeThresholds || {}) };
+  nextState.distributionMatrix = { ...defaults.distributionMatrix, ...(nextState.distributionMatrix || {}) };
+  nextState.reportVisibility = { ...DEFAULT_REPORT_VISIBILITY, ...(nextState.reportVisibility || {}) };
+  nextState.peerCount = Number.isInteger(nextState.peerCount) && nextState.peerCount > 0 ? nextState.peerCount : 3;
+  nextState.goalCycles = Array.isArray(nextState.goalCycles) && nextState.goalCycles.length ? nextState.goalCycles : defaults.goalCycles;
+  nextState.goals = Array.isArray(nextState.goals) ? nextState.goals : [];
+  nextState.ui = { ...defaults.ui, ...(nextState.ui || {}) };
+  if (!nextState.ui.activeGoalCycleId || !nextState.goalCycles.some(c => c.id === nextState.ui.activeGoalCycleId)) {
+    nextState.ui.activeGoalCycleId = nextState.goalCycles[0].id;
+  }
+  nextState.dataSource = null;
+  if (!userById(nextState.currentUserId, nextState)) {
+    nextState.currentUserId = nextState.users.find((user) => user.role === "admin")?.id || nextState.users[0]?.id;
+  }
+  nextState.cycles.forEach((cycle) => {
+    cycle.usersSnapshot = Array.isArray(cycle.usersSnapshot) && cycle.usersSnapshot.length ? cycle.usersSnapshot : clone(nextState.users);
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+  });
+  return nextState;
+}
+
+function normalizeOrganizationNodes(nodes) {
+  const list = Array.isArray(nodes) ? nodes.filter((node) => node?.id && node?.name) : [];
+  if (!list.some((node) => node.id === "org-root-interojo" || node.name === "인터로조")) return defaultOrganizationNodes();
+  return list.map((node) => ({
+    id: node.id,
+    name: node.name,
+    parentId: node.parentId || "",
+    type: node.type || (node.parentId ? "team" : "root"),
+  }));
+}
+
+// 인원현황 엑셀(입사일자·근무상태)을 사번 기준으로 구성원에 병합
+function mergeHrExtraIntoUsers(users) {
+  const extra = (typeof window !== "undefined" && window.HR_IMPORTED_DATA && window.HR_IMPORTED_DATA.hrExtra) || null;
+  if (!extra) return;
+  users.forEach(u => {
+    const key = String(u.employeeNo || "").trim();
+    const info = extra[key];
+    if (!info) return;
+    if (info.joinDate) u.joinDate = info.joinDate;
+    if (info.workStatus) u.workStatus = info.workStatus;
+  });
+}
+
+function normalizeUserRoles(users) {
+  users.forEach((user) => {
+    if (user.role === "finalEvaluator") {
+      user.role = user.name === "노시철" || String(user.title || user.position || "").includes("회장") ? "chairman" : "president";
+    }
+    if (user.name === "박수근") user.role = "president";
+    if (user.name === "노시철") user.role = "chairman";
+    delete user.finalEvaluatorId;
+  });
+}
+
+function alignUsersToOrganizationNodes(users, nodes) {
+  const byId = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const byName = new Map();
+  nodes.forEach((node) => {
+    if (!byName.has(node.name)) byName.set(node.name, []);
+    byName.get(node.name).push(node);
+  });
+  const specialNodeByName = {
+    "노시철": "org-root-interojo",
+    "안정연": "org-compliance",
+    "최원재": "org-global-business",
+    "송민경": "org-global-business",
+    "박진석": "org-finance-hq",
+    "박수근": "org-coo",
+  };
+  users.forEach((user) => {
+    if (user.role === "admin") return;
+    let node = byId[user.orgNodeId];
+    if (!node && specialNodeByName[user.name]) node = byId[specialNodeByName[user.name]];
+    if (!node && user.team) node = (byName.get(user.team) || [])[0];
+    if (!node && user.division) node = (byName.get(user.division) || [])[0];
+    if (!node && user.orgRoot) node = (byName.get(user.orgRoot) || [])[0];
+    if (!node) node = byId["org-root-interojo"];
+    if (node) syncUserFieldsToOrganizationNode(user, node, nodes);
+  });
+}
+
+function organizationNodePathFromNodes(nodeId, nodes) {
+  const byId = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const path = [];
+  let node = byId[nodeId];
+  const guard = new Set();
+  while (node && !guard.has(node.id)) {
+    path.unshift(node);
+    guard.add(node.id);
+    node = byId[node.parentId];
+  }
+  return path;
+}
+
+function organizationFieldsFromPath(path) {
+  if (!path.length) return { orgRoot: "", division: "", team: "" };
+  const root = path[0]?.name || "";
+  const containers = new Set(["COO", "CFO"]);
+  const orgs = path.slice(1).filter((node) => !containers.has(node.name));
+  const division = orgs[0]?.name || path[1]?.name || "";
+  const team = orgs.length > 1 ? orgs[orgs.length - 1].name : division;
+  return { orgRoot: root, division, team };
+}
+
+function syncUserFieldsToOrganizationNode(user, node, nodes) {
+  const path = organizationNodePathFromNodes(node.id, nodes);
+  const fields = organizationFieldsFromPath(path);
+  user.orgNodeId = node.id;
+  user.orgRoot = fields.orgRoot;
+  user.division = fields.division;
+  user.team = fields.team;
+}
+
+function normalizeTemplates(templates) {
+  const defaults = defaultTemplates();
+  const normalized = {};
+  COMPONENTS.forEach((component) => {
+    const source = templates?.[component] || defaults[component];
+    normalized[component] = {
+      ...defaults[component],
+      ...source,
+      items: Array.isArray(source.items)
+        ? source.items.map((item) => (typeof item === "string" ? { name: item, guide: "", required: true } : item))
+        : defaults[component].items,
+      grades: Array.isArray(source.grades) ? source.grades : defaults[component].grades,
+    };
+  });
+  return normalized;
+}
+
+function normalizeTemplateVariants(variants, templates) {
+  const defaults = defaultTemplateVariants();
+  const legacyTemplates = normalizeTemplates(templates || defaultTemplates());
+  const normalized = {};
+  COMPONENTS.forEach((component) => {
+    const sourceList = Array.isArray(variants?.[component]) && variants[component].length
+      ? variants[component]
+      : [{ id: `${component}-default`, ...legacyTemplates[component] }];
+    normalized[component] = sourceList.map((source, index) => normalizeTemplateVariant(component, source, defaults[component][0], index));
+    if (!normalized[component].length) normalized[component] = [normalizeTemplateVariant(component, defaults[component][0], defaults[component][0], 0)];
+  });
+  return normalized;
+}
+
+function normalizeTemplateVariant(component, source, fallback, index) {
+  const template = {
+    ...fallback,
+    ...source,
+    id: source?.id || `${component}-${index || "default"}`,
+  };
+  template.items = Array.isArray(source?.items) && source.items.length
+    ? source.items.map((item) => (typeof item === "string" ? { name: item, guide: "", required: true } : { ...item, required: item.required !== false }))
+    : fallback.items;
+  template.grades = Array.isArray(source?.grades) && source.grades.length ? source.grades : fallback.grades;
+  return template;
+}
+
+function normalizeUpwardTemplate(template) {
+  const defaults = defaultUpwardTemplate();
+  const source = template || defaults;
+  return {
+    ...defaults,
+    ...source,
+    items: Array.isArray(source.items) && source.items.length
+      ? source.items.map((item) => (typeof item === "string" ? { name: item, guide: "", required: true } : { ...item, required: item.required !== false }))
+      : defaults.items,
+    grades: Array.isArray(source.grades) && source.grades.length ? source.grades : defaults.grades,
+  };
+}
+
+function normalizePeerTemplate(template) {
+  const defaults = defaultPeerTemplate();
+  const source = template || defaults;
+  return {
+    ...defaults,
+    ...source,
+    items: Array.isArray(source.items) && source.items.length
+      ? source.items.map((item) => (typeof item === "string" ? { name: item, guide: "", required: true } : { ...item, required: item.required !== false }))
+      : defaults.items,
+    grades: Array.isArray(source.grades) && source.grades.length ? source.grades : defaults.grades,
+  };
+}
+
+function normalizeSpecialTemplateVariants(kind, variants, legacyTemplate) {
+  const fallback = kind === "upward" ? defaultUpwardTemplate() : defaultPeerTemplate();
+  const sourceList = Array.isArray(variants) && variants.length ? variants : [{ id: `${kind}-default`, ...(legacyTemplate || fallback) }];
+  const normalized = sourceList.map((source, index) => {
+    const template = kind === "upward" ? normalizeUpwardTemplate(source) : normalizePeerTemplate(source);
+    return {
+      ...template,
+      id: source?.id || `${kind}-${index || "default"}`,
+    };
+  });
+  return normalized.length ? normalized : [{ id: `${kind}-default`, ...fallback }];
+}
+
+function normalizeRoleWeights(weights, defaults) {
+  const normalized = {};
+  ["member", "teamLead", "divisionHead"].forEach((role) => {
+    normalized[role] = {};
+    const source = weights?.[role] || {};
+    const hasUpward = Object.prototype.hasOwnProperty.call(source, "upward");
+    const upwardDefault = Number(defaults?.[role]?.upward ?? 0);
+    const peerDefault = Number(defaults?.[role]?.peer ?? 0);
+    const primarySourceSum = COMPONENTS.reduce((total, component) => total + Number(source[component] ?? defaults?.[role]?.[component] ?? 0), 0);
+    const hasPeer = Object.prototype.hasOwnProperty.call(source, "peer");
+    const reserved = (hasUpward ? Number(source.upward ?? 0) : upwardDefault) + (hasPeer ? Number(source.peer ?? 0) : peerDefault);
+    const primaryScale = (!hasUpward || !hasPeer) && reserved > 0 && primarySourceSum > 0 ? Math.max(0, 100 - reserved) / primarySourceSum : 1;
+    WEIGHT_COMPONENTS.forEach((component) => {
+      if (component === "upward") {
+        normalized[role][component] = Number(source.upward ?? upwardDefault);
+        return;
+      }
+      if (component === "peer") {
+        normalized[role][component] = Number(source.peer ?? peerDefault);
+        return;
+      }
+      const value = Number(source[component] ?? defaults?.[role]?.[component] ?? 0);
+      normalized[role][component] = Math.round(value * primaryScale * 10) / 10;
+    });
+  });
+  return normalized;
+}
+
+function normalizeEvaluatorWeights(weights, defaults) {
+  const normalized = {};
+  EVALUATEE_ROLES.forEach((role) => {
+    const source = weights?.[role] || {};
+    const base = defaults?.[role] || { first: 50, second: 50, final: 0 };
+    const first = Number(source.first ?? base.first ?? 0);
+    const second = Number(source.second ?? base.second ?? 0);
+    const final = Number(source.final ?? base.final ?? 0);
+    normalized[role] = {
+      first: Number.isFinite(first) ? Math.max(0, first) : 0,
+      second: Number.isFinite(second) ? Math.max(0, second) : 0,
+      final: Number.isFinite(final) ? Math.max(0, final) : 0,
+    };
+  });
+  return normalized;
+}
+
+function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.users) {
+  cycle.evaluations = cycle.evaluations || {};
+  cycle.usersSnapshot = Array.isArray(cycle.usersSnapshot) && cycle.usersSnapshot.length ? cycle.usersSnapshot : clone(users);
+  users = cycle.usersSnapshot;
+  cycle.templateAssignments = cycle.templateAssignments || {};
+  cycle.resultSubmissions = cycle.resultSubmissions || {};
+  if (cycle.resultsVisible === undefined) cycle.resultsVisible = false;
+  if (cycle.useUpward === undefined) cycle.useUpward = true;
+  if (cycle.usePeer === undefined) cycle.usePeer = true;
+  if (!cycle.upwardStart) cycle.upwardStart = cycle.secondStart || "";
+  if (!cycle.upwardEnd) cycle.upwardEnd = cycle.secondEnd || "";
+  if (!cycle.peerStart) cycle.peerStart = cycle.upwardStart || cycle.secondStart || "";
+  if (!cycle.peerEnd) cycle.peerEnd = cycle.upwardEnd || cycle.secondEnd || "";
+  users.forEach((user) => {
+    if (isEvaluatee(user) && !cycle.evaluations[user.id]) cycle.evaluations[user.id] = makeEmptyEvaluation(user.id);
+    if (isEvaluatee(user) && cycle.evaluations[user.id]) {
+      cycle.evaluations[user.id].adjustment = {
+        grade: "",
+        gradeManual: false,
+        feedback: "",
+        reason: "",
+        adjustedAt: "",
+        ...(cycle.evaluations[user.id].adjustment || {}),
+      };
+      if (!cycle.evaluations[user.id].adjustment.gradeManual) cycle.evaluations[user.id].adjustment.grade = "";
+      cycle.evaluations[user.id].orgAdjustment = {
+        grade: "",
+        gradeManual: false,
+        reason: "",
+        submittedBy: "",
+        submittedAt: "",
+        history: [],
+        ...(cycle.evaluations[user.id].orgAdjustment || {}),
+      };
+      if (!Array.isArray(cycle.evaluations[user.id].orgAdjustment.history)) cycle.evaluations[user.id].orgAdjustment.history = [];
+      if (!cycle.evaluations[user.id].orgAdjustment.gradeManual) cycle.evaluations[user.id].orgAdjustment.grade = "";
+    }
+  });
+  Object.keys(cycle.evaluations).forEach((userId) => {
+    const user = users.find((candidate) => candidate.id === userId);
+    if (!user || !isEvaluatee(user)) delete cycle.evaluations[userId];
+  });
+  // 미진행 설정이면 배정을 만들지 않음
+  if (cycle.useUpward === false) cycle.upwardAssignments = [];
+  else ensureUpwardAssignments(cycle, users);
+  if (cycle.usePeer === false) cycle.peerAssignments = [];
+  else ensurePeerAssignments(cycle, users);
+}
+
+function makeEmptyUpwardAnswer() {
+  return { itemScores: {}, score: "", grade: "", comment: "" };
+}
+
+function buildDefaultUpwardAssignments(users = []) {
+  const assignments = [];
+  const activeUsers = users.filter((user) => user.active !== false && !isRetired(user));
+  const pairSet = new Set();
+
+  // O(n) 인덱스 구축
+  const byId = new Map(activeUsers.map(u => [u.id, u]));
+  const teamLeadByDivTeam = new Map();
+  const divHeadByDiv = new Map();
+  activeUsers.forEach(u => {
+    if (u.role === "teamLead") {
+      const k = `${u.division||""}|${u.team||""}`;
+      teamLeadByDivTeam.set(k, u);
+    } else if (u.role === "divisionHead") {
+      if (!divHeadByDiv.has(u.division || "")) divHeadByDiv.set(u.division || "", u);
+    }
+  });
+
+  const addAssignment = (evaluator, target) => {
+    if (!evaluator || !target || evaluator.id === target.id) return;
+    const key = `${evaluator.id}:${target.id}`;
+    if (pairSet.has(key)) return;
+    pairSet.add(key);
+    assignments.push({
+      id: `up-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      evaluatorId: evaluator.id,
+      targetId: target.id,
+      source: "organization",
+      status: "pending",
+      answer: makeEmptyUpwardAnswer(),
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  activeUsers.filter(u => u.role === "member").forEach(member => {
+    const teamLead = (member.evaluator1Id && byId.get(member.evaluator1Id)?.role === "teamLead" ? byId.get(member.evaluator1Id) : null)
+      || teamLeadByDivTeam.get(`${member.division||""}|${member.team||""}`);
+    const divisionHead = (member.evaluator2Id && byId.get(member.evaluator2Id)?.role === "divisionHead" ? byId.get(member.evaluator2Id) : null);
+    addAssignment(member, teamLead || divisionHead);
+  });
+
+  activeUsers.filter(u => u.role === "teamLead").forEach(lead => {
+    const divisionHead = (lead.evaluator2Id && byId.get(lead.evaluator2Id)?.role === "divisionHead" ? byId.get(lead.evaluator2Id) : null)
+      || divHeadByDiv.get(lead.division || "");
+    addAssignment(lead, divisionHead);
+  });
+
+  return assignments;
+}
+
+function ensureUpwardAssignments(cycle, users = state?.users || []) {
+  if (!Array.isArray(cycle.upwardAssignments)) {
+    cycle.upwardAssignments = buildDefaultUpwardAssignments(users);
+    return;
+  }
+  const validUserIds = new Set(users.filter((user) => user.active !== false).map((user) => user.id));
+  cycle.upwardAssignments = cycle.upwardAssignments
+    .filter((assignment) => assignment && validUserIds.has(assignment.evaluatorId) && validUserIds.has(assignment.targetId) && assignment.evaluatorId !== assignment.targetId)
+    .map((assignment) => ({
+      id: assignment.id || `up-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      evaluatorId: assignment.evaluatorId,
+      targetId: assignment.targetId,
+      source: assignment.source || "manual",
+      status: assignment.submitted || isCompletedStatus(assignment.status) ? "completed" : assignment.status || "pending",
+      submitted: Boolean(assignment.submitted || isCompletedStatus(assignment.status)),
+      answer: { ...makeEmptyUpwardAnswer(), ...(assignment.answer || {}) },
+      createdAt: assignment.createdAt || new Date().toISOString(),
+      submittedAt: assignment.submittedAt || "",
+    }));
+}
+
+function makeEmptyPeerAnswer() {
+  return { itemScores: {}, score: "", grade: "", comment: "" };
+}
+
+function buildDefaultPeerAssignments(users = [], peerCount) {
+  const assignments = [];
+  const activeUsers = users.filter((user) => isEvaluatee(user));
+  const maxPeer = peerCount != null ? peerCount : (() => { try { return state?.peerCount || 3; } catch(e) { return 3; } })();
+
+  // 동료평가 그룹 구성: 팀원=같은 팀, 팀장=같은 본부, 본부장=전체 본부장
+  const byTeam = new Map();    // "division|team" → member[]
+  const byDiv  = new Map();    // "division" → teamLead[]
+  const allDivHeads = [];
+  activeUsers.forEach(u => {
+    if (u.role === "member") {
+      const k = `${u.division||""}|${u.team||""}`;
+      if (!byTeam.has(k)) byTeam.set(k, []);
+      byTeam.get(k).push(u);
+    } else if (u.role === "teamLead") {
+      const k = u.division || "";
+      if (!byDiv.has(k)) byDiv.set(k, []);
+      byDiv.get(k).push(u);
+    } else if (u.role === "divisionHead") {
+      allDivHeads.push(u);
+    }
+  });
+
+  const addAssignment = (evaluator, target) => {
+    assignments.push({
+      id: `peer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      evaluatorId: evaluator.id,
+      targetId: target.id,
+      source: "organization",
+      status: "pending",
+      answer: makeEmptyPeerAnswer(),
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  // 그룹 단위 균등 배정: 각 평가자가 k명을 평가하되, 피평가 횟수가 가장 적은 사람을 우선 선택
+  // → 모든 인원이 비슷한 횟수로 평가받고, 평가받지 못하는 사람이 없도록 함
+  const assignGroup = (group) => {
+    const members = group.slice().sort(compareEmployeesForDisplay);
+    const n = members.length;
+    if (n < 2) return;                       // 혼자면 동료평가 불가
+    const k = Math.min(maxPeer, n - 1);      // 평가자당 평가 대상 수
+    const incoming = new Map(members.map(m => [m.id, 0]));   // 피평가 횟수
+    const pairSet = new Set();
+    members.forEach((evaluator) => {
+      let picked = 0;
+      // 후보를 "피평가 횟수 오름차순"으로 정렬해 적게 받은 사람부터 배정
+      const cands = members
+        .filter(t => t.id !== evaluator.id && !pairSet.has(`${evaluator.id}:${t.id}`))
+        .sort((a, b) => (incoming.get(a.id) - incoming.get(b.id)) || (Math.random() - 0.5));
+      for (const target of cands) {
+        if (picked >= k) break;
+        pairSet.add(`${evaluator.id}:${target.id}`);
+        incoming.set(target.id, incoming.get(target.id) + 1);
+        addAssignment(evaluator, target);
+        picked += 1;
+      }
+    });
+  };
+
+  byTeam.forEach(assignGroup);
+  byDiv.forEach(assignGroup);
+  if (allDivHeads.length) assignGroup(allDivHeads);
+
+  return assignments;
+}
+
+function ensurePeerAssignments(cycle, users = state?.users || []) {
+  if (!Array.isArray(cycle.peerAssignments)) {
+    cycle.peerAssignments = buildDefaultPeerAssignments(users);
+    return;
+  }
+  const validUserIds = new Set(users.filter((user) => isEvaluatee(user)).map((user) => user.id));
+  const counts = {};
+  const maxPeerCount = (() => { try { return state?.peerCount || 3; } catch(e) { return 3; } })();
+  cycle.peerAssignments = cycle.peerAssignments
+    .filter((assignment) => assignment && validUserIds.has(assignment.evaluatorId) && validUserIds.has(assignment.targetId) && assignment.evaluatorId !== assignment.targetId)
+    .filter((assignment) => {
+      counts[assignment.evaluatorId] = counts[assignment.evaluatorId] || 0;
+      if (counts[assignment.evaluatorId] >= maxPeerCount) return false;
+      counts[assignment.evaluatorId] += 1;
+      return true;
+    })
+    .map((assignment) => ({
+      id: assignment.id || `peer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      evaluatorId: assignment.evaluatorId,
+      targetId: assignment.targetId,
+      source: assignment.source || "manual",
+      status: assignment.submitted || isCompletedStatus(assignment.status) ? "completed" : assignment.status || "pending",
+      submitted: Boolean(assignment.submitted || isCompletedStatus(assignment.status)),
+      answer: { ...makeEmptyPeerAnswer(), ...(assignment.answer || {}) },
+      createdAt: assignment.createdAt || new Date().toISOString(),
+      submittedAt: assignment.submittedAt || "",
+    }));
+}
+
+// 서버 저장 디바운스 타이머
+let _saveTimer = null;
+
+function saveState() {
+  invalidateCycleCache();
+  // localStorage (로컬 fallback / 개발 환경)
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {
+    console.warn("localStorage 저장 실패(용량 초과?)", e);
+  }
+  // 서버 저장 — 1초 디바운스 (연속 호출 시 마지막 한 번만 전송)
+  if (typeof fetch !== "undefined") {
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(() => {
+      fetch("/api/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state),
+      }).catch((e) => console.warn("서버 저장 실패:", e));
+    }, 1000);
+  }
+}
+
+let _activeCycleCache = null;
+let _activeCycleId = null;
+
+// 어드민 UI에서 현재 선택된 사이클 (상태 무관, 항상 존재)
+function selectedCycle() {
+  return state.cycles.find(c => c.id === state.activeCycleId) || state.cycles[0];
+}
+
+// 진행중(active)인 사이클만 반환 — 없으면 null (평가 운영 대시보드 전용)
+function runningCycle() {
+  return state.cycles.find(c => c.status === "active") || null;
+}
+
+function activeCycle() {
+  // 항상 사이클을 반환 (기존 동작 유지)
+  let cycle = state.cycles.find(c => c.id === state.activeCycleId);
+  if (!cycle) {
+    cycle = state.cycles[0];
+    state.activeCycleId = cycle.id;
+  }
+  if (_activeCycleId !== cycle.id) {
+    ensureCycleEvaluations(cycle);
+    _activeCycleId = cycle.id;
+  }
+  return cycle;
+}
+
+function invalidateCycleCache() {
+  _activeCycleId = null;
+  _scoreResultCache.clear();
+  _readinessCache = null;
+}
+
+// 점수 계산 결과 캐시 (동일 사이클·데이터 동안 재계산 방지)
+const _scoreResultCache = new Map();
+// 최종 조정 준비 상태 캐시 (전수 계산 1회만)
+let _readinessCache = null;
+
+function evaluations() {
+  return activeCycle()?.evaluations || {};
+}
+
+// 특정 사이클을 일시적으로 활성 컨텍스트로 설정해 결과를 계산 (과거 평가 조회용)
+// 점수/준비 캐시는 사이클 단위라 진입·복귀 시 모두 무효화한다.
+function withCycle(cycleId, fn) {
+  const prevActiveId = state.activeCycleId;
+  if (!cycleId || cycleId === prevActiveId) return fn();
+  state.activeCycleId = cycleId;
+  invalidateCycleCache();
+  try {
+    activeCycle(); // 해당 사이클 평가 엔트리 보장
+    return fn();
+  } finally {
+    state.activeCycleId = prevActiveId;
+    invalidateCycleCache();
+  }
+}
+
+function cycleUsers(cycle = activeCycle()) {
+  if (!cycle) return state.users;
+  return Array.isArray(cycle.usersSnapshot) && cycle.usersSnapshot.length ? cycle.usersSnapshot : state.users;
+}
+
+function cycleUserById(id, cycle = activeCycle()) {
+  return cycleUsers(cycle).find((user) => user.id === id) || userById(id);
+}
+
+function currentUser() {
+  return userById(state.currentUserId) || state.users[0];
+}
+
+function userById(id, targetState = state) {
+  return targetState.users.find((user) => user.id === id);
+}
+
+function refreshCurrentUserSwitch() {
+  const select = document.getElementById("userSwitch");
+  if (!select) return;
+  const activeUsers = state.users.filter((candidate) => candidate.active !== false && !isRetired(candidate));
+  if (!activeUsers.some((candidate) => candidate.id === state.currentUserId)) {
+    state.currentUserId = activeUsers.find((candidate) => candidate.role === "admin")?.id || activeUsers[0]?.id || "";
+  }
+  select.innerHTML = activeUsers
+    .map(
+      (candidate) =>
+        `<option value="${candidate.id}" ${candidate.id === state.currentUserId ? "selected" : ""}>${esc(candidate.name)} · ${ROLE_LABELS[candidate.role]}</option>`,
+    )
+    .join("");
+  const query = valueOf("userSwitchSearch");
+  if (query) App.filterCurrentAccount(query);
+}
+
+function templateVariantsFor(component) {
+  state.templateVariants = normalizeTemplateVariants(state.templateVariants, state.templates);
+  return state.templateVariants[component] || [];
+}
+
+function templateVariantsForKind(kind) {
+  if (COMPONENTS.includes(kind)) return templateVariantsFor(kind);
+  if (kind === "upward") {
+    state.upwardTemplateVariants = normalizeSpecialTemplateVariants("upward", state.upwardTemplateVariants, state.upwardTemplate);
+    return state.upwardTemplateVariants;
+  }
+  if (kind === "peer") {
+    state.peerTemplateVariants = normalizeSpecialTemplateVariants("peer", state.peerTemplateVariants, state.peerTemplate);
+    return state.peerTemplateVariants;
+  }
+  return templateVariantsFor("performance");
+}
+
+function defaultTemplateId(component) {
+  return templateVariantsFor(component)[0]?.id || `${component}-default`;
+}
+
+function defaultTemplateIdForKind(kind) {
+  return templateVariantsForKind(kind)[0]?.id || `${kind}-default`;
+}
+
+function templateAssignmentFor(employeeId, cycle = activeCycle()) {
+  cycle.templateAssignments = cycle.templateAssignments || {};
+  cycle.templateAssignments[employeeId] = cycle.templateAssignments[employeeId] || {};
+  return cycle.templateAssignments[employeeId];
+}
+
+function assignedTemplateId(employee, component, cycle = activeCycle()) {
+  const selected = templateAssignmentFor(employee.id, cycle)[component];
+  return templateVariantsFor(component).some((template) => template.id === selected) ? selected : defaultTemplateId(component);
+}
+
+function assignedTemplateIdForKind(employee, kind, cycle = activeCycle()) {
+  const selected = templateAssignmentFor(employee.id, cycle)[kind];
+  return templateVariantsForKind(kind).some((template) => template.id === selected) ? selected : defaultTemplateIdForKind(kind);
+}
+
+function templateFor(employee, component, cycle = activeCycle()) {
+  const variants = templateVariantsFor(component);
+  const selectedId = employee ? assignedTemplateId(employee, component, cycle) : defaultTemplateId(component);
+  return variants.find((template) => template.id === selectedId) || variants[0] || state.templates[component];
+}
+
+function templateForKind(employee, kind, cycle = activeCycle()) {
+  const variants = templateVariantsForKind(kind);
+  const selectedId = employee ? assignedTemplateIdForKind(employee, kind, cycle) : defaultTemplateIdForKind(kind);
+  return variants.find((template) => template.id === selectedId) || variants[0];
+}
+
+function isRetired(user) {
+  return Boolean(user && user.retired === true);
+}
+
+function isEvaluatee(user) {
+  return Boolean(user && user.active !== false && !isRetired(user) && EVALUATEE_ROLES.includes(user.role));
+}
+
+function isExcludedFromEvaluatorOptions(user) {
+  const text = [user?.position, user?.title, user?.jobTitle].filter(Boolean).join(" ");
+  return Boolean(user?.excludedFromEvaluation || /사외이사|(^|[\s/])감사($|[\s/])|임원\(비상근\)/.test(text));
+}
+
+function isEvaluatorCandidate(user) {
+  return Boolean(user && user.active !== false && !isExcludedFromEvaluatorOptions(user));
+}
+
+function buildNavSections(tabs, user) {
+  const sections = [];
+  // ── 어드민 전용 메뉴 순서: 나의 평가 → 시스템 관리 → 평가 관리 → 목표 관리 ──
+  if (user.role === "admin") {
+    const myTabs   = tabs.filter((t) => ["home"].includes(t));
+    const sysTabs  = tabs.filter((t) => ["organization"].includes(t));
+    const setOrder = ["admin", "evalDashboard"];
+    const setTabs  = setOrder.filter((t) => tabs.includes(t));
+    const goalTabs = tabs.filter((t) => ["goals","goalCycles"].includes(t));
+    const dashTabs = tabs.filter((t) => ["myDashboard","memberDashboard"].includes(t));
+    if (myTabs.length)   sections.push({ label: "나의 평가", items: myTabs });
+    if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
+    if (setTabs.length)  sections.push({ label: "평가 관리", items: setTabs });
+    if (goalTabs.length) sections.push({ label: "목표 관리", items: goalTabs });
+    if (dashTabs.length) sections.push({ label: "성장 기록 조회", items: dashTabs });
+    return sections;
+  }
+
+  const order = ["tasks","resultSubmit","approval","results"]; // 평가하기 → 종합평가 → 최종 승인 → 최종 평가 결과 확인
+  const myTabs     = tabs.filter((t) => ["home","self","report"].includes(t));
+  const goalTabs   = tabs.filter((t) => ["goals","goalApproval","goalCycles"].includes(t));
+  const evalTabs   = order.filter((t) => tabs.includes(t));
+  const dashTabs   = tabs.filter((t) => ["myDashboard","memberDashboard"].includes(t));
+  const adminTabs  = tabs.filter((t) => ["admin","organization"].includes(t));
+  if (myTabs.length)      sections.push({ label: "나의 평가", items: myTabs });
+  if (evalTabs.length)    sections.push({ label: "평가 관리", items: evalTabs });
+  if (goalTabs.length)    sections.push({ label: "목표 관리", items: goalTabs });
+  if (dashTabs.length)    sections.push({ label: "성장 기록 조회", items: dashTabs });
+  if (adminTabs.length)   sections.push({ label: "시스템 관리", items: adminTabs });
+  return sections;
+}
+
+function buildAccountSwitcherOptions(currentUser, searchQuery = "") {
+  const allActive = state.users.filter(u => u.active !== false);
+  const priority = ["admin","chairman","president","divisionHead","teamLead"];
+  const priorityUsers = allActive.filter(u => priority.includes(u.role));
+  let others = allActive.filter(u => !priority.includes(u.role));
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    others = others.filter(u => (u.name||"").toLowerCase().includes(q) || (u.employeeNo||"").includes(q));
+  } else {
+    others = others.slice(0, 30); // 검색 없으면 최대 30명만
+  }
+  const list = [...priorityUsers, ...others];
+  if (!list.some(u => u.id === currentUser.id)) list.unshift(currentUser);
+  return list.map(u => `<option value="${u.id}" ${u.id === currentUser.id ? "selected" : ""}>${esc(u.name)} · ${ROLE_LABELS[u.role]||u.role}</option>`).join("");
+}
+
+function render(loginError = "") {
+  // ── 로그인 체크 ──
+  if (!isLoggedIn()) {
+    document.getElementById("app").innerHTML = renderLoginPage(loginError);
+    return;
+  }
+  // 최초 로그인 시에만 세션 userId → state.currentUserId 동기화
+  // (어드민이 타 계정으로 전환한 경우는 state.currentUserId를 그대로 유지)
+  const session = getSession();
+  if (session?.userId) {
+    const sessionUser = userById(session.userId) || (session.userId === "u-admin" ? state.users.find(u => u.role === "admin") : null);
+    const curUser = userById(state.currentUserId);
+    // currentUserId가 없거나 유효하지 않을 때만 세션으로 초기화
+    if (!curUser) {
+      state.currentUserId = session.userId;
+    }
+    // 어드민이 아닌 계정이 로그인한 경우 반드시 본인 계정으로 고정
+    if (sessionUser && sessionUser.role !== "admin" && state.currentUserId !== session.userId) {
+      state.currentUserId = session.userId;
+    }
+  }
+
+  const user = currentUser();
+  const tabs = getVisibleTabs(user);
+  if (!tabs.includes(state.ui.tab)) state.ui.tab = (user.role === "admin" ? "admin" : (tabs[0] || "home"));
+  const cycle = selectedCycle();
+
+  // 탭별 아이콘 매핑
+  const TAB_ICONS = {
+    home: "🏠", cycleDashboard: "📊", self: "✏️", tasks: "📋", resultSubmit: "⚖️",
+    results: "📈", approval: "✅", report: "📄",
+    admin: "⚙️", finalAdjust: "🛠️", feedbackMgmt: "💬", organization: "🏢",
+    goals: "🎯", goalApproval: "🗂️", goalCycles: "🔄",
+    myDashboard: "📒", memberDashboard: "📊",
+    evalDashboard: "📊",
+  };
+
+  // 역할별 색상 배지
+  const ROLE_COLORS = {
+    admin: "#6b7280", president: "#d97706", chairman: "#7c3aed",
+    divisionHead: "#059669", teamLead: "#2563eb", member: "#374151",
+  };
+  const roleColor = ROLE_COLORS[user.role] || "#374151";
+  const initials = (user.name || "?").slice(0, 2);
+
+  // 사이드바 섹션 구분
+  const navSections = buildNavSections(tabs, user);
+
+  // 미완료 작업 수
+  const pendingCount = getTasksForUser(user).filter((t) => !isCompletedStatus(t.status)).length;
+
+  document.getElementById("app").innerHTML = `
+    <div class="shell">
+
+      <!-- ── 상단 헤더 ── -->
+      <header class="topbar">
+        <div class="topbar-brand">
+          <div class="topbar-logo-wrap" onclick="App.goHome()" style="cursor:pointer;" title="홈으로">
+            <img src="./logo_IRIS.png" alt="IRIS" class="topbar-logo" />
+          </div>
+        </div>
+
+        ${(() => {
+          const activeCycles = state.cycles.filter(c => c.status === "active");
+          if (!activeCycles.length) return "";
+          const ac = activeCycles[0];
+          return `<div class="topbar-cycle">
+            <span class="dot"></span>
+            <strong>${esc(ac.name)}</strong>
+            <span style="opacity:.7">진행중</span>
+          </div>`;
+        })()}
+
+        <div class="topbar-right">
+          ${(() => {
+            // 로그인한 세션이 어드민인지 확인 (타 계정으로 전환 중이어도 어드민이면 스위처 표시)
+            const session = getSession();
+            const sessionUser = session?.userId ? (userById(session.userId) || state.users.find(u => u.role === "admin" && u.id === session.userId)) : null;
+            const isAdminSession = sessionUser?.role === "admin";
+            if (isAdminSession) return `
+              <div class="account-switcher" id="acct-switcher-wrap">
+                <div style="position:relative;">
+                  <input id="userSwitchSearch" placeholder="계정 검색 (이름)…"
+                    autocomplete="off"
+                    oninput="App.filterCurrentAccount(this.value)"
+                    onfocus="App.openAccountDropdown()"
+                    onblur="setTimeout(()=>App.closeAccountDropdown(),180)"
+                    onkeydown="App.accountSearchKeydown(event)"
+                    value="${esc(user.name)}" style="width:140px;" />
+                  <div id="acct-dropdown" class="acct-dropdown" style="display:none;"></div>
+                </div>
+                <div class="acct-avatar" style="background:${roleColor}" title="${esc(user.name)} · ${ROLE_LABELS[user.role]}">${esc(initials)}</div>
+              </div>`;
+            return `
+              <div style="display:flex;align-items:center;gap:8px;">
+                <div class="acct-avatar" style="background:${roleColor};cursor:pointer;" title="비밀번호 변경" onclick="App.openPwChangeModal()">${esc(initials)}</div>
+                <span style="font-size:13px;font-weight:600;color:var(--ink-2);">${esc(user.name)}</span>
+                <span style="font-size:12px;color:var(--muted);">${ROLE_LABELS[user.role]||""}</span>
+              </div>`;
+          })()}
+          ${pendingCount > 0 ? `<button class="topbar-bell" onclick="App.setTab('tasks')" title="할 일 ${pendingCount}건">🔔<span class="topbar-bell-badge">${pendingCount}</span></button>` : ""}
+          <button class="button secondary logout-btn" onclick="App.doLogout()" title="로그아웃">↩ 로그아웃</button>
+        </div>
+      </header>
+
+      <!-- ── 좌측 네비 ── -->
+      <aside class="sidebar">
+        ${navSections.map(({ label, items }) => `
+          <div class="nav-section-label">${label}</div>
+          <nav class="nav">
+            ${items.map((tab) => `
+              <button class="${state.ui.tab === tab ? "active" : ""}" onclick="App.setTab('${tab}')">
+                <span class="nav-icon">${TAB_ICONS[tab] || "·"}</span>
+                ${tabLabel(tab, user)}
+                ${tab === "tasks" && pendingCount > 0 ? `<span class="nav-badge">${pendingCount}</span>` : `<span class="nav-arrow">›</span>`}
+              </button>
+            `).join("")}
+          </nav>
+        `).join("")}
+        <div class="sidebar-footer-logo">
+          <img src="./footer_logo.png" alt="INTEROJO" />
+        </div>
+      </aside>
+
+      <!-- ── 메인 콘텐츠 ── -->
+      <main class="main">
+        <div class="page-header">
+          <div class="page-title">
+            ${(() => {
+              const sectionMap = {
+                home:"나의 평가", self:"나의 평가", report:"나의 평가",
+                goals:"목표 관리", goalApproval:"목표 관리", goalCycles:"목표 관리",
+                tasks:"평가 관리", resultSubmit:"평가 관리", approval:"평가 관리", results:"평가 관리",
+                admin:"평가 관리", organization:"시스템 관리",
+                myDashboard:"성장 기록 조회", memberDashboard:"성장 기록 조회",
+                finalAdjust:"최종 결과", feedbackMgmt:"평가 관리",
+              };
+              const sec = sectionMap[state.ui.tab];
+              return sec ? `<div class="page-section-badge">${sec}</div>` : "";
+            })()}
+            <h1>${TAB_ICONS[state.ui.tab] || ""} ${esc(tabLabel(state.ui.tab, user))}</h1>
+            ${getPageDescription(state.ui.tab, user) ? `<p>${esc(getPageDescription(state.ui.tab, user))}</p>` : ""}
+          </div>
+        </div>
+        ${state.ui.flash ? `<div class="notice ok flash-notice">${esc(state.ui.flash)}</div>` : ""}
+        ${renderRoute(user)}
+      </main>
+
+    </div>
+    ${renderAIFeedbackModal()}
+    ${renderBulkAIProgressModal()}
+    ${renderAIEvaluatorTendencyModal()}
+    ${state.ui.showPwChangeModal ? renderPwChangeModal() : ""}
+  `;
+
+}
+
+function getVisibleTabs(user) {
+  // 어드민은 대시보드(home) 없음
+  const tabs = user.role === "admin" ? [] : ["home"];
+  if (isEvaluatee(user)) tabs.push("self");
+  if (getTasksForUser(user).length || ["divisionHead", "teamLead", "president", "chairman"].includes(user.role)) tabs.push("tasks");
+  if (user.role === "divisionHead") tabs.push("resultSubmit");
+  if (["president", "chairman", "divisionHead", "teamLead"].includes(user.role)) tabs.push("results");
+  if (["president", "chairman"].includes(user.role)) tabs.push("approval");
+  if (isEvaluatee(user)) tabs.push("report");
+  // 목표 관리: 모든 계정 목표 조회/작성
+  tabs.push("goals");
+  // 목표 승인: 조직장(승인자 가능 역할)
+  if (["teamLead", "divisionHead", "president", "chairman"].includes(user.role)) tabs.push("goalApproval");
+  // goalCycles 탭은 goals 탭에 통합됨
+  // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
+  tabs.push("myDashboard");
+  if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
+  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard");
+  return tabs;
+}
+
+function tabLabel(tab, user = currentUser()) {
+  return TAB_LABELS[tab] || tab;
+}
+
+function getPageDescription(tab, user) {
+  const descriptions = {
+    home:           "",
+    self:           "",
+    tasks:          "",
+    resultSubmit:   "",
+    results:        "",
+    approval:       "",
+    report:         "",
+    cycleDashboard: "선택한 평가 사이클의 단계별·조직별 진행 현황을 조회합니다.",
+    finalAdjust:    "최종 등급 조정 및 피드백 공개를 관리합니다.",
+    feedbackMgmt:   "피평가자의 결과 확인·의견 제출·면담 요청 현황을 관리합니다.",
+    admin:          "",
+    organization:   "",
+    evalDashboard:  "",
+    goals:          "",
+    goalApproval:   "",
+    goalCycles:     "목표 사이클을 생성하고 승인 기능 등 운영 옵션을 설정합니다.",
+    myDashboard:    "",
+    memberDashboard:"",
+  };
+  return descriptions[tab] || "";
+}
+
+function renderRoute(user) {
+  if (state.ui.tab === "self") return renderSelfReview(user);
+  if (state.ui.tab === "tasks") return renderTasks(user);
+  if (state.ui.tab === "resultSubmit") return renderResultSubmission(user);
+  if (state.ui.tab === "results") return renderResults(user);
+  if (state.ui.tab === "approval") return renderApprovalPage(user);
+  if (state.ui.tab === "report") return renderReport(user);
+  if (state.ui.tab === "cycleDashboard") return user.role === "admin" ? renderAdminCycleDashboard() : renderCycleDashboard(user);
+  if (state.ui.tab === "finalAdjust") return user.role === "admin" ? renderAdminAdjustments() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "feedbackMgmt") return user.role === "admin" ? renderFeedbackMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "admin") return renderAdmin(user);
+  if (state.ui.tab === "organization") return user.role === "admin" ? renderAdminOrganization() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "evalDashboard") return user.role === "admin" ? renderEvalDashboard() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "goals") return user.role === "admin" ? renderGoalsList(user) : renderGoalCycleContent(user);
+  if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
+  if (state.ui.tab === "myDashboard") return renderMyDashboard(user);
+  if (state.ui.tab === "memberDashboard") return renderMemberDashboard(user);
+  return renderHome(user);
+}
+
+function renderHome(user) {
+  if (user.role === "admin") return renderAdminHome();
+  const scopedUsers = getDashboardScopeUsers(user);
+  const progress = getProgressStats(scopedUsers);
+  const tasks = getTasksForUser(user);
+  const showMetrics = !["member"].includes(user.role);
+  const cycle = selectedCycle();
+  const stages = [
+    { key:"self",   label:"자기평가",  start:cycle.selfStart,     end:cycle.selfEnd },
+    { key:"first",  label:"1차 평가",  start:cycle.firstStart,    end:cycle.firstEnd },
+    { key:"second", label:"2차 평가",  start:cycle.secondStart,   end:cycle.secondEnd },
+    { key:"grade",  label:"등급 확정", start:cycle.gradeStart,    end:cycle.gradeEnd },
+    { key:"feed",   label:"피드백",    start:cycle.feedbackStart, end:cycle.feedbackEnd },
+  ];
+  const today = new Date().toISOString().slice(0,10);
+  const stageBar = stages.map((s,i) => {
+    const active = isDateInRange(s.start, s.end);
+    const past   = s.end && s.end < today;
+    const cls = active ? "active" : past ? "done" : "wait";
+    return `<div class="step-chip ${cls}">${s.label}</div>${i < stages.length-1 ? '<span class="step-arrow">→</span>' : ""}`;
+  }).join("");
+  return `
+    ${showMetrics ? renderDashboardProgressMetrics(user, progress, scopedUsers) : ""}
+    <div class="grid two">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>내 할 일</h2></div>
+          <span class="pill blue">${ROLE_LABELS[user.role]}</span>
+        </div>
+        <div class="panel-body">${renderDashboardTodos(user, tasks)}</div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>평가 일정</h2></div>
+        </div>
+        <div class="panel-body grid">${renderDashboardSchedule(user)}</div>
+      </section>
+    </div>
+  `;
+}
+
+function renderDashboardProgressMetrics(user, progress, scopedUsers) {
+  const total = scopedUsers.length;
+  if (!total) return "";
+  const ev = () => evaluations();
+  const upwardAssigns = (getUpwardAssignments ? getUpwardAssignments() : [])
+    .filter(a => scopedUsers.some(u => u.id === a.evaluatorId));
+  const peerAssigns = (getPeerAssignments ? getPeerAssignments() : [])
+    .filter(a => scopedUsers.some(u => u.id === a.evaluatorId));
+  // 직접 계산 — 해당 차수 평가자가 배정된 인원만 분모로 (미할당자 제외)
+  const firstTotal     = scopedUsers.filter(u => u.evaluator1Id).length;
+  const secondTotal    = scopedUsers.filter(u => u.evaluator2Id).length;
+  const firstCompleted = scopedUsers.filter(u => u.evaluator1Id && ev()[u.id]?.status?.first === "completed").length;
+  const secondCompleted= scopedUsers.filter(u => u.evaluator2Id && ev()[u.id]?.status?.second === "completed").length;
+
+  const metrics = [
+    { label: "평가 대상",  val: total,           outOf: null,                    note: getDashboardScopeLabel(user) },
+    { label: "자기평가",   val: progress.selfSubmitted||0, outOf: total,         note: "제출 완료" },
+    { label: "1차 평가",   val: firstCompleted,  outOf: firstTotal,              note: "평가 완료" },
+    { label: "2차 평가",   val: secondCompleted, outOf: secondTotal,             note: "평가 완료" },
+    { label: "상향평가",   val: upwardAssigns.filter(a=>isCompletedStatus(a.status)).length, outOf: upwardAssigns.length||0, note: "완료" },
+    { label: "동료평가",   val: peerAssigns.filter(a=>isCompletedStatus(a.status)).length,   outOf: peerAssigns.length||0,   note: "완료" },
+  ];
+
+  return `
+    <section class="panel" style="margin-bottom:16px;">
+      <div class="panel-body" style="padding:14px 18px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;">
+          ${metrics.map(m => {
+            const pct = m.outOf ? Math.round(m.val / m.outOf * 100) : null;
+            const done = pct === 100;
+            const color = done ? "var(--green)" : pct > 0 ? "var(--primary)" : "var(--muted)";
+            return `<div style="background:var(--surface-2);border-radius:10px;padding:12px 14px;">
+              <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;">${m.label}</div>
+              <div style="font-size:20px;font-weight:800;color:${color};">
+                ${m.outOf !== null ? `${m.val}<span style="font-size:13px;font-weight:400;color:var(--muted);">/${m.outOf}</span>` : `${m.val}명`}
+              </div>
+              ${pct !== null ? `
+                <div class="bar" style="margin-top:6px;height:5px;"><span style="width:${pct}%;background:${color};"></span></div>
+                <div style="text-align:right;font-size:11px;font-weight:700;color:${color};margin-top:2px;">${pct}%</div>
+              ` : `<div style="font-size:11px;color:var(--muted);margin-top:4px;">${m.note}</div>`}
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderAdminHome() {
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers(cycle);
+  const evaluatees = allUsers.filter(isEvaluatee);
+  const total = evaluatees.length;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // ── 단계별 진행률 계산 ──
+  const upwardAssigns = getUpwardAssignments ? getUpwardAssignments() : [];
+  const peerAssigns   = getPeerAssignments   ? getPeerAssignments()   : [];
+  const firstTargets = evaluatees.filter(e => e.evaluator1Id);
+  const secondTargets = evaluatees.filter(e => e.evaluator2Id);
+  const stages = [
+    { label: "자기평가",  done: evaluatees.filter(e => evaluations()[e.id]?.status?.self === "submitted").length, total },
+    { label: "1차 평가",  done: firstTargets.filter(e => evaluations()[e.id]?.status?.first === "completed").length, total: firstTargets.length },
+    { label: "2차 평가",  done: secondTargets.filter(e => evaluations()[e.id]?.status?.second === "completed").length, total: secondTargets.length },
+    { label: "상향평가",  done: upwardAssigns.filter(a => isCompletedStatus(a.status)).length, total: upwardAssigns.length },
+    { label: "동료평가",  done: peerAssigns.filter(a => isCompletedStatus(a.status)).length,   total: peerAssigns.length },
+  ];
+
+  // ── 평가 일정 ──
+  const schedule = [
+    { label: "자기평가",   start: cycle.selfStart,     end: cycle.selfEnd },
+    { label: "1차 평가",   start: cycle.firstStart,    end: cycle.firstEnd },
+    { label: "2차 평가",   start: cycle.secondStart,   end: cycle.secondEnd },
+    { label: "상향평가",   start: cycle.upwardStart,   end: cycle.upwardEnd },
+    { label: "동료평가",   start: cycle.peerStart,     end: cycle.peerEnd },
+    { label: "등급 확정",  start: cycle.gradeStart,    end: cycle.gradeEnd },
+    { label: "피드백 공개",start: cycle.feedbackStart, end: cycle.feedbackEnd },
+  ];
+
+  const progressCards = stages.map(s => {
+    const pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+    const color = pct === 100 ? "var(--green)" : pct > 0 ? "var(--primary)" : "var(--line)";
+    return `
+      <div class="admin-progress-card">
+        <div class="admin-progress-top">
+          <span class="admin-progress-label">${s.label}</span>
+          <span class="admin-progress-count" style="color:${color};">${s.done}<span style="color:var(--muted);font-weight:400;">/${s.total}</span></span>
+        </div>
+        <div class="bar" style="height:6px;margin-top:6px;">
+          <span style="width:${pct}%;background:${color};"></span>
+        </div>
+        <div style="text-align:right;font-size:11px;color:${color};font-weight:700;margin-top:3px;">${pct}%</div>
+      </div>`;
+  }).join("");
+
+  const scheduleRows = schedule.map(s => {
+    const active = isDateInRange(s.start, s.end);
+    const past   = s.end && s.end < today;
+    const upcoming = s.start && s.start > today;
+    let badge = "";
+    if (active) badge = `<span class="pill green" style="font-size:11px;">진행중</span>`;
+    else if (past) badge = `<span class="pill" style="background:var(--line);font-size:11px;color:var(--muted);">완료</span>`;
+    else if (upcoming) badge = `<span class="pill" style="background:var(--surface-2);font-size:11px;color:var(--muted);">예정</span>`;
+    return `
+      <div class="schedule-row ${active ? "active" : past ? "past" : ""}">
+        <div class="schedule-label">${s.label}</div>
+        <div class="schedule-dates">${esc(s.start||"-")} ~ ${esc(s.end||"-")}</div>
+        <div>${badge}</div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="grid">
+      ${renderAdminProgressSummaryInner(cycle, total, progressCards, scheduleRows)}
+    </div>
+  `;
+}
+
+// ── 평가 운영 대시보드 (C레벨 보고용) ────────────────────────────────
+function renderEvalDashboard() {
+  const cycle = runningCycle();
+  if (!cycle) return `<section class="panel"><div class="panel-body"><div class="empty">현재 진행 중인 평가 사이클이 없습니다.</div></div></section>`;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const allUsers = cycleUsers(cycle);
+  const evaluatees = allUsers.filter(isEvaluatee);
+  const total = evaluatees.length;
+
+  const upwardAssigns = (getUpwardAssignments ? getUpwardAssignments() : []);
+  const peerAssigns   = (getPeerAssignments   ? getPeerAssignments()   : []);
+
+  const selfDone    = evaluatees.filter(e => evaluations()[e.id]?.status?.self === "submitted").length;
+  const firstTotal  = evaluatees.filter(e => e.evaluator1Id).length;
+  const firstDone   = evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first === "completed").length;
+  const secondTotal = evaluatees.filter(e => e.evaluator2Id).length;
+  const secondDone  = evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second === "completed").length;
+  const upTotal  = upwardAssigns.length;
+  const upDone   = upwardAssigns.filter(a => isCompletedStatus(a.status)).length;
+  const peerTotal = peerAssigns.length;
+  const peerDone  = peerAssigns.filter(a => isCompletedStatus(a.status)).length;
+
+  const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
+  const selfPct   = pct(selfDone, total);
+  const firstPct  = pct(firstDone, firstTotal);
+  const secondPct = pct(secondDone, secondTotal);
+  const upPct     = pct(upDone, upTotal);
+  const peerPct   = pct(peerDone, peerTotal);
+
+  // 승인 단계 파악
+  const submissions = cycle.resultSubmissions || {};
+  const presidentDone = Boolean(submissions["approval:president"]?.submitted);
+  const chairmanDone  = Boolean(submissions["approval:chairman"]?.submitted);
+  const approvalStatus = chairmanDone ? "최종 확정 완료" : presidentDone ? "2차 승인 진행중" : "1차 승인 진행중";
+  const approvalColor  = chairmanDone ? "var(--green)" : presidentDone ? "var(--orange)" : "var(--amber)";
+
+  // 결과 공개 상태
+  const resultVisible = cycle.resultsVisible;
+  const resultStatus  = resultVisible ? "공개" : "비공개";
+  const resultColor   = resultVisible ? "var(--green)" : "var(--muted)";
+  const resultNote    = resultVisible ? "구성원에게 결과 공개 중" : "최종 확정 후 공개 예정";
+
+  // 평가 일정 현재 단계
+  const stages = [
+    { label: "자기평가",   start: cycle.selfStart,     end: cycle.selfEnd },
+    { label: "1차 평가",   start: cycle.firstStart,    end: cycle.firstEnd },
+    { label: "2차 평가",   start: cycle.secondStart,   end: cycle.secondEnd },
+    { label: "상향평가",   start: cycle.upwardStart,   end: cycle.upwardEnd },
+    { label: "동료평가",   start: cycle.peerStart,     end: cycle.peerEnd },
+    { label: "등급 확정",  start: cycle.gradeStart,    end: cycle.gradeEnd },
+    { label: "피드백 공개",start: cycle.feedbackStart, end: cycle.feedbackEnd },
+  ];
+  const activeStages = stages.filter(s => s.start && isDateInRange(s.start, s.end));
+  const currentStageLabel = activeStages.length ? activeStages.map(s => s.label).join(" · ") : "일정 외 기간";
+
+  // 메트릭 카드 헬퍼
+  const dotColor = (p) => p === 100 ? "green" : p >= 70 ? "blue" : p >= 30 ? "orange" : "red";
+
+  const metricCard = (label, value, note, dot, borderColor = "") => `
+    <div class="evd-card" style="${borderColor ? `border-top:3px solid ${borderColor};` : ""}">
+      <span class="evd-dot ${dot}"></span>
+      <div class="evd-label">${label}</div>
+      <div class="evd-value">${value}</div>
+      <div class="evd-note">${note}</div>
+    </div>`;
+
+  const pctCard = (label, done, total_, dot) => {
+    const p = pct(done, total_);
+    const remain = total_ - done;
+    return metricCard(label,
+      `<span style="color:${p===100?'var(--green)':p>=70?'var(--primary)':p>=30?'var(--orange)':'var(--red)'};">${p}<span style="font-size:16px;font-weight:500;">%</span></span>`,
+      total_ ? `완료 ${done}/${total_}명 · 미완료 ${remain}명` : "대상자 없음",
+      dot || dotColor(p)
+    );
+  };
+
+  // 평가 단계별 진행 바
+  const stageBar = (label, done, tot) => {
+    const p = pct(done, tot);
+    const color = p===100?'var(--green)':p>=70?'var(--primary)':p>=30?'var(--orange)':'var(--red)';
+    if (!tot) return "";
+    return `
+      <div class="evd-stage-row">
+        <div class="evd-stage-label">${label}</div>
+        <div class="evd-stage-bar-wrap">
+          <div class="evd-stage-bar"><span style="width:${p}%;background:${color};"></span></div>
+        </div>
+        <div class="evd-stage-stat" style="color:${color};">${done}<span class="evd-stage-total">/${tot}</span></div>
+        <div class="evd-stage-pct" style="color:${color};">${p}%</div>
+      </div>`;
+  };
+
+  const overallPct = total ? pct(
+    Math.round((selfDone + firstDone + secondDone) / (total + firstTotal + secondTotal) * 100),
+    100
+  ) : 0;
+  const overallReal = (total + firstTotal + secondTotal) ?
+    Math.round((selfDone + firstDone + secondDone) / (total + firstTotal + secondTotal) * 100) : 0;
+
+  return `
+    <!-- 헤더 요약 배너 -->
+    <div class="evd-banner">
+      <div class="evd-banner-left">
+        <div class="evd-banner-label">DASHBOARD</div>
+        <div class="evd-banner-title">${esc(cycle.name)}</div>
+        <div class="evd-banner-sub">평가 기간: ${esc(cycle.selfStart||"?")} ~ ${esc(cycle.feedbackEnd||cycle.gradeEnd||"?")}</div>
+      </div>
+      <div class="evd-banner-right">
+        <div class="evd-summary-card">
+          <div class="evd-summary-label">평가 일정</div>
+          <div class="evd-summary-value">${esc(cycle.name)}</div>
+          <span class="evd-summary-badge" style="background:var(--green-lt);color:var(--green);border-color:#a7f3d0;">${esc(currentStageLabel)}</span>
+        </div>
+        <div class="evd-summary-card">
+          <div class="evd-summary-label">승인 상태</div>
+          <div class="evd-summary-value" style="font-size:13px;">${esc(approvalStatus)}</div>
+          <span class="evd-summary-badge" style="background:var(--amber-lt);color:${approvalColor};border-color:var(--orange-mid);">${chairmanDone?"완료":presidentDone?"확인":"진행"}</span>
+        </div>
+        <div class="evd-summary-card">
+          <div class="evd-summary-label">결과 공개</div>
+          <div class="evd-summary-value">${esc(resultStatus)}</div>
+          <span class="evd-summary-badge" style="background:${resultVisible?'var(--green-lt)':'var(--surface-2)'};color:${resultColor};border-color:${resultVisible?'#a7f3d0':'var(--line)'};">${resultVisible?"정상":"대기"}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 핵심 지표 카드 2열 -->
+    <div class="evd-metrics-grid">
+      ${metricCard("평가대상자 수",
+        `<span style="color:var(--primary);">${total}<span style="font-size:16px;font-weight:500;">명</span></span>`,
+        `총 ${allUsers.length}명 중 피평가자`, "blue", "")}
+      ${pctCard("자기평가 완료율", selfDone, total)}
+      ${pctCard("1차 평가 완료율", firstDone, firstTotal)}
+      ${pctCard("2차 평가 완료율", secondDone, secondTotal)}
+      ${pctCard("상향평가 응답률", upDone, upTotal || 1)}
+      ${pctCard("동료평가 응답률", peerDone, peerTotal || 1)}
+      ${metricCard("승인 진행",
+        `<span style="color:${approvalColor};font-size:15px;font-weight:700;">${esc(approvalStatus)}</span>`,
+        chairmanDone?"최종 확정 완료":presidentDone?"2차 승인 대기중":"1차 승인 진행중",
+        chairmanDone?"green":presidentDone?"orange":"amber")}
+      ${metricCard("결과 공개 상태",
+        `<span style="color:${resultColor};font-size:18px;font-weight:700;">${esc(resultStatus)}</span>`,
+        resultNote,
+        resultVisible?"green":"amber")}
+    </div>
+
+    <!-- 단계별 진행 현황 바 -->
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-head" style="padding-bottom:14px;">
+        <div>
+          <h2>단계별 진행 현황</h2>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:12px;color:var(--muted);font-weight:600;">전체 진행률</span>
+          <span style="font-size:22px;font-weight:800;color:${overallReal>=80?'var(--green)':overallReal>=50?'var(--primary)':'var(--orange)'};">${overallReal}%</span>
+        </div>
+      </div>
+      <div class="panel-body" style="padding-top:0;">
+        <div class="evd-stages">
+          ${stageBar("자기평가",  selfDone,  total)}
+          ${stageBar("1차 평가",  firstDone, firstTotal)}
+          ${stageBar("2차 평가",  secondDone, secondTotal)}
+          ${stageBar("상향평가",  upDone,    upTotal)}
+          ${stageBar("동료평가",  peerDone,  peerTotal)}
+        </div>
+      </div>
+    </div>
+
+    <!-- 평가 일정 타임라인 -->
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-head"><div><h2>평가 일정</h2></div></div>
+      <div class="panel-body">
+        <div class="evd-schedule">
+          ${stages.map(s => {
+            const active  = s.start && isDateInRange(s.start, s.end);
+            const past    = s.end && s.end < today;
+            const upcoming = s.start && s.start > today;
+            const badge = active
+              ? `<span class="pill green" style="font-size:11px;">진행중</span>`
+              : past
+              ? `<span class="pill" style="background:var(--line);font-size:11px;color:var(--muted);">완료</span>`
+              : upcoming
+              ? `<span class="pill" style="font-size:11px;color:var(--muted);">예정</span>`
+              : "";
+            return `
+              <div class="evd-schedule-row ${active?"active":""}">
+                <div class="evd-schedule-dot ${active?"active":past?"past":""}"></div>
+                <div class="evd-schedule-label">${s.label}</div>
+                <div class="evd-schedule-dates">${s.start||"-"} ~ ${s.end||"-"}</div>
+                <div>${badge}</div>
+              </div>`;
+          }).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 진행 현황 요약 카드 + 평가 일정 (평가 진행 현황 메뉴에서 재사용)
+function renderAdminProgressSummary() {
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers(cycle);
+  const evaluatees = allUsers.filter(isEvaluatee);
+  const total = evaluatees.length;
+  const today = new Date().toISOString().slice(0, 10);
+  const upwardAssigns = getUpwardAssignments ? getUpwardAssignments() : [];
+  const peerAssigns   = getPeerAssignments   ? getPeerAssignments()   : [];
+  const firstTargets = evaluatees.filter(e => e.evaluator1Id);
+  const secondTargets = evaluatees.filter(e => e.evaluator2Id);
+  const stages = [
+    { label: "자기평가",  done: evaluatees.filter(e => evaluations()[e.id]?.status?.self === "submitted").length, total },
+    { label: "1차 평가",  done: firstTargets.filter(e => evaluations()[e.id]?.status?.first === "completed").length, total: firstTargets.length },
+    { label: "2차 평가",  done: secondTargets.filter(e => evaluations()[e.id]?.status?.second === "completed").length, total: secondTargets.length },
+    { label: "상향평가",  done: upwardAssigns.filter(a => isCompletedStatus(a.status)).length, total: upwardAssigns.length },
+    { label: "동료평가",  done: peerAssigns.filter(a => isCompletedStatus(a.status)).length,   total: peerAssigns.length },
+  ];
+  const schedule = [
+    { label: "자기평가",   start: cycle.selfStart,     end: cycle.selfEnd },
+    { label: "1차 평가",   start: cycle.firstStart,    end: cycle.firstEnd },
+    { label: "2차 평가",   start: cycle.secondStart,   end: cycle.secondEnd },
+    { label: "상향평가",   start: cycle.upwardStart,   end: cycle.upwardEnd },
+    { label: "동료평가",   start: cycle.peerStart,     end: cycle.peerEnd },
+    { label: "등급 확정",  start: cycle.gradeStart,    end: cycle.gradeEnd },
+    { label: "피드백 공개",start: cycle.feedbackStart, end: cycle.feedbackEnd },
+  ];
+  const progressCards = stages.map(s => {
+    const pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+    const color = pct === 100 ? "var(--green)" : pct > 0 ? "var(--primary)" : "var(--line)";
+    return `<div class="admin-progress-card">
+      <div class="admin-progress-top"><span class="admin-progress-label">${s.label}</span>
+        <span class="admin-progress-count" style="color:${color};">${s.done}<span style="color:var(--muted);font-weight:400;">/${s.total}</span></span></div>
+      <div class="bar" style="height:6px;margin-top:6px;"><span style="width:${pct}%;background:${color};"></span></div>
+      <div style="text-align:right;font-size:11px;color:${color};font-weight:700;margin-top:3px;">${pct}%</div>
+    </div>`;
+  }).join("");
+  const scheduleRows = schedule.map(s => {
+    const active = isDateInRange(s.start, s.end);
+    const past   = s.end && s.end < today;
+    const upcoming = s.start && s.start > today;
+    let badge = "";
+    if (active) badge = `<span class="pill green" style="font-size:11px;">진행중</span>`;
+    else if (past) badge = `<span class="pill" style="background:var(--line);font-size:11px;color:var(--muted);">완료</span>`;
+    else if (upcoming) badge = `<span class="pill" style="background:var(--surface-2);font-size:11px;color:var(--muted);">예정</span>`;
+    return `<div class="schedule-row ${active ? "active" : past ? "past" : ""}">
+      <div class="schedule-label">${s.label}</div><div class="schedule-dates">${esc(s.start||"-")} ~ ${esc(s.end||"-")}</div><div>${badge}</div></div>`;
+  }).join("");
+  return renderAdminProgressSummaryInner(cycle, total, progressCards, scheduleRows);
+}
+
+function renderAdminProgressSummaryInner(cycle, total, progressCards, scheduleRows) {
+  return `
+      <section class="panel">
+        <div class="panel-head"><div><h2>평가 진행 현황</h2><p class="muted">${esc(cycle.name)} · 총 ${total}명</p></div><button class="button secondary sm" onclick="App.injectDummyData()" title="이 사이클에 테스트용 더미 평가 데이터를 채웁니다.">🎲 더미 데이터 주입</button></div>
+        <div class="panel-body"><div class="admin-progress-grid">${progressCards}</div></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>평가 일정</h2><p class="muted">${esc(cycle.name)}</p></div></div>
+        <div class="panel-body"><div class="schedule-list">${scheduleRows}</div></div>
+      </section>`;
+}
+
+function getDashboardScopeUsers(user) {
+  const evaluatees = cycleUsers().filter(isEvaluatee);
+  if (user.role === "teamLead") {
+    return evaluatees.filter((employee) => employee.role === "member" && employee.division === user.division && employee.team === user.team);
+  }
+  if (user.role === "divisionHead") {
+    return evaluatees.filter((employee) => employee.division === user.division);
+  }
+  return evaluatees;
+}
+
+function getDashboardScopeLabel(user) {
+  if (user.role === "teamLead") return "내 팀 팀원 기준";
+  if (user.role === "divisionHead") return "내 본부 구성원 기준";
+  return "전체 평가 대상 기준";
+}
+
+function renderDashboardTodos(user, tasks) {
+  const notices = [];
+  const ownEvaluation = evaluations()[user.id];
+  const cycle = selectedCycle();
+  if (isEvaluatee(user) && ownEvaluation) {
+    if (ownEvaluation.status.self === "submitted") {
+      notices.push(`<div class="notice ok">자기평가 제출을 완료했습니다.</div>`);
+    } else if (canEditStage("self")) {
+      notices.push(`<button class="task-row alert" onclick="App.setTab('self')"><strong>자기평가를 작성해야 합니다.</strong><span>${esc(cycle.selfEnd)}까지 제출해 주세요.</span></button>`);
+    } else {
+      notices.push(`<div class="notice">자기평가 가능 기간은 ${esc(cycle.selfStart)} ~ ${esc(cycle.selfEnd)}입니다.</div>`);
+    }
+    if (canPublishFeedback() && canShowReleasedResults() && ownEvaluation.published) {
+      notices.push(`<button class="task-row alert" onclick="App.setTab('report')"><strong>평가 리포트를 확인해 주세요.</strong><span>피드백 공개 기간입니다.</span></button>`);
+    }
+  }
+  dashboardTaskAlerts(tasks).forEach((item) => notices.push(item));
+  if (user.role === "divisionHead") {
+    const submission = cycle.resultSubmissions?.[resultSubmissionScopeKey(user)];
+    if (!submission?.submitted && isDateInRange(cycle.gradeStart, cycle.gradeEnd)) {
+      notices.push(`<button class="task-row alert" onclick="App.setTab('resultSubmit')"><strong>종합평가를 진행해야 합니다.</strong><span>${esc(cycle.gradeEnd)}까지 완료해 주세요.</span></button>`);
+    }
+  }
+  const taskMarkup = tasks.length ? `<div class="task-list">${tasks.slice(0, 8).map((task) => renderTaskButton(task, "")).join("")}</div>` : "";
+  if (!notices.length && !taskMarkup) return `<div class="empty">현재 처리할 일이 없습니다.</div>`;
+  return `<div class="grid">${notices.join("")}${taskMarkup}</div>`;
+}
+
+function dashboardTaskAlerts(tasks) {
+  const cycle = selectedCycle();
+  const stageEnd = { first: cycle.firstEnd, second: cycle.secondEnd, upward: cycle.upwardEnd, peer: cycle.peerEnd };
+  const grouped = tasks
+    .filter((task) => !isCompletedStatus(task.status))
+    .reduce((acc, task) => {
+      acc[task.stage] = acc[task.stage] || [];
+      acc[task.stage].push(task);
+      return acc;
+    }, {});
+  return Object.entries(grouped).map(([stage, items]) => {
+    const label = stage === "upward" ? "상향평가" : stage === "peer" ? "동료평가" : STAGE_LABELS[stage];
+    return `<button class="task-row alert" onclick="App.setTab('tasks')"><strong>${label} ${items.length}건을 완료해야 합니다.</strong><span>${esc(stageEnd[stage] || "")}까지 완료해 주세요.</span></button>`;
+  });
+}
+
+function renderMetric(label, value, help) {
+  return `<section class="panel metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(help)}</small></section>`;
+}
+
+function renderCycleTimeline(cycle) {
+  const phases = [
+    ["자기평가", cycle.selfStart, cycle.selfEnd],
+    ["1차 평가", cycle.firstStart, cycle.firstEnd],
+    ["2차 평가", cycle.secondStart, cycle.secondEnd],
+    ["상향평가", cycle.upwardStart, cycle.upwardEnd],
+    ["동료평가", cycle.peerStart, cycle.peerEnd],
+    ["등급 확정", cycle.gradeStart, cycle.gradeEnd],
+    ["피드백 공개", cycle.feedbackStart, cycle.feedbackEnd],
+  ];
+  return `
+    <div class="phase-grid">
+      ${phases
+        .map(([label, start, end]) => {
+          const active = isDateInRange(start, end);
+          return `<div class="phase ${active ? "active" : ""}"><strong>${esc(label)}</strong><span>${esc(start)} ~ ${esc(end)}</span></div>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderDashboardSchedule(user) {
+  const cycle = selectedCycle();
+  const allPhases = {
+    self: ["자기평가", cycle.selfStart, cycle.selfEnd],
+    first: ["1차 평가", cycle.firstStart, cycle.firstEnd],
+    second: ["2차 평가", cycle.secondStart, cycle.secondEnd],
+    upward: ["상향평가", cycle.upwardStart, cycle.upwardEnd],
+    peer: ["동료평가", cycle.peerStart, cycle.peerEnd],
+    grade: ["등급 확정", cycle.gradeStart, cycle.gradeEnd],
+    feedback: ["피드백 공개", cycle.feedbackStart, cycle.feedbackEnd],
+  };
+  const keysByRole = {
+    member: ["self", "upward", "peer"],
+    teamLead: ["self", "first", "upward", "peer"],
+    divisionHead: ["self", "first", "second", "upward", "peer", "grade"],
+    president: ["first", "second", "grade", "feedback"],
+    chairman: ["first", "second", "grade", "feedback"],
+  };
+  const keys = keysByRole[user.role] || Object.keys(allPhases);
+  const phases = keys.map((key) => allPhases[key]);
+  return `
+    <div class="phase-grid">
+      ${phases
+        .map(([label, start, end]) => {
+          const active = isDateInRange(start, end);
+          return `<div class="phase ${active ? "active" : ""}"><strong>${esc(label)}</strong><span>${esc(start)} ~ ${esc(end)}</span></div>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderGoalLinkPickerModal(user) {
+  const gcycle = activeGoalCycle();
+  const allCycleGoals = gcycle ? state.goals.filter(g => g.cycleId === gcycle.id) : [];
+  const pickerType = state.ui.goalLinkPicker.type || "personal"; // "personal" | "team"
+
+  // 개인 목표: 내가 소유
+  const myGoals = allCycleGoals.filter(g => g.ownerId === user.id);
+  // 팀 목표: 내가 소속된 팀의 팀 레벨 목표만
+  const teamGoals = allCycleGoals.filter(g =>
+    g.ownerId !== user.id &&
+    g.level === "team" &&
+    user.team && g.team === user.team
+  );
+
+  const { prefix, index } = state.ui.goalLinkPicker;
+  const goalRow = (g) => `
+    <button class="goal-link-row" onclick="App.linkGoalToAchievement('${prefix}', ${index}, '${g.id}', '${pickerType}')">
+      <div style="text-align:left;">
+        <strong style="color:var(--primary);">${esc(g.title)}</strong>
+        <div class="muted" style="font-size:11px;margin-top:2px;">${GOAL_LEVEL_LABELS[g.level]||""} · ${esc(g.team||g.division||"")} · ${goalStatusBadge(g.status)}</div>
+      </div>
+      <span style="color:var(--primary);">연결 →</span>
+    </button>`;
+
+  const isPersonal = pickerType === "personal";
+  const goals = isPersonal ? myGoals : teamGoals;
+  const emptyMsg = isPersonal
+    ? "연결할 개인 목표가 없습니다.<br/>목표 관리 탭에서 먼저 목표를 만들어 주세요."
+    : "연결할 팀 목표가 없습니다.";
+  const title = isPersonal ? "👤 업적 목표 선택 (개인 목표)" : "🏢 기여한 목표 선택 (팀 목표)";
+
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeGoalLinkPicker()">
+      <div class="goal-modal">
+        <div class="goal-modal-head"><h2>${title}</h2><button onclick="App.closeGoalLinkPicker()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button></div>
+        <div class="goal-modal-body">
+          <p class="muted" style="font-size:12px;">${gcycle ? `목표 사이클 '${esc(gcycle.name)}'의 ${isPersonal ? "개인" : "팀"} 목표를 선택합니다.` : "활성 목표 사이클이 없습니다."}</p>
+          ${goals.length ? goals.map(goalRow).join("") : `<div class="empty" style="padding:24px;">${emptyMsg}</div>`}
+        </div>
+        <div class="goal-modal-foot"><button class="button secondary" onclick="App.closeGoalLinkPicker()">닫기</button></div>
+      </div>
+    </div>`;
+}
+
+function renderSelfReview(user) {
+  if (!isEvaluatee(user)) return `<div class="empty">이 계정은 자기평가 작성 대상이 아닙니다.</div>`;
+  const cycle = selectedCycle();
+  const evaluation = evaluations()[user.id];
+  const allowed = canEditStage("self");
+  const lockedByFirst = evaluation.status.first === "completed";
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>${esc(user.name)} 자기평가</h2>
+        </div>
+        ${stageStatusBadge(evaluation.status.self)}
+      </div>
+      <div class="panel-body grid">
+        ${lockedByFirst ? `<div class="notice warn">1차 평가가 완료되어 자기평가 내용을 변경할 수 없습니다.</div>` : allowed ? "" : `<div class="notice warn">${esc(periodMessage("self", cycle))}</div>`}
+        <fieldset ${lockedByFirst ? "disabled" : ""} style="border:none;padding:0;margin:0;">
+          ${renderEvaluationForm("self", evaluation.self, user, "self")}
+        </fieldset>
+        <div class="toolbar">
+          <button class="button secondary" ${lockedByFirst ? "disabled" : ""} onclick="App.saveSelf(false)">임시 저장</button>
+          <button class="button" ${allowed && !lockedByFirst ? "" : "disabled"} onclick="App.saveSelf(true)">제출하기</button>
+          ${evaluation.status.self === "submitted" ? '<span class="pill green">제출완료</span>' : ""}
+        </div>
+      </div>
+    </section>
+    ${state.ui.goalLinkPicker ? renderGoalLinkPickerModal(user) : ""}
+  `;
+}
+
+function getSelfFlowText(user) {
+  if (user.role === "member") return "제출 후 지정된 1차 평가자와 2차 평가자가 순차적으로 평가합니다.";
+  if (user.role === "teamLead") return "팀장은 자기평가를 제출한 뒤 지정된 1차/2차 평가자가 평가합니다.";
+  return "본부장은 자기평가를 제출한 뒤 지정된 1차/2차 평가자가 평가합니다.";
+}
+
+function renderEvaluationForm(prefix, review, employee, mode) {
+  if (prefix !== "self") {
+    return `
+      <div class="eval-stack">
+        ${COMPONENTS.map((component) => renderComponentForm(prefix, component, review[component], employee, mode)).join("")}
+      </div>
+    `;
+  }
+  const performanceForm = renderComponentForm(prefix, "performance", review.performance, employee, mode);
+  const scaleForms = ["competency", "attitude"].map((component) => renderComponentForm(prefix, component, review[component], employee, mode)).join("");
+  return `
+    <div class="eval-stack eval-stack-split">
+      <div class="eval-column">${performanceForm}</div>
+      <div class="eval-column eval-column-stacked">${scaleForms}</div>
+    </div>
+  `;
+}
+
+function renderComponentForm(prefix, component, data, employee, mode) {
+  const template = templateFor(employee, component);
+  if (component === "performance") return renderPerformanceForm(prefix, data, template, mode, employee);
+  return renderScaleItemForm(prefix, component, data, template, mode);
+}
+
+function isLeaderRole(employee) {
+  return employee && (employee.role === "teamLead" || employee.role === "divisionHead");
+}
+
+function renderPerformanceForm(prefix, data, template, mode, employee) {
+  const leaderMode = isLeaderRole(employee);
+  const achievements = data.achievements?.length ? data.achievements : [{ name: "", goal: "", achievementLevel: "", detail: data.detail || "", weight: 100, score: data.score || "", grade: data.grade || "" }];
+  const weightTotal = achievements.reduce((total, item) => total + Number(item.weight || 0), 0);
+  return `
+    <section class="eval-section eval-section-performance">
+      <div class="eval-section-head">
+        <h3>${esc(COMPONENT_LABELS.performance)}<span>*</span></h3>
+        <div class="guide-box">${nl2br(template.guide)}</div>
+      </div>
+      ${achievements
+        .map((item, index) => {
+          const scoreId = `${prefix}_performance_ach_${index}_score`;
+          if (mode !== "self") {
+            const evalLinkedGoal = item.linkedGoalId ? state.goals.find(g => g.id === item.linkedGoalId) : null;
+            const evalLinkedTeamGoal = item.linkedTeamGoalId ? state.goals.find(g => g.id === item.linkedTeamGoalId) : null;
+            const isSecond = mode === "second";
+            // 연결된 목표 인라인 카드 헬퍼
+            const goalInlineCard = (goal, label, hideCheckins) => {
+              if (!goal) return "";
+              const prog = computeGoalProgress(goal);
+              const m = goal.metric;
+              const metricLine = m ? `<span style="font-size:11px;color:var(--muted);">${esc(m.name || "지표")}: ${m.currentValue} / ${m.targetValue} (${prog}% 달성)</span>` : `<span style="font-size:11px;color:var(--muted);">진행률: ${prog}%</span>`;
+              return `<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0 4px;display:flex;flex-direction:column;gap:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-size:11px;font-weight:600;color:var(--muted);">${esc(label)}</span>
+                  <button class="button sm ghost" onclick="App.showGoalPanel('${goal.id}', ${hideCheckins})" style="font-size:11px;">상세 보기</button>
+                </div>
+                <strong style="font-size:13px;">${esc(goal.title)}</strong>
+                ${metricLine}
+              </div>`;
+            };
+            const personalGoalCard = goalInlineCard(evalLinkedGoal, "🎯 업적 목표", false);
+            const teamGoalCard = goalInlineCard(evalLinkedTeamGoal, "🏢 기여한 팀 목표", false);
+            return `
+              <div class="achievement-card evaluator-achievement">
+                <div class="toolbar" style="justify-content: space-between;">
+                  <strong>업적 ${index + 1}</strong>
+                  <div class="toolbar">
+                    <span class="pill blue">${esc(employee?.name || "피평가자")} 제출 내용</span>
+                  </div>
+                </div>
+                <input id="${prefix}_performance_ach_${index}_name" type="hidden" value="${esc(item.name || "")}" />
+                <input id="${prefix}_performance_ach_${index}_goal" type="hidden" value="${esc(item.goal || "")}" />
+                <input id="${prefix}_performance_ach_${index}_achievementLevel" type="hidden" value="${esc(item.achievementLevel || "")}" />
+                <input id="${prefix}_performance_ach_${index}_detail" type="hidden" value="${esc(item.detail || "")}" />
+                <input id="${prefix}_performance_ach_${index}_linkedGoalId" type="hidden" value="${esc(item.linkedGoalId || "")}" />
+                <input id="${prefix}_performance_ach_${index}_linkedTeamGoalId" type="hidden" value="${esc(item.linkedTeamGoalId || "")}" />
+                <div class="readonly-performance">
+                  ${leaderMode ? `
+                    <div><span>사업목표</span><strong>${esc(item.name || "-")}</strong></div>
+                    ${personalGoalCard}
+                    <div><span>목표수준</span><p>${nl2br(item.goal || "-")}</p></div>
+                    <div><span>달성수준</span><p>${nl2br(item.achievementLevel || "-")}</p></div>
+                    <div><span>달성내용</span><p>${nl2br(item.detail || "-")}</p></div>
+                  ` : `
+                    <div><span>업적 이름</span><strong>${esc(item.name || "-")}</strong></div>
+                    ${personalGoalCard}
+                    ${teamGoalCard}
+                    <div><span>주요 업무 실적 및 상세 내용</span><p>${nl2br(item.detail || "-")}</p></div>
+                  `}
+                  ${template.useWeight ? `
+                    <div style="margin-top:8px;display:flex;align-items:center;gap:10px;">
+                      <span style="font-size:12px;color:var(--muted);">업적 가중치</span>
+                      ${isSecond
+                        ? `<strong style="font-size:14px;">${esc(item.weight ?? 0)}%</strong><input id="${prefix}_performance_ach_${index}_weight" type="hidden" value="${esc(item.weight ?? 0)}" />`
+                        : `<input id="${prefix}_performance_ach_${index}_weight" type="number" min="0" max="100" value="${esc(item.weight ?? 0)}" style="width:72px;" onchange="App.updateEvalWeightNotice('${prefix}')" />`
+                      }
+                    </div>
+                  ` : `<input id="${prefix}_performance_ach_${index}_weight" type="hidden" value="${esc(item.weight ?? 0)}" />`}
+                </div>
+                ${renderGradePicker(scoreId, item.score, template.grades)}
+              </div>
+            `;
+          }
+          const linkedGoal = item.linkedGoalId ? state.goals.find(g => g.id === item.linkedGoalId) : null;
+          const linkedTeamGoal = item.linkedTeamGoalId ? state.goals.find(g => g.id === item.linkedTeamGoalId) : null;
+          return `
+            <div class="achievement-card">
+              <div class="toolbar" style="justify-content: space-between;">
+                <strong>업적 ${index + 1}</strong>
+                <div class="toolbar">
+                  ${!leaderMode ? `
+                    ${linkedGoal
+                      ? `<button class="button sm secondary" onclick="App.showGoalPanel('${linkedGoal.id}', false)">🎯 업적 목표 보기</button><button class="button sm ghost" onclick="App.unlinkGoalFromAchievement('${prefix}', ${index}, 'personal')">연결 해제</button>`
+                      : `<button class="button sm secondary" onclick="App.openGoalLinkPicker('${prefix}', ${index}, 'personal')">🎯 업적 목표 연결하기</button>`}
+                    ${linkedTeamGoal
+                      ? `<button class="button sm secondary" onclick="App.showGoalPanel('${linkedTeamGoal.id}', true)">🏢 기여 목표 보기</button><button class="button sm ghost" onclick="App.unlinkGoalFromAchievement('${prefix}', ${index}, 'team')">연결 해제</button>`
+                      : `<button class="button sm secondary" onclick="App.openGoalLinkPicker('${prefix}', ${index}, 'team')">🏢 기여한 목표 연결하기</button>`}
+                  ` : `
+                    ${linkedGoal
+                      ? `<button class="button sm secondary" onclick="App.showGoalPanel('${linkedGoal.id}', false)">🎯 연결된 목표 보기</button><button class="button sm ghost" onclick="App.unlinkGoalFromAchievement('${prefix}', ${index}, 'personal')">연결 해제</button>`
+                      : `<button class="button sm secondary" onclick="App.openGoalLinkPicker('${prefix}', ${index}, 'personal')">🎯 목표 연결하기</button>`}
+                  `}
+                  ${achievements.length > 1 ? `<button class="icon-button" onclick="App.removeAchievement('${prefix}', ${index})" title="삭제">×</button>` : ""}
+                </div>
+              </div>
+              <input id="${prefix}_performance_ach_${index}_linkedGoalId" type="hidden" value="${esc(item.linkedGoalId || "")}" />
+              <input id="${prefix}_performance_ach_${index}_linkedTeamGoalId" type="hidden" value="${esc(item.linkedTeamGoalId || "")}" />
+              ${linkedGoal ? `<div class="notice" style="font-size:12px;background:var(--primary-lt);border-color:var(--primary-mid);margin-bottom:4px;">🎯 연결된 업적 목표: <strong>${esc(linkedGoal.title)}</strong></div>` : ""}
+              ${linkedTeamGoal ? `<div class="notice" style="font-size:12px;background:var(--surface-2);border-color:var(--line);margin-bottom:8px;">🏢 연결된 팀 목표: <strong>${esc(linkedTeamGoal.title)}</strong></div>` : ""}
+              ${leaderMode ? `
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_name">사업목표*</label>
+                  <input id="${prefix}_performance_ach_${index}_name" value="${esc(item.name || "")}" placeholder="예) OO 사업 매출 목표 달성" />
+                </div>
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_goal">목표수준</label>
+                  <textarea id="${prefix}_performance_ach_${index}_goal" placeholder="지표명, 목표 값 등 목표 수준을 작성하세요.">${esc(item.goal || "")}</textarea>
+                </div>
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_achievementLevel">달성수준</label>
+                  <textarea id="${prefix}_performance_ach_${index}_achievementLevel" placeholder="현재 달성한 수준(수치, 진행률 등)을 작성하세요.">${esc(item.achievementLevel || "")}</textarea>
+                </div>
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_detail">달성내용</label>
+                  <textarea id="${prefix}_performance_ach_${index}_detail" placeholder="달성 과정과 내용을 구체적으로 작성하세요.">${esc(item.detail || "")}</textarea>
+                </div>
+              ` : `
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_name">업적 이름*</label>
+                  <input id="${prefix}_performance_ach_${index}_name" value="${esc(item.name || "")}" placeholder="직접 입력하거나 🎯 업적 목표 연결하기로 연결하세요." />
+                </div>
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_goal">기여한 목표</label>
+                  <input id="${prefix}_performance_ach_${index}_goal" value="${esc(item.goal || "")}" placeholder="직접 입력하거나 🏢 기여한 목표 연결하기로 연결하세요." />
+                </div>
+                <input id="${prefix}_performance_ach_${index}_achievementLevel" type="hidden" value="${esc(item.achievementLevel || "")}" />
+                <div class="field">
+                  <label for="${prefix}_performance_ach_${index}_detail">주요 업무 실적 및 상세 내용</label>
+                  <textarea id="${prefix}_performance_ach_${index}_detail" placeholder="업적을 달성하여 목표에 어떤 기여를 하였는지 작성하세요.">${esc(item.detail || "")}</textarea>
+                </div>
+              `}
+              ${
+                template.useWeight
+                  ? `<div class="field compact-field"><label for="${prefix}_performance_ach_${index}_weight">업적 가중치</label><input id="${prefix}_performance_ach_${index}_weight" type="number" min="0" max="100" value="${esc(item.weight ?? 100)}" onchange="App.updateEvalWeightNotice('${prefix}')" /></div>`
+                  : ""
+              }
+              ${renderGradePicker(scoreId, item.score, template.grades)}
+            </div>
+          `;
+        })
+        .join("")}
+      ${mode === "self" ? (() => {
+        const maxAch = Number(state.maxAchievements || 0);
+        if (maxAch > 0 && achievements.length >= maxAch) {
+          return `<div class="notice" style="font-size:12px;">업적은 최대 ${maxAch}개까지 추가할 수 있습니다.</div>`;
+        }
+        return `<button class="add-box" onclick="App.addAchievement('${prefix}')">업적 추가${maxAch > 0 ? ` (${achievements.length}/${maxAch})` : ""}</button>`;
+      })() : ""}
+      ${template.useWeight ? `<div id="${prefix}_weight_notice" class="notice ${weightTotal === 100 ? "ok" : "warn"}">업적 가중치 합계는 100이어야 합니다. 현재 합계: <strong id="${prefix}_weight_total">${esc(weightTotal)}</strong>%</div>` : ""}
+      <input id="${prefix}_performance_score" type="hidden" value="${esc(data.score || "")}" />
+      ${
+        mode === "self"
+          ? ""
+          : `<div class="field">
+              <label for="${prefix}_performance_comment">업적평가 평가 의견*</label>
+              <textarea id="${prefix}_performance_comment">${esc(data.comment || "")}</textarea>
+            </div>`
+      }
+    </section>
+  `;
+}
+
+function renderScaleItemForm(prefix, component, data, template, mode) {
+  return `
+    <section class="eval-section eval-section-${component}">
+      <div class="eval-section-head">
+        <h3>${esc(COMPONENT_LABELS[component])}<span>*</span></h3>
+        <div class="guide-box">${nl2br(template.guide)}</div>
+      </div>
+      ${template.items
+        .map((item, index) => {
+          const itemScore = data.itemScores?.[index] ?? "";
+          const scoreId = `${prefix}_${component}_item_${index}_score`;
+          return `
+            <div class="scale-question">
+              <h4>${esc(item.name)}${item.required ? '<span>*</span>' : ""}</h4>
+              <div class="guide-box small">${esc(item.guide || template.guide || "")}</div>
+              ${renderGradePicker(scoreId, itemScore, template.grades)}
+            </div>
+          `;
+        })
+        .join("")}
+      <input id="${prefix}_${component}_score" type="hidden" value="${esc(data.score || "")}" />
+      <div class="field">
+        <label for="${prefix}_${component}_comment">${mode === "self" ? `${COMPONENT_LABELS[component]} 종합 의견*` : `${COMPONENT_LABELS[component]} 평가 의견*`}</label>
+        <textarea id="${prefix}_${component}_comment">${esc(data.comment || "")}</textarea>
+      </div>
+    </section>
+  `;
+}
+
+function renderGradePicker(inputId, selectedScore, gradeScale) {
+  const selected = Number(selectedScore || -1);
+  return `
+    <input id="${inputId}" type="hidden" value="${esc(selectedScore || "")}" />
+    <div class="grade-picker" data-input="${inputId}">
+      ${GRADES.map((grade) => {
+        const gradeInfo = gradeScale.find((item) => item.grade === grade) || { grade, score: 0, description: "" };
+        const active = Number(gradeInfo.score) === selected;
+        const desc = gradeInfo.description || "";
+        return `<button type="button" class="${active ? "active" : ""}" title="${esc(grade)}${desc ? " · " + esc(desc) : ""}" onclick="App.pickScore(${jsLiteral(inputId)}, ${Number(gradeInfo.score)}, this)">${grade}</button>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderTasks(user) {
+  const tasks = getTasksForUser(user);
+  if (!tasks.length) return `<div class="empty">현재 배정된 평가 작업이 없습니다.</div>`;
+  const selected = tasks.find((task) => task.key === state.ui.selectedTaskKey) || tasks[0];
+  state.ui.selectedTaskKey = selected.key;
+  const mode = state.ui.taskViewMode || "person";
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-body">
+          <div class="segmented">
+            <button class="${mode === "person" ? "active" : ""}" onclick="App.setTaskViewMode('person')">한 명씩 평가</button>
+            <button class="${mode === "question" ? "active" : ""}" onclick="App.setTaskViewMode('question')">문항별 일괄 평가</button>
+          </div>
+        </div>
+      </section>
+      ${
+        mode === "question"
+          ? renderBatchTaskEvaluation(user, tasks)
+          : `<div class="split">
+              <section class="panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>평가 대상</h2>
+                    <p class="muted">${tasks.length}건의 평가 작업</p>
+                  </div>
+                </div>
+                <div class="panel-body">
+                  ${renderTaskList(user, tasks, selected.key)}
+                </div>
+              </section>
+              ${renderTaskDetail(selected)}
+            </div>`
+      }
+    </div>
+  `;
+}
+
+function renderBatchTaskEvaluation(user, tasks) {
+  const normalTasks = tasks.filter((task) => !task.type);
+  const upwardTasks = tasks.filter((task) => task.type === "upward");
+  const peerTasks = tasks.filter((task) => task.type === "peer");
+  const sections = buildBatchQuestionSections(normalTasks, upwardTasks, peerTasks).filter((section) => section.groups.length || section.commentTasks?.length);
+  if (!sections.length) return `<section class="panel"><div class="panel-body"><div class="empty">문항별로 일괄 평가할 대상이 없습니다.</div></div></section>`;
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>문항별 일괄 평가</h2>
+          <p class="muted">역량평가, 자세·태도평가, 상향평가, 동료평가를 평가 종류별로 나누어 여러 명을 한 화면에서 평가합니다.</p>
+        </div>
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.saveBatchTaskScores(false)">일괄 저장</button>
+          <button class="button" onclick="App.saveBatchTaskScores(true)">작성 완료 처리</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${sections.map((section) => renderBatchQuestionSection(section)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function buildBatchQuestionSections(normalTasks, upwardTasks, peerTasks) {
+  const sections = [];
+  ["competency", "attitude"].forEach((component) => {
+    const groups = [];
+    const byTemplate = new Map();
+    normalTasks.forEach((task) => {
+      const template = templateFor(task.employee, component);
+      const key = template.id;
+      if (!byTemplate.has(key)) byTemplate.set(key, { component, template, tasks: [] });
+      byTemplate.get(key).tasks.push(task);
+    });
+    byTemplate.forEach((bucket) => {
+      bucket.template.items.forEach((item, index) => {
+        groups.push({ kind: "normal", ...bucket, item, index });
+      });
+    });
+    sections.push({
+      kind: component,
+      title: COMPONENT_LABELS[component],
+      help: `${COMPONENT_LABELS[component]} 문항별 평가 등급과 평가 의견을 입력합니다.`,
+      groups,
+      commentTasks: normalTasks,
+      commentComponent: component,
+    });
+  });
+  sections.push(buildSpecialBatchSection("upward", "상향평가", upwardTasks));
+  sections.push(buildSpecialBatchSection("peer", "동료평가", peerTasks));
+  return sections;
+}
+
+function buildSpecialBatchSection(kind, title, tasks) {
+  const groups = [];
+  const byTemplate = new Map();
+  tasks.forEach((task) => {
+    const evaluator = cycleUserById(task.assignment.evaluatorId) || userById(task.assignment.evaluatorId);
+    const template = evaluator ? templateForKind(evaluator, kind) : kind === "upward" ? state.upwardTemplate : state.peerTemplate;
+    const key = template.id || kind;
+    if (!byTemplate.has(key)) byTemplate.set(key, { kind, template, tasks: [] });
+    byTemplate.get(key).tasks.push(task);
+  });
+  byTemplate.forEach((bucket) => {
+    bucket.template.items.forEach((item, index) => {
+      groups.push({ ...bucket, item, index });
+    });
+  });
+  return {
+    kind,
+    title,
+    help: `${title} 문항별 평가 등급과 평가 의견을 입력합니다.`,
+    groups,
+    commentTasks: tasks,
+  };
+}
+
+function renderBatchQuestionSection(section) {
+  return `
+    <section class="component-card batch-section batch-section-${section.kind}">
+      <h3>${esc(section.title)}</h3>
+      <p class="muted">${esc(section.help)}</p>
+      <div class="grid">
+        ${section.groups.map((group) => renderBatchQuestionGroup(group)).join("")}
+        ${section.commentTasks?.length ? renderBatchCommentTable(section) : ""}
+      </div>
+    </section>
+  `;
+}
+
+function renderBatchQuestionGroup(group) {
+  const isNormal = group.kind === "normal";
+  return `
+    <details class="org-group batch-question-group" open>
+      <summary>${esc(isNormal ? COMPONENT_LABELS[group.component] : group.kind === "upward" ? "상향평가" : "동료평가")} · 문항 ${group.index + 1} <span>${group.tasks.length}명</span></summary>
+      <div class="guide-box small"><strong>${esc(group.item.name)}</strong><br />${esc(group.item.guide || group.template.guide || "")}</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${isNormal ? "피평가자" : "평가 대상"}</th><th>조직</th>${isNormal ? "<th>자기평가 점수</th>" : ""}<th>평가 등급</th></tr></thead>
+          <tbody>
+            ${group.tasks.sort(compareTasksWithinTeam).map((task) => {
+              const scoreData = batchScoreDataForTask(group, task);
+              return `
+                <tr>
+                  <td><strong>${esc(task.employee.name)}</strong><br /><span class="muted">${esc(task.label)} · ${esc(task.employee.title || "")}</span></td>
+                  <td>${esc(task.employee.division)}<br /><span class="muted">${esc(task.employee.team)}</span></td>
+                  ${isNormal ? `<td class="score">${scoreData.referenceScore || "-"}</td>` : ""}
+                  <td>${renderGradePicker(scoreData.scoreId, scoreData.currentScore ?? "", group.template.grades)}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  `;
+}
+
+function batchScoreDataForTask(group, task) {
+  if (group.kind === "normal") {
+    const evaluation = evaluations()[task.employee.id];
+    const review = evaluation[task.stage];
+    const selfScore = evaluation.self?.[group.component]?.itemScores?.[group.index] ?? "";
+    return {
+      scoreId: `batch_${task.employee.id}_${task.stage}_${group.component}_${group.index}_score`,
+      currentScore: review[group.component]?.itemScores?.[group.index] ?? "",
+      referenceScore: selfScore === "" || selfScore === undefined || selfScore === null ? "" : Number(selfScore).toFixed(0),
+    };
+  }
+  const answer = task.assignment.answer || (group.kind === "upward" ? makeEmptyUpwardAnswer() : makeEmptyPeerAnswer());
+  return {
+    scoreId: `batch_${group.kind}_${task.assignment.id}_${group.index}_score`,
+    currentScore: answer.itemScores?.[group.index] ?? "",
+    referenceScore: "",
+  };
+}
+
+function renderBatchCommentTable(section) {
+  const isNormal = section.kind === "competency" || section.kind === "attitude";
+  return `
+    <details class="org-group batch-comment-group" open>
+      <summary>${esc(section.title)} 평가 의견 <span>${section.commentTasks.length}건</span></summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${isNormal ? "피평가자" : "평가 대상"}</th><th>평가 의견</th></tr></thead>
+          <tbody>
+            ${section.commentTasks.sort(compareTasksWithinTeam).map((task) => {
+              if (isNormal) {
+                const review = evaluations()[task.employee.id][task.stage];
+                return `
+                  <tr>
+                    <td><strong>${esc(task.employee.name)}</strong><br /><span class="muted">${esc(task.label)} · ${esc(task.employee.division)} / ${esc(task.employee.team)}</span></td>
+                    <td><textarea class="compact-textarea" id="batch_comment_${task.employee.id}_${task.stage}_${section.commentComponent}">${esc(review[section.commentComponent]?.comment || "")}</textarea></td>
+                  </tr>
+                `;
+              }
+              const answer = task.assignment.answer || {};
+              return `
+                <tr>
+                  <td><strong>${esc(task.employee.name)}</strong><br /><span class="muted">${esc(task.label)} · ${esc(task.employee.division)} / ${esc(task.employee.team)}</span></td>
+                  <td><textarea class="compact-textarea" id="batch_${section.kind}_${task.assignment.id}_comment">${esc(answer.comment || "")}</textarea></td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  `;
+}
+
+function renderTaskList(user, tasks, selectedKey) {
+  const TYPE_ORDER = ["first", "second", "upward", "peer"];
+  const TYPE_LABELS = { first: "1차 평가", second: "2차 평가", upward: "상향평가", peer: "동료평가" };
+  const getTypeKey = (task) => task.type || task.stage;
+
+  // 1차 정렬: 평가 종류 / 2차 정렬: 소속(팀)
+  const byType = {};
+  tasks.forEach((task) => {
+    const typeKey = getTypeKey(task);
+    if (!byType[typeKey]) byType[typeKey] = {};
+    const org = task.employee.team || task.employee.division || "미지정";
+    if (!byType[typeKey][org]) byType[typeKey][org] = [];
+    byType[typeKey][org].push(task);
+  });
+
+  return `
+    <div class="task-list grouped">
+      ${TYPE_ORDER.filter((t) => byType[t]).map((typeKey) => {
+        const orgGroups = byType[typeKey];
+        const total = Object.values(orgGroups).reduce((s, a) => s + a.length, 0);
+        return `
+          <div class="task-team-group">
+            <div class="task-team-head"><strong>${TYPE_LABELS[typeKey]}</strong><span>${total}건</span></div>
+            ${Object.entries(orgGroups)
+              .sort(([a], [b]) => a.localeCompare(b, "ko"))
+              .map(([org, orgTasks]) => `
+                <div style="padding-left:8px;border-left:2px solid var(--line-soft);margin:4px 0 4px 4px;">
+                  <div style="font-size:11px;color:var(--muted);font-weight:600;padding:4px 0 2px;">${esc(org)}</div>
+                  ${orgTasks.sort(compareTasksWithinTeam).map((task) => renderTaskButton(task, selectedKey === task.key ? "active" : "")).join("")}
+                </div>
+              `).join("")}
+          </div>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderTaskButton(task, className) {
+  const editable = task.type === "upward" ? canEditUpward() : task.type === "peer" ? canEditPeer() : canEditStage(task.stage);
+  return `
+    <button class="task-row ${className}" onclick="App.openTask(${jsLiteral(task.key)})">
+      <strong>${esc(task.employee.name)} · ${esc(task.label)}</strong>
+      <span>${esc(task.employee.division)} / ${esc(task.employee.team)}</span>
+      <span>${statusPill(task.status, task.ready && editable)}</span>
+    </button>
+  `;
+}
+
+function renderTaskDetail(task) {
+  if (task.type === "upward") return renderUpwardTaskDetail(task);
+  if (task.type === "peer") return renderPeerTaskDetail(task);
+  const cycle = selectedCycle();
+  const evaluation = evaluations()[task.employee.id];
+  const allowed = task.ready && canEditStage(task.stage);
+  if (task.stage !== "self") alignPerformanceAchievements(evaluation[task.stage], evaluation.self, task.stage, evaluation.first);
+  const showSelfReference = task.stage === "first" || task.stage === "second";
+  const lockedByNext = task.stage === "first" && evaluation.status.second === "completed";
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>${esc(task.employee.name)} ${esc(task.label)}</h2>
+          <p class="muted">${esc(task.employee.title)} · ${esc(task.employee.division)} / ${esc(task.employee.team)}</p>
+        </div>
+        <div class="toolbar">
+          ${showSelfReference ? `<button class="button secondary" onclick="App.openMemberDetail('${task.employee.id}', { hideGrades: true, stages: ${task.stage === 'first' ? "['self']" : "['self','first']"}, scoreStage: '${task.stage === 'first' ? "self" : "first"}', scoreLabel: '${task.stage === 'first' ? "자기평가 점수" : "1차 평가 점수"}' })">📋 평가 현황 보기</button>` : ""}
+          ${statusPill(task.status, allowed)}
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${lockedByNext
+          ? `<div class="notice warn">2차 평가가 완료되어 1차 평가 내용을 변경할 수 없습니다.</div>`
+          : allowed ? "" : `<div class="notice warn">${esc(task.ready ? periodMessage(task.stage, cycle) : "이전 차수 평가 또는 자기평가 제출이 완료되어야 평가할 수 있습니다.")}</div>`}
+        <fieldset ${lockedByNext ? "disabled" : ""} style="border:none;padding:0;margin:0;">
+          ${renderEvaluationForm(task.stage, evaluation[task.stage], task.employee, task.stage)}
+        </fieldset>
+        <div class="toolbar">
+          <button class="button secondary" ${lockedByNext ? "disabled" : ""} onclick="App.saveStage('${task.employee.id}', '${task.stage}', false)">임시 저장</button>
+          <button class="button" ${allowed && !lockedByNext ? "" : "disabled"} onclick="App.saveStage('${task.employee.id}', '${task.stage}', true)">평가 제출</button>
+          ${evaluation.status[task.stage] === "completed" ? '<span class="pill green">제출완료</span>' : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderUpwardTaskDetail(task) {
+  const cycle = selectedCycle();
+  const assignment = task.assignment;
+  const target = task.employee;
+  const evaluator = userById(assignment.evaluatorId);
+  const allowed = canEditUpward();
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>${esc(target.name)} 상향평가</h2>
+          <p class="muted">${esc(target.title)} · ${esc(target.division)} / ${esc(target.team)}</p>
+        </div>
+        ${statusPill(assignment.status, allowed)}
+      </div>
+      <div class="panel-body grid">
+        ${allowed ? "" : `<div class="notice warn">${esc(periodMessage("upward", cycle))}</div>`}
+        <div class="component-card">
+          <h3>평가 관계</h3>
+          <div class="grid two">
+            <div><strong>평가자</strong><p class="muted">${esc(evaluator?.name || "-")} · ${esc(evaluator?.division || "-")} / ${esc(evaluator?.team || "-")}</p></div>
+            <div><strong>평가 대상 조직장</strong><p class="muted">${esc(target.name)} · ${ROLE_LABELS[target.role]}</p></div>
+          </div>
+        </div>
+        ${renderUpwardEvaluationForm(assignment)}
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.saveUpward(${jsLiteral(assignment.id)}, false)">임시 저장</button>
+          <button class="button" ${allowed ? "" : "disabled"} onclick="App.saveUpward(${jsLiteral(assignment.id)}, true)">평가 제출</button>
+          ${isCompletedStatus(assignment.status) ? '<span class="pill green">제출완료</span>' : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderPeerTaskDetail(task) {
+  const cycle = selectedCycle();
+  const assignment = task.assignment;
+  const target = task.employee;
+  const evaluator = userById(assignment.evaluatorId);
+  const allowed = canEditPeer();
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>${esc(target.name)} 동료평가</h2>
+          <p class="muted">${esc(target.title)} · ${esc(target.division)} / ${esc(target.team)}</p>
+        </div>
+        ${statusPill(assignment.status, allowed)}
+      </div>
+      <div class="panel-body grid">
+        ${allowed ? "" : `<div class="notice warn">${esc(periodMessage("peer", cycle))}</div>`}
+        <div class="component-card">
+          <h3>평가 관계</h3>
+          <div class="grid two">
+            <div><strong>평가자</strong><p class="muted">${esc(evaluator?.name || "-")} · ${esc(evaluator?.division || "-")} / ${esc(evaluator?.team || "-")}</p></div>
+            <div><strong>동료평가 대상</strong><p class="muted">${esc(target.name)} · ${ROLE_LABELS[target.role]}</p></div>
+          </div>
+        </div>
+        ${renderPeerEvaluationForm(assignment)}
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.savePeer(${jsLiteral(assignment.id)}, false)">임시 저장</button>
+          <button class="button" ${allowed ? "" : "disabled"} onclick="App.savePeer(${jsLiteral(assignment.id)}, true)">평가 제출</button>
+          ${isCompletedStatus(assignment.status) ? '<span class="pill green">제출완료</span>' : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderUpwardEvaluationForm(assignment) {
+  const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
+  const template = evaluator ? templateForKind(evaluator, "upward") : state.upwardTemplate;
+  const answer = assignment.answer || makeEmptyUpwardAnswer();
+  return `
+    <section class="eval-section eval-section-upward">
+      <div class="eval-section-head">
+        <h3>상향평가<span>*</span></h3>
+        <div class="guide-box">${nl2br(template.guide || "")}</div>
+      </div>
+      ${template.items
+        .map((item, index) => {
+          const itemScore = answer.itemScores?.[index] ?? "";
+          const scoreId = `upward_${assignment.id}_item_${index}_score`;
+          return `
+            <div class="scale-question">
+              <h4>${esc(item.name)}${item.required ? '<span>*</span>' : ""}</h4>
+              <div class="guide-box small">${esc(item.guide || template.guide || "")}</div>
+              ${renderGradePicker(scoreId, itemScore, template.grades)}
+            </div>
+          `;
+        })
+        .join("")}
+      <div class="field">
+        <label for="upward_${assignment.id}_comment">상향평가 의견*</label>
+        <textarea id="upward_${assignment.id}_comment">${esc(answer.comment || "")}</textarea>
+      </div>
+    </section>
+  `;
+}
+
+function renderPeerEvaluationForm(assignment) {
+  const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
+  const template = evaluator ? templateForKind(evaluator, "peer") : state.peerTemplate;
+  const answer = assignment.answer || makeEmptyPeerAnswer();
+  return `
+    <section class="eval-section eval-section-peer">
+      <div class="eval-section-head">
+        <h3>동료평가<span>*</span></h3>
+        <div class="guide-box">${nl2br(template.guide || "")}</div>
+      </div>
+      ${template.items
+        .map((item, index) => {
+          const itemScore = answer.itemScores?.[index] ?? "";
+          const scoreId = `peer_${assignment.id}_item_${index}_score`;
+          return `
+            <div class="scale-question">
+              <h4>${esc(item.name)}${item.required ? '<span>*</span>' : ""}</h4>
+              <div class="guide-box small">${esc(item.guide || template.guide || "")}</div>
+              ${renderGradePicker(scoreId, itemScore, template.grades)}
+            </div>
+          `;
+        })
+        .join("")}
+      <div class="field">
+        <label for="peer_${assignment.id}_comment">동료평가 의견*</label>
+        <textarea id="peer_${assignment.id}_comment">${esc(answer.comment || "")}</textarea>
+      </div>
+    </section>
+  `;
+}
+
+function renderSelfEvaluationReference(employee, evaluation) {
+  const self = evaluation.self;
+  return `
+    <details class="reference-box" open>
+      <summary>${esc(employee.name)} 자기평가 상세 보기</summary>
+      <div class="reference-body">
+        ${renderSelfComponentReference("업적평가", self.performance)}
+        ${renderSelfComponentReference("역량평가", self.competency)}
+        ${renderSelfComponentReference("자세·태도평가", self.attitude)}
+      </div>
+    </details>
+  `;
+}
+
+function renderSelfComponentReference(label, data) {
+  const achievements = data.achievements || [];
+  const itemScores = Object.entries(data.itemScores || {});
+  return `
+    <div class="component-card">
+      <h3>${esc(label)} · ${componentScoreText(data)}</h3>
+      ${
+        achievements.length
+          ? achievements
+              .map((item, index) => `<div class="notice"><strong>업적 ${index + 1}: ${esc(item.name || "-")}</strong><br />${esc(item.detail || item.goal || "-")}<br />등급 점수: ${esc(item.score || "-")} / 가중치: ${esc(item.weight || "-")}</div>`)
+              .join("")
+          : ""
+      }
+      ${
+        itemScores.length
+          ? `<div class="template-items">${itemScores.map(([index, score]) => `<span class="pill">${Number(index) + 1}번: ${esc(score)}</span>`).join("")}</div>`
+          : ""
+      }
+      ${data.comment ? `<p class="muted">${esc(data.comment)}</p>` : ""}
+    </div>
+  `;
+}
+
+function renderReviewSnapshot(employee, evaluation) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구분</th>${COMPONENTS.map((component) => `<th>${COMPONENT_LABELS[component]}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${["self", "first", "second", "final"]
+            .filter((stage) => shouldShowStage(employee, stage))
+            .map((stage) => `
+              <tr>
+                <td><strong>${STAGE_LABELS[stage]}</strong><br />${stageStatusBadge(evaluation.status[stage])}</td>
+                ${COMPONENTS.map((component) => `<td class="score" style="white-space:normal;word-break:break-word;overflow-wrap:break-word;max-width:120px;">${componentScoreText(evaluation[stage][component])}</td>`).join("")}
+              </tr>`)
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function componentScoreText(componentData) {
+  if (!componentData) return "-";
+  const v = deriveComponentScore(componentData);
+  return v === null ? "-" : v.toFixed(1);
+}
+
+function shouldShowStage(employee, stage) {
+  if (stage === "self") return true;
+  if (stage === "first") return Boolean(employee.evaluator1Id || evaluations()[employee.id]?.status?.first === "completed");
+  if (stage === "second") return Boolean(employee.evaluator2Id || evaluations()[employee.id]?.status?.second === "completed");
+  return false;
+}
+
+function renderResults(user) {
+  const rows = getVisibleResultUsers(user);
+  if (!canShowReleasedResults()) {
+    return `
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>최종 평가 결과 확인</h2>
+          </div>
+        </div>
+        <div class="panel-body"><div class="empty">아직 조직 결과가 공개되지 않았습니다.</div></div>
+      </section>
+    `;
+  }
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>최종 평가 결과 확인</h2>
+        </div>
+        ${rows.length ? `<button class="button secondary" onclick="App.exportResults()">📥 엑셀 다운로드</button>` : ""}
+      </div>
+      <div class="panel-body grid">${rows.length ? `${renderOverallGradeDistribution(rows, "조회 조직 전체 등급 분포도")}${renderResultListPanel(rows)}` : `<div class="empty">조회 가능한 평가 결과가 없습니다.</div>`}</div>
+    </section>
+  `;
+}
+
+// 최종 평가 결과 확인 — 종합점수·최종등급만 표시하는 읽기 전용 필터/정렬 테이블
+function renderResultListPanel(rows) {
+  const resultCache = new Map();
+  const getR = (id) => { if (!resultCache.has(id)) resultCache.set(id, calculateFinal(id)); return resultCache.get(id); };
+  const sortField = state.ui.resSortField || "score";
+  const sortDir   = state.ui.resSortDir   || "desc";
+  const GRADE_ORDER = { S:0, A:1, B:2, C:3, D:4, "":5 };
+  const sorted = [...rows].sort((a, b) => {
+    let diff = 0;
+    if (sortField === "score") diff = (getR(a.id).rawScore ?? -1) - (getR(b.id).rawScore ?? -1);
+    else if (sortField === "grade") diff = (GRADE_ORDER[getR(b.id).finalGrade] ?? 5) - (GRADE_ORDER[getR(a.id).finalGrade] ?? 5);
+    return sortDir === "asc" ? diff : -diff;
+  });
+  const divOptions   = [...new Set(rows.map(e => e.division || "미지정"))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const teamOptions  = [...new Set(rows.map(e => e.team || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const gradeOptions = [...new Set(rows.map(e => e.grade || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const sortIcon = (f) => sortField === f ? (sortDir === "desc" ? "▼" : "▲") : "↕";
+
+  return `
+    <div class="panel" style="box-shadow:none;border:1px solid var(--line-soft);">
+      <div class="panel-head">
+        <h2>구성원 상세 결과</h2>
+        <span id="res-result-count" class="pill" style="background:var(--primary-lt);color:var(--primary);font-size:12px;">${rows.length}명</span>
+      </div>
+      <div class="panel-body">
+        <div class="approval-filter-bar">
+          <div class="approval-filter-search">
+            <span class="filter-icon">🔍</span>
+            <input id="res_filter_name" placeholder="이름 검색…" oninput="App.filterResTable()"
+              style="border:none;background:transparent;outline:none;width:120px;font-size:13px;" />
+          </div>
+          <div class="approval-filter-selects">
+            <div class="af-select-wrap"><label>부서</label>
+              <select id="res_filter_div" onchange="App.filterResTable()"><option value="">전체</option>${divOptions.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap"><label>팀</label>
+              <select id="res_filter_team" onchange="App.filterResTable()"><option value="">전체</option>${teamOptions.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap"><label>직급</label>
+              <select id="res_filter_grade2" onchange="App.filterResTable()"><option value="">전체</option>${gradeOptions.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap"><label>등급</label>
+              <select id="res_filter_grade" onchange="App.filterResTable()"><option value="">전체</option>${GRADES.map(g=>`<option value="${g}">${g}등급</option>`).join("")}</select>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>순위</th><th>구성원</th><th>역할 / 부서</th>
+              <th><button onclick="App.setResSort('score')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">종합 점수 ${sortIcon("score")}</button></th>
+              <th><button onclick="App.setResSort('grade')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">최종 등급 ${sortIcon("grade")}</button></th>
+            </tr></thead>
+            <tbody id="res-result-tbody">
+              ${sorted.map((employee, idx) => {
+                const result = getR(employee.id);
+                return `<tr data-name="${esc((employee.name||"").toLowerCase())}" data-div="${esc(employee.division||"미지정")}" data-team="${esc(employee.team||"")}" data-grade2="${esc(employee.grade||"")}" data-grade="${esc(result.finalGrade||"")}">
+                  <td><strong class="res-rank" style="color:var(--primary);">${idx + 1}</strong></td>
+                  <td>
+                    <button onclick="App.openReportModal('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                      <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                    </button>
+                    <br/><span class="muted">${esc(employee.employeeNo || "")}</span>
+                  </td>
+                  <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.division || "")} · ${esc(employee.team || "")}</span></td>
+                  <td class="score" style="font-size:16px;">${result.scoreText}</td>
+                  <td>${gradeBadge(result.finalGrade)}</td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderResultSubmission(user) {
+  if (user.role !== "divisionHead") return `<div class="empty">종합평가 권한이 없습니다.</div>`;
+  const cycle = selectedCycle();
+  const rows = getResultSubmissionScopeUsers(user);
+
+  // 모든 1·2차 평가 완료 여부 확인
+  const allEvalsDone = rows.every((employee) => {
+    const ev = evaluations()[employee.id];
+    if (!ev) return false;
+    const selfOk = ev.status.self === "submitted";
+    const firstOk = !employee.evaluator1Id || ev.status.first === "completed";
+    const secondOk = !employee.evaluator2Id || ev.status.second === "completed";
+    return selfOk && firstOk && secondOk;
+  });
+
+  const scopeKey = resultSubmissionScopeKey(user);
+  const submission = cycle.resultSubmissions?.[scopeKey];
+  const isSubmitted = Boolean(submission?.submitted);
+
+  // 잠금 상태
+  if (!rows.length) {
+    return `<section class="panel"><div class="panel-head"><div><h2>종합평가</h2><p class="muted">하위 조직 구성원이 없습니다.</p></div></div></section>`;
+  }
+
+  if (!allEvalsDone) {
+    const missing = getMissingEvaluationItemsForUsers(rows, { ignoreTeamLeadSecond: true });
+    return `
+      <section class="panel" id="result-submission-panel">
+        <div class="panel-head">
+          <div><h2>종합평가</h2><p class="muted">모든 1·2차 평가가 완료된 후 종합평가를 진행할 수 있습니다.</p></div>
+        </div>
+        <div class="panel-body grid">
+          <div class="notice warn">
+            <strong>⚠ 미완료 평가가 있습니다.</strong> 아래 항목이 완료되면 종합평가가 활성화됩니다.
+          </div>
+          ${renderResultSubmissionStatusTable(rows)}
+        </div>
+      </section>`;
+  }
+
+  // 점수 기준 내림차순 정렬
+  const sortedRows = [...rows].sort((a, b) => {
+    const sa = calculateFinal(a.id).rawScore ?? -1;
+    const sb = calculateFinal(b.id).rawScore ?? -1;
+    return sb - sa;
+  });
+
+  // 현재 등급 배분 통계
+  const gradeCounts = Object.fromEntries(GRADES.map((g) => [g, 0]));
+  sortedRows.forEach((employee) => {
+    const ev = evaluations()[employee.id];
+    const g = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : calculateFinal(employee.id).autoGrade;
+    if (GRADES.includes(g)) gradeCounts[g]++;
+  });
+  const total = sortedRows.length;
+  const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
+  const gradeDistBar = GRADES.map((g) => {
+    const pct = total ? Math.round((gradeCounts[g] / total) * 100) : 0;
+    return gradeCounts[g] > 0
+      ? `<span title="${g}: ${gradeCounts[g]}명 (${pct}%)" style="flex:${gradeCounts[g]};background:${gradeColors[g]};display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;min-width:24px;">${g} ${gradeCounts[g]}</span>`
+      : "";
+  }).join("");
+
+  // 본부장 자신의 평가 등급에 따른 배분 기준 사용
+  const headGrade = (() => {
+    const result = calculateFinal(user.id);
+    return (result && GRADES.includes(result.finalGrade)) ? result.finalGrade : "B";
+  })();
+  const guideRows = GRADES.map((g) => {
+    const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
+    const guidePercent = Number(dist[g] || 0);
+    const guideCt = Math.round((total * guidePercent) / 100);
+    const cur = gradeCounts[g];
+    const over = guideCt > 0 && cur > guideCt;
+    return `<td style="text-align:center;">${guideCt}명 <small class="muted">(${guidePercent}%)</small></td><td style="text-align:center;"><strong class="${over ? "pill red" : "pill green"}">${cur}명</strong></td>`;
+  }).join("");
+
+  return `
+    <section class="panel" id="result-submission-panel">
+      <div class="panel-head">
+        <div>
+          <h2>종합평가</h2>
+          <p class="muted">${esc(resultSubmissionScopeLabel(user))} · 총 ${total}명 · 점수 내림차순 정렬</p>
+        </div>
+        <div class="toolbar">
+          ${isSubmitted
+            ? `<span class="pill green">제출완료 · ${esc(formatDateTime(submission.submittedAt))}</span>`
+            : (submission?.needsAdjustmentSession ? `<span class="pill amber">조정 세션 대기</span>` : `<span class="pill amber">미제출</span>`)}
+          <button class="button secondary" onclick="App.comprehensiveAutoGrade()" ${isSubmitted ? 'disabled title="제출 완료 후 수정 불가"' : ""}>자동 등급 배분</button>
+          <button class="button secondary" onclick="App.exportResultSubmission()">📥 엑셀 다운로드</button>
+          <button class="button ghost" onclick="App.saveOrgResultSubmission(false)" ${isSubmitted ? 'disabled title="제출 완료 후 수정 불가"' : ""}>임시 저장</button>
+          <button class="button" onclick="App.saveOrgResultSubmission(true)" ${isSubmitted ? 'disabled title="제출 완료 후 수정 불가"' : ""}>종합평가 확정 제출</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${submission?.needsAdjustmentSession ? `<div class="notice warn"><strong>⚠ 평가 등급 조정 세션 대기 중입니다.</strong><br/>등급 배분율을 초과하여 제출이 보류되었습니다. 인사총무팀에서 연락드릴 예정이며, 조정 세션 후 인사총무팀에서 최종 제출 처리합니다.${submission.distributionReason ? `<br/><span class="muted">제출 사유: ${esc(submission.distributionReason)}</span>` : ""}</div>` : ""}
+        <div class="notice info">
+          <strong>등급 배분율 가이드</strong> (본부장 평가등급: <strong>${gradeBadge(headGrade)}</strong> 기준): S-인사위논의 · A-${state.distributionMatrix[headGrade]?.A||20}% · B-${state.distributionMatrix[headGrade]?.B||50}% · C-${state.distributionMatrix[headGrade]?.C||20}% · D-${state.distributionMatrix[headGrade]?.D||10}%<br/>
+          이름을 클릭하면 상세 평가 내용을 확인할 수 있습니다. <strong>자동 등급 배분</strong>을 사용하면 배분율 기준으로 자동 배분됩니다.
+        </div>
+
+        <!-- 등급 배분 현황 (실시간 업데이트) -->
+        <div class="component-card" id="grade-dist-panel" data-head-grade="${esc(headGrade)}" data-total="${total}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <h3 style="margin:0;">등급 배분 현황</h3>
+            <span style="font-size:12px;color:var(--muted);">본부장 등급 <strong>${gradeBadge(headGrade)}</strong> 기준</span>
+          </div>
+          <div id="grade-dist-bars" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">
+            ${renderGradeDistCards(gradeCounts, total, headGrade)}
+          </div>
+        </div>
+
+        <!-- 종합평가 테이블 -->
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>순위</th><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th><th>종합 점수</th><th>추천 등급</th><th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th></tr></thead>
+            <tbody>
+              ${sortedRows.map((employee, idx) => {
+                const ev = evaluations()[employee.id];
+                const result = calculateFinal(employee.id);
+                const curGrade = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : result.autoGrade;
+                return `
+                  <tr>
+                    <td><strong style="font-size:16px;color:var(--primary);">${idx + 1}</strong></td>
+                    <td>
+                      <button onclick="App.openMemberDetail('${employee.id}', { hideGrades: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                        <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                      </button>
+                      <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
+                    </td>
+                    <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.team || employee.division || "")}</span></td>
+                    <td>${renderStageComponentScores(employee, ev, { hiddenStages: [], hideExtras: true })}</td>
+                    <td>${peerScoreCellHtml(employee)}</td>
+                    <td>
+                      <span class="score" style="font-size:18px;">${result.scoreText}</span>
+                    </td>
+                    <td>${gradeBadge(result.autoGrade)}</td>
+                    <td>
+                      ${isSubmitted
+                        ? gradeBadge(curGrade)
+                        : `<select id="org_adj_grade_${employee.id}" data-auto-grade="${esc(result.autoGrade)}" data-previous="${esc(curGrade)}"
+                            onchange="App.handleOrgAdjustmentGradeChange('${employee.id}');App.refreshComprehensiveStats();"
+                            style="width:90px;font-weight:700;">
+                            ${GRADES.map((g) => `<option value="${g}" ${curGrade === g ? "selected" : ""}>${g}</option>`).join("")}
+                          </select>`}
+                    </td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${isSubmitted ? `<div class="notice ok" style="margin-top:8px;">✅ 종합평가가 확정 제출되었습니다. 등급 배분은 변경할 수 없습니다.</div>` : ""}
+      </div>
+    </section>`;
+}
+
+function renderResultSubmissionTree(user, rows) {
+  const grouped = groupByDivisionTeam(rows);
+  return Object.entries(grouped)
+    .map(([division, teams]) => {
+      const divisionEmployees = Object.values(teams).flat();
+      return `
+        <details class="org-group" open>
+          <summary>${esc(division)} 제출 대상 <span>${divisionEmployees.length}명</span></summary>
+          ${Object.entries(teams)
+            .map(
+              ([team, employees]) => `
+                <details class="team-group" open>
+                  <summary>${esc(team)} <span>${employees.length}명</span></summary>
+                  ${renderResultSubmissionStatusTable(sortEmployeesForAdjustment(employees))}
+                </details>
+              `,
+            )
+            .join("")}
+        </details>
+      `;
+    })
+    .join("");
+}
+
+function renderResultSubmissionStatusTable(employees) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>조직</th><th>자기평가</th><th>1차 평가</th><th>2차 평가</th><th>상향평가</th><th>동료평가</th><th>평가 점수</th></tr></thead>
+        <tbody>
+          ${employees.map((employee) => {
+            const evaluation = evaluations()[employee.id];
+            const upwardAssignments = getUpwardAssignments().filter((assignment) => assignment.evaluatorId === employee.id);
+            const peerAssignments = getPeerAssignments().filter((assignment) => assignment.evaluatorId === employee.id);
+            const upwardDone = upwardAssignments.filter((assignment) => isCompletedStatus(assignment.status)).length;
+            const peerDone = peerAssignments.filter((assignment) => isCompletedStatus(assignment.status)).length;
+            return `
+              <tr>
+                <td><strong>${esc(employee.name)}</strong><br /><span class="muted">${esc(employee.employeeNo || "")}</span></td>
+                <td>${ROLE_LABELS[employee.role]}<br /><span class="muted">${esc(employee.title || "")}</span></td>
+                <td>${esc(employee.division || "-")}<br /><span class="muted">${esc(employee.team || "-")}</span></td>
+                <td>${stageStatusBadge(evaluation.status.self)}</td>
+                <td>${employee.evaluator1Id ? stageStatusBadge(evaluation.status.first) : "-"}</td>
+                <td>${employee.evaluator2Id ? stageStatusBadge(evaluation.status.second) : "-"}</td>
+                <td>${upwardAssignments.length ? `<span class="pill ${upwardDone === upwardAssignments.length ? "green" : upwardDone ? "blue" : "amber"}">${upwardDone}/${upwardAssignments.length}</span>` : "-"}</td>
+                <td>${peerAssignments.length ? `<span class="pill ${peerDone === peerAssignments.length ? "green" : peerDone ? "blue" : "amber"}">${peerDone}/${peerAssignments.length}</span>` : "-"}</td>
+                <td>${renderStageComponentScores(employee, evaluation, { hiddenStages: employee.role === "teamLead" ? ["second"] : [] })}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderOrgAdjustmentTable(employees) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>조직</th><th>제출 상태</th><th>점수</th><th>자동 등급</th><th>제출 등급</th><th>조정 사유</th></tr></thead>
+        <tbody>
+          ${employees.map((employee) => {
+            const evaluation = evaluations()[employee.id];
+            const result = calculateFinal(employee.id);
+            const selectedGrade = getOrgAdjustmentGrade(evaluation, result);
+            return `
+              <tr>
+                <td><strong>${esc(employee.name)}</strong><br /><span class="muted">${esc(employee.employeeNo || "")}</span></td>
+                <td>${ROLE_LABELS[employee.role]}<br /><span class="muted">${esc(employee.title || "")}</span></td>
+                <td>${esc(employee.division || "-")}<br /><span class="muted">${esc(employee.team || "-")}</span></td>
+                <td>${submissionStatusForApproval(employee, currentUser())}</td>
+                <td class="score">${result.scoreText}</td>
+                <td>${gradeBadge(result.autoGrade)}</td>
+                <td>${orgGradeSelect(`org_adj_grade_${employee.id}`, selectedGrade, employee.id, result.autoGrade)}</td>
+                <td><textarea class="compact-textarea" id="org_adj_reason_${employee.id}" placeholder="조정 사유">${esc(evaluation.orgAdjustment?.reason || "")}</textarea></td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function hasHRGroupMembers() {
+  const cycle = activeCycle();
+  if (!cycle) return false;
+  const relGroups = cycle.relativeGroups || {};
+  return cycleUsers(cycle).some(u => isEvaluatee(u) && relGroups[u.id]?.overrideGroup === "인사총무팀");
+}
+
+function getHRGroupMembers() {
+  const cycle = activeCycle();
+  if (!cycle) return [];
+  const relGroups = cycle.relativeGroups || {};
+  return cycleUsers(cycle)
+    .filter(u => isEvaluatee(u) && u.role === "member" && relGroups[u.id]?.overrideGroup === "인사총무팀")
+    .sort(compareEmployeesForDisplay);
+}
+
+const HR_GROUP_SCOPE_KEY = "__hr_admin__";
+
+function resultSubmissionScopeKey(user) {
+  return divisionSubmissionKey(user.division);
+}
+
+function resultSubmissionScopeLabel(user) {
+  return `${user.division || "미지정 본부"} 하위 조직`;
+}
+
+function getResultSubmissionScopeUsers(user) {
+  if (user.role === "divisionHead") {
+    const cycle = activeCycle();
+    const allMembers = cycleUsers().filter(e => isEvaluatee(e) && e.role === "member" && e.id !== user.id);
+    const relGroups = cycle.relativeGroups || {};
+    const hasAnyGroup = Object.keys(relGroups).length > 0;
+
+    if (hasAnyGroup) {
+      const allCycleUsers = cycleUsers();
+      return allMembers.filter(m => {
+        const rg = relGroups[m.id];
+        if (rg?.overrideGroup) return rg.overrideGroup === user.name;
+        // 명시적 그룹 없음: 같은 본부의 본부장 기준 자동 배정
+        const divHead = allCycleUsers.find(x => x.role === "divisionHead" && x.division === m.division);
+        return divHead?.id === user.id;
+      }).sort(compareEmployeesForDisplay);
+    }
+
+    // 상대평가 그룹 미설정: 기존 본부 기준 필터
+    return allMembers.filter(e => e.division === user.division).sort(compareEmployeesForDisplay);
+  }
+  return [];
+}
+
+function getOrgAdjustmentGrade(evaluation, result) {
+  return evaluation?.orgAdjustment?.gradeManual && GRADES.includes(evaluation.orgAdjustment.grade) ? evaluation.orgAdjustment.grade : result.autoGrade;
+}
+
+function orgGradeSelect(id, selected, employeeId, autoGrade) {
+  return `<select id="${id}" data-auto-grade="${esc(autoGrade)}" data-previous="${esc(selected || "")}" onchange="App.handleOrgAdjustmentGradeChange('${employeeId}')">${GRADES.map((grade) => `<option value="${grade}" ${selected === grade ? "selected" : ""}>${grade}</option>`).join("")}</select>`;
+}
+
+function divisionSubmissionKey(division) {
+  return `division:${division || "미지정 본부"}`;
+}
+
+// 특정 본부의 현재 등급 분배 스냅샷(구성원별 등급 + 등급별 인원수)
+function captureDivisionDistribution(division) {
+  const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
+  const grades = members.map((e) => { const r = calculateFinal(e.id); return { name: e.name, employeeNo: e.employeeNo || "", grade: r.finalGrade || "" }; });
+  const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
+  grades.forEach((x) => { if (GRADES.includes(x.grade)) counts[x.grade] += 1; });
+  return { grades, counts };
+}
+
+const ORG_HISTORY_STAGE_LABELS = { divisionHead: "본부장 원안 제출", adjustmentSession: "조정 세션 (인사총무팀)" };
+
+// 본부 종합평가 등급 조정 이력 패널 (본부장 원안 + 조정 세션)
+function renderDivisionAdjustmentHistoryPanel(divisions) {
+  const cycle = selectedCycle();
+  const blocks = [];
+  [...new Set(divisions)].sort((a, b) => String(a).localeCompare(String(b), "ko")).forEach((div) => {
+    const rec = cycle.resultSubmissions?.[divisionSubmissionKey(div)];
+    const hist = rec && Array.isArray(rec.history) ? rec.history : [];
+    if (!hist.length) return;
+    const rows = hist.map((h) => {
+      const who = userById(h.by);
+      const label = ORG_HISTORY_STAGE_LABELS[h.stage] || h.stage;
+      const dist = GRADES.map((g) => `${g} ${h.counts?.[g] || 0}`).join(" · ");
+      return `<div style="border-left:3px solid var(--primary-mid,var(--primary));padding:6px 10px;margin-top:8px;background:var(--surface-2);border-radius:6px;">
+        <div style="font-size:13px;"><strong>${esc(label)}</strong> <span class="muted" style="font-size:11px;">${esc(who?.name || "")}${h.at ? " · " + esc(formatDateTime(h.at)) : ""}</span></div>
+        <div class="muted" style="font-size:12px;margin-top:2px;">등급 분배: ${esc(dist)}</div>
+        <div style="font-size:12px;margin-top:2px;">사유: ${esc(h.reason || "-")}</div>
+      </div>`;
+    }).join("");
+    blocks.push(`<div class="component-card" style="margin-bottom:10px;"><h4 style="margin:0 0 4px;">${esc(div)}</h4>${rows}</div>`);
+  });
+  if (!blocks.length) return "";
+  return `<div class="component-card"><h3>종합평가 등급 조정 이력</h3><p class="muted" style="font-size:12px;margin-bottom:8px;">배분율 초과로 조정 세션을 거친 본부의 원안·조정 기록입니다.</p>${blocks.join("")}</div>`;
+}
+
+function isSubmittedForAdminAdjustment(employee) {
+  return isFinalAdjustmentReady() && isEvaluatee(employee);
+}
+
+function submissionStatusForApproval(employee, viewer) {
+  const divisionSubmitted = isDivisionSubmittedForEmployee(employee);
+  const pill = (tone, label) => `<span class="pill ${tone}">${label}</span>`;
+
+  if (viewer?.role === "divisionHead") {
+    return divisionSubmitted ? pill("green", "제출완료") : pill("amber", "제출 대기");
+  }
+  return divisionSubmitted ? pill("green", "본부 제출완료") : pill("amber", "본부 제출 대기");
+}
+
+function resultSubmissionForEmployee(employee) {
+  return divisionSubmissionForDivision(employee.division);
+}
+
+function isPresidentApprovedForEmployee(employee) {
+  return isFinalAdjustmentReady() && isEvaluatee(employee);
+}
+
+function isChairmanApprovedForEmployee(employee) {
+  return isFinalAdjustmentReady() && isEvaluatee(employee);
+}
+
+function isDivisionSubmittedForEmployee(employee) {
+  return Boolean(divisionSubmissionForDivision(employee.division));
+}
+
+function divisionSubmissionForDivision(division) {
+  const cycle = selectedCycle();
+  const direct = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
+  if (direct?.submitted) return direct;
+  const normalizedDivision = division || "미지정 본부";
+  const divisionUsers = cycleUsers(cycle).filter((user) => (user.division || "미지정 본부") === normalizedDivision);
+  const divisionHeads = divisionUsers.filter((user) => user.role === "divisionHead");
+  const submittedByHead = Object.values(cycle.resultSubmissions || {}).find(
+    (submission) => submission?.submitted && submission.scopeType === "divisionHead" && divisionHeads.some((head) => head.id === submission.submittedBy),
+  );
+  if (submittedByHead) return submittedByHead;
+  const evaluatees = divisionUsers.filter(isEvaluatee);
+  if (!divisionHeads.length && evaluatees.length && !getMissingEvaluationItemsForUsers(evaluatees).length) {
+    return {
+      scopeKey: divisionSubmissionKey(division),
+      scopeLabel: `${normalizedDivision} 자동 제출`,
+      scopeType: "auto",
+      submitted: true,
+      autoSubmitted: true,
+      submittedBy: "",
+      submittedAt: "",
+      userIds: evaluatees.map((employee) => employee.id),
+    };
+  }
+  return null;
+}
+
+function getRequiredEvaluationMissingItemsForEmployee(employee, options = {}) {
+  const evaluation = evaluations()[employee.id];
+  const missing = [];
+  if (!evaluation) return [`${employee.name} 평가 데이터`];
+  if (evaluation.status.self !== "submitted") missing.push(`${employee.name} 자기평가`);
+  if (employee.evaluator1Id && evaluation.status.first !== "completed") missing.push(`${employee.name} 1차 평가`);
+  const ignoreSecond = options.ignoreTeamLeadSecond && employee.role === "teamLead";
+  if (!ignoreSecond && employee.evaluator2Id && evaluation.status.second !== "completed") missing.push(`${employee.name} 2차 평가`);
+  getUpwardAssignments()
+    .filter((assignment) => assignment.evaluatorId === employee.id && !isCompletedStatus(assignment.status))
+    .forEach((assignment) => {
+      const target = cycleUserById(assignment.targetId);
+      missing.push(`${employee.name} 상향평가${target ? `(${target.name})` : ""}`);
+    });
+  getPeerAssignments()
+    .filter((assignment) => assignment.evaluatorId === employee.id && !isCompletedStatus(assignment.status))
+    .forEach((assignment) => {
+      const target = cycleUserById(assignment.targetId);
+      missing.push(`${employee.name} 동료평가${target ? `(${target.name})` : ""}`);
+    });
+  return missing;
+}
+
+function getMissingEvaluationItemsForUsers(users, options = {}) {
+  return users.flatMap((employee) => getRequiredEvaluationMissingItemsForEmployee(employee, options));
+}
+
+function getDivisionSubmissionStatuses() {
+  const users = cycleUsers();
+  const evaluatees = users.filter(isEvaluatee);
+  const divisions = [...new Set(evaluatees.map((employee) => employee.division || "미지정 본부"))].sort((a, b) => a.localeCompare(b, "ko"));
+  return divisions.map((division) => {
+    const employees = evaluatees.filter((employee) => (employee.division || "미지정 본부") === division);
+    const head = users.find((user) => user.role === "divisionHead" && (user.division || "미지정 본부") === division);
+    const submission = divisionSubmissionForDivision(division);
+    // 종합평가 대상: 팀원(member)만 — 본부장 자신은 제외
+    const memberEmployees = employees.filter(e => e.role === "member");
+    const missingEvaluationItems = getMissingEvaluationItemsForUsers(employees);
+    // 자동 제출: ①팀원이 없는 경우 ②본부장 없고 팀원 평가 완료된 경우
+    const autoSubmitted = (memberEmployees.length === 0) ||
+      (!head && memberEmployees.length > 0 && !getMissingEvaluationItemsForUsers(memberEmployees).length);
+    return {
+      division,
+      head,
+      employees,
+      submission,
+      submitted: Boolean(submission?.submitted || autoSubmitted),
+      autoSubmitted,
+      missingEvaluationItems,
+    };
+  });
+}
+
+function formatTaskStatusLabel(task) {
+  const team = task.employee?.team ? ` · ${task.employee.team}` : "";
+  return `${task.employee?.name || "대상자"} ${task.label}${team}`;
+}
+
+function getExecutiveEvaluationStatuses() {
+  return ["president", "chairman"]
+    .map((role) => {
+      const user = cycleUsers().find((candidate) => candidate.role === role && candidate.active !== false) || state.users.find((candidate) => candidate.role === role && candidate.active !== false);
+      if (!user) return { role, user: null, incompleteTasks: ["계정 없음"], completed: false };
+      const incompleteTasks = getTasksForUser(user).filter((task) => !isCompletedStatus(task.status)).map(formatTaskStatusLabel);
+      return { role, user, incompleteTasks, completed: incompleteTasks.length === 0 };
+    });
+}
+
+function getFinalAdjustmentReadiness() {
+  if (_readinessCache) return _readinessCache;
+  const evaluatees = cycleUsers().filter(isEvaluatee);
+  const divisionStatuses = getDivisionSubmissionStatuses();
+  const missingEvaluationItems = getMissingEvaluationItemsForUsers(evaluatees);
+  const executiveStatuses = getExecutiveEvaluationStatuses();
+  const ready =
+    missingEvaluationItems.length === 0 &&
+    divisionStatuses.every((status) => status.submitted) &&
+    executiveStatuses.every((status) => status.completed);
+  _readinessCache = { ready, evaluatees, divisionStatuses, executiveStatuses, missingEvaluationItems };
+  return _readinessCache;
+}
+
+function isFinalAdjustmentReady() {
+  return getFinalAdjustmentReadiness().ready;
+}
+
+// ── 평가 흐름 상태 헬퍼 (5단계: 세팅→평가→종합→사장→회장) ─────────────────
+function isPresidentApprovalDone() {
+  return Boolean(activeCycle()?.resultSubmissions?.["approval:president"]?.submitted);
+}
+function isChairmanApprovalDone() {
+  return Boolean(activeCycle()?.resultSubmissions?.["approval:chairman"]?.submitted);
+}
+function isAnyDivisionSubmitted() {
+  return Object.values(activeCycle()?.resultSubmissions || {}).some(
+    s => s?.submitted && s?.scopeType === "divisionHead"
+  );
+}
+function getEvalFlowStage() {
+  // 1=평가 세팅, 2=평가 수행 중, 3=종합평가, 4=사장 승인, 5=회장 승인, 6=리포트 공개
+  const cycle = selectedCycle();
+  if (!cycle) return 1;
+  if (cycle.resultsVisible) return 6;             // 리포트 공개
+  if (isChairmanApprovalDone()) return 6;         // 회장 확정 → 리포트 공개 단계
+  if (isPresidentApprovalDone()) return 5;        // 사장 승인 완료 → 회장 승인 대기
+  if (isAnyDivisionSubmitted() || isFinalAdjustmentReady()) return 4; // 종합평가 제출 → 사장 승인 대기
+  if (cycle.status !== "active") return 1;        // 진행 전(중지) → 세팅 단계
+  return 2;                                        // 평가 수행 중
+}
+
+function canShowReleasedResults() {
+  return activeCycle()?.resultsVisible && isFinalAdjustmentReady();
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function renderResultTree(users) {
+  const grouped = groupByDivisionTeam(users);
+  return Object.entries(grouped)
+    .map(([division, teams]) => {
+      const divisionEmployees = Object.values(teams).flat();
+      return `
+        <details class="org-group">
+          <summary>${esc(division)} 조직 결과 <span>${divisionEmployees.length}명</span></summary>
+          ${Object.entries(teams)
+            .map(
+              ([team, employees]) => `
+                <details class="team-group">
+                  <summary>${esc(team)} 평가 결과 <span>${employees.length}명</span></summary>
+                  ${renderResultTable(employees)}
+                </details>
+              `,
+            )
+            .join("")}
+        </details>
+      `;
+    })
+    .join("");
+}
+
+function renderResultTable(users) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>조직</th>${COMPONENTS.map((component) => `<th>${COMPONENT_LABELS[component]}</th>`).join("")}<th>최종 점수</th><th>등급</th><th>리포트</th></tr></thead>
+        <tbody>
+          ${users.map((employee) => {
+            const evaluation = evaluations()[employee.id];
+            const result = calculateFinal(employee.id);
+            return `
+              <tr>
+                <td>
+                  <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                    <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                  </button>
+                  <br /><span class="muted">${esc(employee.employeeNo || employee.email)}</span>
+                </td>
+                <td>${ROLE_LABELS[employee.role]}</td>
+                <td>${esc(employee.division)}<br /><span class="muted">${esc(employee.team)}</span></td>
+                ${COMPONENTS.map((component) => `<td class="score">${result.componentScores[component].text}</td>`).join("")}
+                <td class="score">${result.scoreText}</td>
+                <td>${gradeBadge(result.finalGrade)}</td>
+                <td>${evaluation?.published ? '<span class="pill green">공개</span>' : '<span class="pill amber">미공개</span>'}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ─── 평가 진행 현황 대시보드 (어드민) ─────────────────────────────────────────
+function renderCycleDashboard(user) {
+  if (!user || user.role !== "admin") return `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers(cycle);
+  const evaluatees = allUsers.filter(isEvaluatee);
+  const total = evaluatees.length;
+
+  // 단계별 완료 현황
+  const selfDone    = evaluatees.filter(e => evaluations()[e.id]?.status?.self === "submitted").length;
+  const firstDone   = evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first === "completed").length;
+  const secondDone  = evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second === "completed").length;
+  const upwardAssigns = getUpwardAssignments ? getUpwardAssignments() : [];
+  const peerAssigns   = getPeerAssignments   ? getPeerAssignments()   : [];
+  const upwardDone  = upwardAssigns.filter(a => isCompletedStatus(a.status)).length;
+  const upwardTotal = upwardAssigns.length;
+  const peerDone    = peerAssigns.filter(a => isCompletedStatus(a.status)).length;
+  const peerTotal   = peerAssigns.length;
+
+  // 미완료자 목록
+  const selfPending   = evaluatees.filter(e => evaluations()[e.id]?.status?.self !== "submitted");
+  const firstPending  = evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first !== "completed")
+    .map(e => allUsers.find(u => u.id === e.evaluator1Id)).filter(Boolean).filter((u,i,a) => a.findIndex(x=>x.id===u.id)===i);
+  const secondPending = evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second !== "completed")
+    .map(e => allUsers.find(u => u.id === e.evaluator2Id)).filter(Boolean).filter((u,i,a) => a.findIndex(x=>x.id===u.id)===i);
+
+  const pct = n => total ? Math.round(n/total*100) : 0;
+  const bar = n => `<div class="bar" style="margin-top:6px;"><span style="width:${pct(n)}%;"></span></div>`;
+
+  const pendingTable = (label, people) => {
+    if (!people.length) return `<div class="notice ok" style="margin-top:8px;">✓ 모두 완료</div>`;
+    return `
+      <div class="table-wrap" style="margin-top:8px;">
+        <table style="min-width:0;">
+          <thead><tr><th>이름</th><th>부서</th><th>연락처</th><th>독려</th></tr></thead>
+          <tbody>
+            ${people.slice(0,20).map(u => `<tr>
+              <td><strong>${esc(u.name)}</strong></td>
+              <td style="font-size:12px;color:var(--muted);">${esc(u.division||u.team||"")}</td>
+              <td style="font-size:12px;">${esc(u.email||"")}</td>
+              <td><button class="button sm ghost" onclick="App.sendReminderMail('${u.id}','${label}')">메일 발송</button></td>
+            </tr>`).join("")}
+            ${people.length > 20 ? `<tr><td colspan="4" style="color:var(--muted);font-size:12px;">외 ${people.length-20}명...</td></tr>` : ""}
+          </tbody>
+        </table>
+      </div>`;
+  };
+
+  return `<div class="grid">${cycleDashboardInnerHtml(evaluatees, selfDone, firstDone, secondDone, upwardDone, upwardTotal, peerDone, peerTotal, total, selfPending, firstPending, secondPending, pct, pendingTable)}</div>`;
+}
+
+function renderCycleDashboardContent() {
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers(cycle);
+  const evaluatees = allUsers.filter(isEvaluatee);
+  const total = evaluatees.length;
+  const selfDone    = evaluatees.filter(e => evaluations()[e.id]?.status?.self === "submitted").length;
+  const firstDone   = evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first === "completed").length;
+  const secondDone  = evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second === "completed").length;
+  const upwardAssigns = getUpwardAssignments ? getUpwardAssignments() : [];
+  const peerAssigns   = getPeerAssignments   ? getPeerAssignments()   : [];
+  const upwardDone  = upwardAssigns.filter(a => isCompletedStatus(a.status)).length;
+  const upwardTotal = upwardAssigns.length;
+  const peerDone    = peerAssigns.filter(a => isCompletedStatus(a.status)).length;
+  const peerTotal   = peerAssigns.length;
+  const selfPending   = evaluatees.filter(e => evaluations()[e.id]?.status?.self !== "submitted");
+  const firstPending  = evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first !== "completed")
+    .map(e => allUsers.find(u => u.id === e.evaluator1Id)).filter(Boolean).filter((u,i,a) => a.findIndex(x=>x.id===u.id)===i);
+  const secondPending = evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second !== "completed")
+    .map(e => allUsers.find(u => u.id === e.evaluator2Id)).filter(Boolean).filter((u,i,a) => a.findIndex(x=>x.id===u.id)===i);
+  const pct = n => total ? Math.round(n/total*100) : 0;
+  const pendingTable = (label, people) => {
+    if (!people.length) return `<div class="notice ok" style="margin-top:8px;">✓ 모두 완료</div>`;
+    return `
+      <div class="table-wrap" style="margin-top:8px;">
+        <table style="min-width:0;">
+          <thead><tr><th>이름</th><th>부서</th><th>연락처</th><th>독려</th></tr></thead>
+          <tbody>
+            ${people.slice(0,20).map(u => `<tr>
+              <td><strong>${esc(u.name)}</strong></td>
+              <td style="font-size:12px;color:var(--muted);">${esc(u.division||u.team||"")}</td>
+              <td style="font-size:12px;">${esc(u.email||"")}</td>
+              <td><button class="button sm ghost" onclick="App.sendReminderMail('${u.id}','${label}')">메일 발송</button></td>
+            </tr>`).join("")}
+            ${people.length > 20 ? `<tr><td colspan="4" style="color:var(--muted);font-size:12px;">외 ${people.length-20}명...</td></tr>` : ""}
+          </tbody>
+        </table>
+      </div>`;
+  };
+  return cycleDashboardInnerHtml(evaluatees, selfDone, firstDone, secondDone, upwardDone, upwardTotal, peerDone, peerTotal, total, selfPending, firstPending, secondPending, pct, pendingTable);
+}
+
+function cycleDashboardInnerHtml(evaluatees, selfDone, firstDone, secondDone, upwardDone, upwardTotal, peerDone, peerTotal, total, selfPending, firstPending, secondPending, pct, pendingTable) {
+  // 단계별 분모: 해당 차수 평가자가 배정된 인원만 (미할당자는 집계 제외)
+  const firstTotal = evaluatees.filter(e => e.evaluator1Id).length;
+  const secondTotal = evaluatees.filter(e => e.evaluator2Id).length;
+  const pctOf = (done, tot) => tot ? Math.round(done / tot * 100) : 0;
+  // 상향·동료 미완료자 (평가자 기준)
+  const allUsers = cycleUsers();
+  const upwardPending = (getUpwardAssignments ? getUpwardAssignments() : [])
+    .filter(a => !isCompletedStatus(a.status))
+    .map(a => allUsers.find(u => u.id === a.evaluatorId)).filter(Boolean)
+    .filter((u,i,arr) => arr.findIndex(x => x.id === u.id) === i);
+  const peerPending = (getPeerAssignments ? getPeerAssignments() : [])
+    .filter(a => !isCompletedStatus(a.status))
+    .map(a => allUsers.find(u => u.id === a.evaluatorId)).filter(Boolean)
+    .filter((u,i,arr) => arr.findIndex(x => x.id === u.id) === i);
+
+  const pendingMap = {
+    '자기평가': selfPending,
+    '1차 평가': firstPending,
+    '2차 평가': secondPending,
+    '상향평가': upwardPending,
+    '동료평가': peerPending,
+  };
+
+  // 부서별 통계 (5개 평가 항목)
+  const depts = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort();
+  const deptRows = depts.map(dept => {
+    const members = evaluatees.filter(e => (e.division||"미지정") === dept);
+    const n = members.length;
+    const upAssigns = (getUpwardAssignments ? getUpwardAssignments() : []).filter(a => members.some(m => m.id === a.evaluatorId));
+    const peerAssignsLocal = (getPeerAssignments ? getPeerAssignments() : []).filter(a => members.some(m => m.id === a.evaluatorId));
+    const firstMembers = members.filter(e => e.evaluator1Id);
+    const secondMembers = members.filter(e => e.evaluator2Id);
+    const stats = [
+      { done: members.filter(e => evaluations()[e.id]?.status?.self === "submitted").length, t: n },
+      { done: firstMembers.filter(e => evaluations()[e.id]?.status?.first === "completed").length, t: firstMembers.length },
+      { done: secondMembers.filter(e => evaluations()[e.id]?.status?.second === "completed").length, t: secondMembers.length },
+      { done: upAssigns.filter(a => isCompletedStatus(a.status)).length, t: upAssigns.length },
+      { done: peerAssignsLocal.filter(a => isCompletedStatus(a.status)).length, t: peerAssignsLocal.length },
+    ];
+    const cells = stats.map(s => {
+      if (!s.t) return `<td style="text-align:center;color:var(--muted);font-size:12px;">-</td>`;
+      const ok = s.done === s.t;
+      return `<td style="text-align:center;"><span class="pill ${ok?"green":"amber"}" style="font-size:11px;">${s.done}/${s.t}</span></td>`;
+    }).join("");
+    return `<tr><td><strong>${esc(dept)}</strong></td><td style="text-align:center;">${n}</td>${cells}</tr>`;
+  }).join("");
+
+  return `
+      <!-- 요약 지표 -->
+      <div class="grid five">
+        <div class="panel metric"><span>자기평가 완료</span><strong>${selfDone}/${total}</strong><small>${pct(selfDone)}%</small></div>
+        <div class="panel metric"><span>1차 평가 완료</span><strong>${firstDone}/${firstTotal}</strong><small>${pctOf(firstDone, firstTotal)}%</small></div>
+        <div class="panel metric"><span>2차 평가 완료</span><strong>${secondDone}/${secondTotal}</strong><small>${pctOf(secondDone, secondTotal)}%</small></div>
+        <div class="panel metric"><span>상향평가 완료</span><strong>${upwardDone}/${upwardTotal}</strong><small>${upwardTotal ? Math.round(upwardDone/upwardTotal*100) : 0}%</small></div>
+        <div class="panel metric"><span>동료평가 완료</span><strong>${peerDone}/${peerTotal}</strong><small>${peerTotal ? Math.round(peerDone/peerTotal*100) : 0}%</small></div>
+      </div>
+
+      <!-- 진행률 게이지 -->
+      <section class="panel">
+        <div class="panel-head"><h2>단계별 진행률</h2></div>
+        <div class="panel-body grid">
+          ${[
+            ["자기평가",  selfDone,   total],
+            ["1차 평가",  firstDone,  firstTotal],
+            ["2차 평가",  secondDone, secondTotal],
+            ["상향평가",  upwardDone, upwardTotal],
+            ["동료평가",  peerDone,   peerTotal],
+          ].map(([label, done, t]) => {
+            const p = t ? Math.round(done/t*100) : 0;
+            return `<div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+                <span style="font-weight:600;">${label}</span>
+                <span style="color:var(--muted);">${done} / ${t} <strong style="color:${p===100?"var(--green)":"var(--primary)"};">${p}%</strong></span>
+              </div>
+              <div class="bar"><span style="width:${p}%;background:${p===100?"var(--green)":"var(--primary)"};"></span></div>
+            </div>`;
+          }).join("")}
+        </div>
+      </section>
+
+      <!-- 부서별 진행 현황 (5개 평가 항목) -->
+      <section class="panel">
+        <div class="panel-head"><h2>부서별 평가 진행 현황</h2></div>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>부서</th><th style="text-align:center;">인원</th>
+                  <th style="text-align:center;">자기평가</th>
+                  <th style="text-align:center;">1차 평가</th>
+                  <th style="text-align:center;">2차 평가</th>
+                  <th style="text-align:center;">상향평가</th>
+                  <th style="text-align:center;">동료평가</th>
+                </tr>
+              </thead>
+              <tbody>${deptRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 독려 메일 발송 -->
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>독려 메일 발송</h2><p class="muted">평가 유형을 선택하고 미완료자를 확인한 후 메일을 발송합니다.</p></div>
+        </div>
+        <div class="panel-body grid">
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+            <div class="field" style="min-width:160px;margin:0;">
+              <label for="reminder_type_select">평가 유형</label>
+              <select id="reminder_type_select" onchange="App.updateReminderList()">
+                <option value="자기평가">자기평가 미완료 (${selfPending.length}명)</option>
+                <option value="1차 평가">1차 평가 미완료 (${firstPending.length}명)</option>
+                <option value="2차 평가">2차 평가 미완료 (${secondPending.length}명)</option>
+                <option value="상향평가">상향평가 미완료 (${upwardPending.length}명)</option>
+                <option value="동료평가">동료평가 미완료 (${peerPending.length}명)</option>
+              </select>
+            </div>
+            <div class="field" style="min-width:180px;margin:0;">
+              <label for="reminder_search">이름/부서 검색</label>
+              <input id="reminder_search" placeholder="이름 또는 부서 검색..." oninput="App.filterReminderList(this.value)" />
+            </div>
+            <button class="button" onclick="App.sendBulkReminderFromPanel()">📧 선택 대상 일괄 발송</button>
+            <button class="button ghost" onclick="App.selectAllReminderTargets(true)">전체 선택</button>
+            <button class="button secondary" onclick="App.selectAllReminderTargets(false)">전체 해제</button>
+          </div>
+          <div class="table-wrap" id="reminder_list_wrap">
+            ${renderReminderListHtml(selfPending)}
+          </div>
+        </div>
+      </section>`;
+}
+
+// 평가 미수행자 독려 메일 발송 섹션 (단독 사용)
+function renderReminderMailSection() {
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers(cycle);
+  const evaluatees = allUsers.filter(isEvaluatee);
+  const selfPending = evaluatees.filter(e => evaluations()[e.id]?.status?.self !== "submitted");
+  const firstPending = evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first !== "completed")
+    .map(e => allUsers.find(u => u.id === e.evaluator1Id)).filter(Boolean).filter((u,i,a)=>a.findIndex(x=>x.id===u.id)===i);
+  const secondPending = evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second !== "completed")
+    .map(e => allUsers.find(u => u.id === e.evaluator2Id)).filter(Boolean).filter((u,i,a)=>a.findIndex(x=>x.id===u.id)===i);
+  const upwardPending = (getUpwardAssignments ? getUpwardAssignments() : []).filter(a=>!isCompletedStatus(a.status))
+    .map(a => allUsers.find(u => u.id === a.evaluatorId)).filter(Boolean).filter((u,i,a)=>a.findIndex(x=>x.id===u.id)===i);
+  const peerPending = (getPeerAssignments ? getPeerAssignments() : []).filter(a=>!isCompletedStatus(a.status))
+    .map(a => allUsers.find(u => u.id === a.evaluatorId)).filter(Boolean).filter((u,i,a)=>a.findIndex(x=>x.id===u.id)===i);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>평가 미수행자 독려 메일</h2><p class="muted">평가 유형을 선택하면 미수행자 목록이 표시됩니다. 대상을 선택해 메일을 발송하세요.</p></div>
+        <button class="button secondary" onclick="App.openMailSettings()">⚙ 자동 메일 설정</button>
+      </div>
+      <div class="panel-body grid">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+          <div class="field" style="min-width:200px;margin:0;">
+            <label for="reminder_type_select">평가 유형</label>
+            <select id="reminder_type_select" onchange="App.updateReminderList()">
+              <option value="자기평가">자기평가 미수행 (${selfPending.length}명)</option>
+              <option value="1차 평가">1차 평가 미수행 (${firstPending.length}명)</option>
+              <option value="2차 평가">2차 평가 미수행 (${secondPending.length}명)</option>
+              <option value="상향평가">상향평가 미수행 (${upwardPending.length}명)</option>
+              <option value="동료평가">동료평가 미수행 (${peerPending.length}명)</option>
+            </select>
+          </div>
+          <div class="field" style="min-width:180px;margin:0;">
+            <label for="reminder_search">이름/부서 검색</label>
+            <input id="reminder_search" placeholder="이름 또는 부서 검색..." oninput="App.filterReminderList(this.value)" />
+          </div>
+          <button class="button" onclick="App.sendBulkReminderFromPanel()">📧 선택 대상 일괄 발송</button>
+          <button class="button ghost" onclick="App.selectAllReminderTargets(true)">전체 선택</button>
+          <button class="button secondary" onclick="App.selectAllReminderTargets(false)">전체 해제</button>
+        </div>
+        <div id="reminder_list_wrap" class="reminder-scroll">${renderReminderListHtml(selfPending)}</div>
+      </div>
+    </section>
+    ${state.ui.mailSettingsModal ? renderMailSettingsModal() : ""}
+    ${state.ui.mailEditor ? renderMailEditorModal() : ""}
+    ${state.ui.mailComposeModal ? renderMailComposeModal() : ""}`;
+}
+
+// 메일 토글 스위치 + 편집 버튼 행
+function mailToggleRow(kind, k, label, s, extra = "") {
+  return `<div class="mail-row">
+    <label class="switch-toggle ${s.enabled ? "on" : ""}">
+      <input type="checkbox" ${s.enabled ? "checked" : ""} onchange="App.toggleMailSetting('${kind}','${k}',this.checked)" />
+      <span class="switch-track"><span class="switch-knob"></span></span>
+    </label>
+    <span class="mail-row-label">${esc(label)}</span>
+    ${extra}
+    <button class="button secondary sm" onclick="App.openMailEditor('${kind}','${k}')">✎ 발송 메일 편집</button>
+  </div>`;
+}
+
+// 자동 메일 설정 모달
+function renderMailSettingsModal() {
+  const ms = ensureMailSettings();
+  const startRows = MAIL_START_STAGES.map(([k, l]) => mailToggleRow("start", k, l, ms.start[k])).join("");
+  const remRows = MAIL_REMINDER_STAGES.map(([k, l]) => {
+    const s = ms.reminder[k];
+    const daysBox = `<span class="mail-days">마감 <input type="number" min="1" max="30" value="${esc(s.daysBefore)}" onchange="App.setMailReminderDays('${k}',this.value)" /> 일 전</span>`;
+    return mailToggleRow("reminder", k, l, s, daysBox);
+  }).join("");
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeMailSettings()">
+      <div class="goal-modal" style="max-width:640px;">
+        <div class="goal-modal-head"><h2>자동 메일 설정</h2><button class="modal-x" onclick="App.closeMailSettings()">×</button></div>
+        <div class="goal-modal-body" style="max-height:72vh;overflow-y:auto;">
+          <div class="mail-sec-title">① 평가 일정 시작 안내 메일</div>
+          <p class="muted mail-sec-desc">각 평가 일정이 시작되면 해당 평가 대상 구성원에게 안내 메일을 자동 발송합니다.</p>
+          <div class="mail-rows">${startRows}</div>
+
+          <div class="mail-sec-title">② 평가 일정 종료 전 독려 메일</div>
+          <p class="muted mail-sec-desc">마감 N일 전까지 평가를 완료하지 않은 구성원에게 독려 메일을 자동 발송합니다.</p>
+          <div class="mail-rows">${remRows}</div>
+
+          <div class="mail-sec-title">③ 수동 일괄 발송 기본 메일</div>
+          <p class="muted mail-sec-desc">"선택 대상 일괄 발송" 시 기본으로 채워지는 메일 내용입니다.</p>
+          <div class="mail-rows">
+            <div class="mail-row">
+              <span class="mail-row-label">기본 메일 내용</span>
+              <button class="button secondary sm" onclick="App.openMailEditor('bulk','')">✎ 발송 메일 편집</button>
+            </div>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button" onclick="App.closeMailSettings()">완료</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// 메일 내용 편집 팝업 (설정 모달 위에 표시)
+function renderMailEditorModal() {
+  const ed = state.ui.mailEditor || {};
+  const ms = ensureMailSettings();
+  const obj = ed.kind === "bulk" ? ms.bulk : (ms[ed.kind] && ms[ed.kind][ed.stage]);
+  if (!obj) return "";
+  const labelMap = Object.fromEntries([...MAIL_START_STAGES, ...MAIL_REMINDER_STAGES]);
+  const title = ed.kind === "bulk" ? "수동 일괄 발송 기본 메일"
+    : `${labelMap[ed.stage] || ed.stage} ${ed.kind === "start" ? "시작 안내" : "종료 전 독려"} 메일`;
+  return `
+    <div class="goal-modal-overlay" style="z-index:300;" onclick="if(event.target===this)App.closeMailEditor()">
+      <div class="goal-modal" style="max-width:560px;">
+        <div class="goal-modal-head"><h2>${esc(title)} 편집</h2><button class="modal-x" onclick="App.closeMailEditor()">×</button></div>
+        <div class="goal-modal-body">
+          <div class="field"><label>메일 제목</label><input id="mailedit_subj" value="${esc(obj.subject)}" /></div>
+          <div class="field"><label>메일 내용</label><textarea id="mailedit_body" rows="9">${esc(obj.body)}</textarea></div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeMailEditor()">취소</button>
+          <button class="button" onclick="App.saveMailEditor()">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// 수동 일괄 발송 - 메일 내용 편집 후 발송 모달
+function renderMailComposeModal() {
+  const m = state.ui.mailComposeModal || {};
+  const ids = m.ids || [];
+  const users = ids.map(id => cycleUserById(id) || userById(id)).filter(Boolean);
+  const withEmail = users.filter(u => u.email);
+  const ms = ensureMailSettings();
+  const subj = m.subject != null ? m.subject : ms.bulk.subject;
+  const body = m.body != null ? m.body : ms.bulk.body;
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeMailCompose()">
+      <div class="goal-modal" style="max-width:620px;">
+        <div class="goal-modal-head"><h2>독려 메일 발송</h2><button onclick="App.closeMailCompose()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button></div>
+        <div class="goal-modal-body">
+          <div class="notice" style="font-size:12px;margin-bottom:10px;"><strong>${esc(m.type || "")}</strong> 대상 <strong>${withEmail.length}명</strong>에게 발송합니다. (이메일 없는 대상 ${users.length - withEmail.length}명 제외)</div>
+          <div class="field"><label>제목</label><input id="compose_subj" value="${esc(subj)}" /></div>
+          <div class="field"><label>내용</label><textarea id="compose_body" rows="8">${esc(body)}</textarea></div>
+          <p class="muted" style="font-size:11px;">수신 대상: ${esc(withEmail.slice(0,8).map(u=>u.name).join(", "))}${withEmail.length>8?` 외 ${withEmail.length-8}명`:""}</p>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeMailCompose()">취소</button>
+          <button class="button" onclick="App.sendComposedMail()">📧 발송하기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderReminderListHtml(people) {
+  if (!people.length) return `<div class="notice ok">✓ 미수행자가 없습니다.</div>`;
+  return `
+    <table class="reminder-table" id="reminder_table">
+      <thead><tr>
+        <th style="width:36px;"><input type="checkbox" id="reminder_check_all" onchange="App.selectAllReminderTargets(this.checked)" /></th>
+        <th>이름</th><th>부서</th><th>이메일</th><th style="width:64px;">발송</th>
+      </tr></thead>
+      <tbody>
+        ${people.map(u => `
+          <tr class="reminder-row" data-search="${esc((u.name||"")+" "+(u.division||u.team||""))}">
+            <td><input type="checkbox" class="reminder-check" value="${esc(u.id)}" checked /></td>
+            <td><strong style="font-size:12.5px;">${esc(u.name)}</strong></td>
+            <td style="font-size:12px;color:var(--muted);">${esc(u.division||u.team||"-")}</td>
+            <td style="font-size:12px;color:var(--muted);">${esc(u.email||"-")}</td>
+            <td><button class="button sm ghost" style="padding:2px 8px;font-size:11px;" onclick="App.openSingleMailCompose('${esc(u.id)}')">발송</button></td>
+          </tr>`).join("")}
+      </tbody>
+    </table>`;
+}
+
+// ─── 사장·회장 최종 승인 페이지 ──────────────────────────────────────────────
+function renderApprovalPage(user) {
+  if (!["president", "chairman"].includes(user.role)) {
+    return `<div class="empty">최종 승인 권한이 없습니다.</div>`;
+  }
+
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers();
+  // 사장: 본인 소속 조직(division) 하위 구성원만 / 회장: 전체
+  const evaluatees = allUsers.filter(emp => {
+    if (!isEvaluatee(emp)) return false;
+    if (user.role === "president") {
+      // 사장 소속 division(예: COO)과 같은 division이거나 그 하위
+      return (emp.division === user.division || emp.orgRoot === user.division || emp.team === user.division || true);
+    }
+    return true;
+  }).filter(isEvaluatee);
+
+  // ── 성능 최적화: calculateFinal 결과를 한 번만 계산해 캐싱 ──
+  const resultCache = new Map();
+  const getResult = (id) => {
+    if (!resultCache.has(id)) resultCache.set(id, calculateFinal(id));
+    return resultCache.get(id);
+  };
+
+  // 승인 상태 키
+  const presidentApprovedKey = "approval:president";
+  const chairmanApprovedKey = "approval:chairman";
+  cycle.resultSubmissions = cycle.resultSubmissions || {};
+  const presidentApproved = Boolean(cycle.resultSubmissions[presidentApprovedKey]?.submitted);
+  const chairmanApproved  = Boolean(cycle.resultSubmissions[chairmanApprovedKey]?.submitted);
+
+  // 모든 평가 완료 여부 + 모든 본부 종합평가 제출 여부
+  const divisionStatuses = getDivisionSubmissionStatuses();
+  const allDivisionsSubmitted = divisionStatuses.length > 0 && divisionStatuses.every(d => d.submitted);
+  const allEvaluationsComplete = evaluatees.every(emp => {
+    const ev = evaluations()[emp.id];
+    if (!ev) return false;
+    if (ev.status.self !== "submitted") return false;
+    if (emp.evaluator1Id && ev.status.first !== "completed") return false;
+    if (emp.evaluator2Id && ev.status.second !== "completed") return false;
+    return true;
+  });
+  const approvalReady = allEvaluationsComplete && allDivisionsSubmitted;
+  const canPresidentApprove = user.role === "president" && approvalReady && !presidentApproved;
+  const canChairmanApprove  = user.role === "chairman"  && presidentApproved && !chairmanApproved;
+  // 본인이 등급을 조정할 차례일 때만 조정 가능
+  // 사장: 모든 준비 완료 & 아직 미승인 / 회장: 사장 승인 후 & 아직 미확정
+  const canAdjustNow = user.role === "president"
+    ? (approvalReady && !presidentApproved)
+    : (presidentApproved && !chairmanApproved);
+  const adjustLocked = !canAdjustNow;
+
+  // ── 통계 데이터 (캐시 활용) ──
+  const gradeCounts = Object.fromEntries(GRADES.map(g => [g, 0]));
+  const deptMap = {};
+  evaluatees.forEach(emp => {
+    const result = getResult(emp.id);
+    const g = result.finalGrade;
+    if (GRADES.includes(g)) gradeCounts[g]++;
+    const dept = emp.division || "미지정";
+    if (!deptMap[dept]) deptMap[dept] = {
+      total: 0, scores: [], headGrade: null,
+      counts: Object.fromEntries(GRADES.map(g2 => [g2, 0])),       // 전체(표시용)
+      memberCounts: Object.fromEntries(GRADES.map(g2 => [g2, 0])), // 팀원만(배분율 검증용)
+      memberTotal: 0,
+    };
+    deptMap[dept].total++;
+    if (result.rawScore !== null) deptMap[dept].scores.push(result.rawScore);
+    if (GRADES.includes(g)) {
+      deptMap[dept].counts[g]++;
+      // 종합평가 배분율 검증 대상 = 팀원만 (팀장·본부장 제외)
+      if (emp.role === "member") {
+        deptMap[dept].memberCounts[g]++;
+        deptMap[dept].memberTotal++;
+      }
+    }
+  });
+  // 본부장 등급 → headGrade (배분율 기준 결정)
+  allUsers.filter(u => u.role === "divisionHead").forEach(head => {
+    const dept = head.division || "미지정";
+    if (!deptMap[dept]) return;
+    const r = getResult(head.id);
+    if (GRADES.includes(r.finalGrade)) deptMap[dept].headGrade = r.finalGrade;
+  });
+
+  const totalCount = evaluatees.length;
+  const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
+
+  // ── 필터 상태 (캐시 활용, 정렬 1회만) ──
+  const filterDiv   = state.ui.approvalFilterDiv   || "";
+  const filterGrade = state.ui.approvalFilterGrade || "";
+  const filterTeam  = state.ui.approvalFilterTeam  || "";
+  const filterGrade2= state.ui.approvalFilterGrade2|| ""; // 직급 필터(title/grade)
+  const sortField = state.ui.approvalSortField || "score";
+  const sortDir   = state.ui.approvalSortDir   || "desc";
+  const GRADE_ORDER = { S:0, A:1, B:2, C:3, D:4, "":5 };
+  const sortedEvaluatees = [...evaluatees].sort((a, b) => {
+    let diff = 0;
+    if (sortField === "score") {
+      diff = (getResult(a.id).rawScore ?? -1) - (getResult(b.id).rawScore ?? -1);
+    } else if (sortField === "grade") {
+      diff = (GRADE_ORDER[getResult(b.id).finalGrade] ?? 5) - (GRADE_ORDER[getResult(a.id).finalGrade] ?? 5);
+    }
+    return sortDir === "asc" ? diff : -diff;
+  });
+  const filterName = (state.ui.approvalFilterName || "").trim().toLowerCase();
+  const filteredEvaluatees = sortedEvaluatees.filter(e => {
+    if (filterDiv    && (e.division || "미지정") !== filterDiv)      return false;
+    if (filterGrade  && getResult(e.id).finalGrade !== filterGrade)  return false;
+    if (filterTeam   && (e.team || "") !== filterTeam)               return false;
+    if (filterGrade2 && (e.grade || "") !== filterGrade2)            return false;
+    if (filterName   && !(e.name||"").toLowerCase().includes(filterName)) return false;
+    return true;
+  });
+  const divOptions   = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort();
+  const teamOptions  = [...new Set(evaluatees.map(e => e.team || "").filter(Boolean))].sort((a,b) => a.localeCompare(b,"ko"));
+  const gradeOptions = [...new Set(evaluatees.map(e => e.grade || "").filter(Boolean))].sort((a,b) => a.localeCompare(b,"ko"));
+
+  // 승인 단계 배너
+  let stepBanner = "";
+  if (!allEvaluationsComplete) {
+    const incompleteCount = evaluatees.filter(emp => {
+      const ev = evaluations()[emp.id];
+      if (!ev || ev.status.self !== "submitted") return true;
+      if (emp.evaluator1Id && ev.status.first !== "completed") return true;
+      if (emp.evaluator2Id && ev.status.second !== "completed") return true;
+      return false;
+    }).length;
+    stepBanner = `<div class="notice warn"><strong>⚠ 평가 미완료:</strong> 완료되지 않은 평가가 ${incompleteCount}명 있습니다. 모든 평가가 완료되어야 승인이 가능합니다.</div>`;
+  } else if (!allDivisionsSubmitted) {
+    const unsubmitted = divisionStatuses.filter(d => !d.submitted).map(d => d.division).join(", ");
+    stepBanner = `<div class="notice warn"><strong>⚠ 종합평가 미완료:</strong> 미제출 본부: ${esc(unsubmitted)} — 모든 본부의 종합평가 제출 후 승인이 가능합니다.</div>`;
+  } else if (!presidentApproved) {
+    stepBanner = user.role === "president"
+      ? `<div class="notice" style="background:var(--primary-weak);border-color:#9dc3ff;"><strong>✔ 모든 평가 및 종합평가가 완료되었습니다.</strong> 결과를 검토하고 사장 승인을 진행해 주세요.</div>`
+      : `<div class="notice warn"><strong>⚠ 사장 승인 대기:</strong> 사장 승인 완료 후 회장 최종 승인이 가능합니다.</div>`;
+  } else if (!chairmanApproved) {
+    stepBanner = user.role === "chairman"
+      ? `<div class="notice" style="background:var(--primary-weak);border-color:#9dc3ff;"><strong>✔ 사장 승인이 완료되었습니다.</strong> 결과를 최종 검토하고 승인해 주세요.</div>`
+      : `<div class="notice ok"><strong>✔ 사장 승인 완료.</strong> 회장 최종 승인 대기 중입니다.</div>`;
+  } else {
+    stepBanner = `<div class="notice ok"><strong>✔ 모든 승인이 완료되었습니다.</strong> 평가 결과가 최종 확정되었습니다.</div>`;
+  }
+
+  return `
+    <section class="panel" id="approval-panel">
+      <div class="panel-head">
+        <div><h2>최종 승인</h2></div>
+        <div class="toolbar">
+          <span class="pill ${presidentApproved ? "green" : "amber"}">사장 ${presidentApproved ? "승인완료" : "승인대기"}</span>
+          <span class="pill ${chairmanApproved ? "green" : "amber"}">회장 ${chairmanApproved ? "최종확정" : "확정대기"}</span>
+          ${approvalReady ? `<button class="button secondary" onclick="App.exportApproval()">📥 엑셀 다운로드</button>` : ""}
+          ${canPresidentApprove ? `<button class="button" onclick="App.doApproval('president')">사장 승인</button>` : ""}
+          ${canChairmanApprove ? `<button class="button" onclick="App.doApproval('chairman')">회장 최종 확정</button>` : ""}
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${stepBanner}
+        ${approvalReady ? `
+        <!-- 요약 지표 -->
+        <div class="grid five">
+          ${GRADES.map((g) => `
+            <div class="metric panel">
+              <span>${g}등급</span>
+              <strong style="color:${gradeColors[g]};">${gradeCounts[g]}<span style="font-size:16px;font-weight:400;color:var(--muted);">명</span></strong>
+              <small>${totalCount ? Math.round((gradeCounts[g] / totalCount) * 100) : 0}%</small>
+            </div>`).join("")}
+        </div>
+
+        <!-- 2열: 등급 분포 + 부서별 평균 -->
+        <div class="grid two">
+          <!-- 등급 분포 바 -->
+          <div class="component-card">
+            <h3>전체 등급 분포</h3>
+            <div style="height:36px;display:flex;border-radius:6px;overflow:hidden;gap:1px;margin-bottom:12px;">
+              ${GRADES.filter((g) => gradeCounts[g] > 0).map((g) => `
+                <span title="${g}: ${gradeCounts[g]}명" style="flex:${gradeCounts[g]};background:${gradeColors[g]};display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;">${g} ${gradeCounts[g]}</span>
+              `).join("") || `<span style="flex:1;background:#e5e9f1;border-radius:6px;"></span>`}
+            </div>
+            <div class="distribution-legend" style="padding-left:0;">
+              ${GRADES.map((g) => `<span><i style="background:${gradeColors[g]}"></i>${g} · ${gradeCounts[g]}명 (${totalCount ? Math.round((gradeCounts[g] / totalCount) * 100) : 0}%)</span>`).join("")}
+            </div>
+          </div>
+
+          <!-- 부서별 평균 -->
+          <div class="component-card">
+            <h3>부서별 평균 점수</h3>
+            ${Object.entries(deptMap).sort((a, b) => {
+              const avgA = a[1].scores.length ? a[1].scores.reduce((s, v) => s + v, 0) / a[1].scores.length : 0;
+              const avgB = b[1].scores.length ? b[1].scores.reduce((s, v) => s + v, 0) / b[1].scores.length : 0;
+              return avgB - avgA;
+            }).map(([dept, data]) => {
+              const avg = data.scores.length ? (data.scores.reduce((s, v) => s + v, 0) / data.scores.length).toFixed(1) : "-";
+              const maxScore = 100;
+              const pct = avg !== "-" ? Math.round((parseFloat(avg) / maxScore) * 100) : 0;
+              return `
+                <div style="margin-bottom:10px;">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:13px;">
+                    <span>${esc(dept)} <span class="muted">(${data.total}명)</span></span>
+                    <strong>${avg}점</strong>
+                  </div>
+                  <div class="bar"><span style="width:${pct}%"></span></div>
+                </div>`;
+            }).join("")}
+          </div>
+        </div>
+
+        <!-- 부서별 등급 분포 (본부장 등급 + 배분율 초과 표시 + 조정 이력) -->
+        ${renderDeptGradeDistributionTable(evaluatees, allUsers)}
+
+        <!-- 상세 목록 (필터) -->
+        <div class="panel" style="box-shadow:none;border:1px solid var(--line-soft);">
+          <div class="panel-head">
+            <h2>구성원 상세 결과</h2>
+            <div class="toolbar">
+              <span id="approval-result-count" class="pill" style="background:var(--primary-lt);color:var(--primary);font-size:12px;">${filteredEvaluatees.length} / ${totalCount}명</span>
+              ${canAdjustNow
+                ? `<button class="button" onclick="App.saveApprovalAdjustments()">조정 저장</button>`
+                : `<button class="button" disabled title="${user.role === "chairman" && !presidentApproved ? "사장 승인 후 등급 조정이 가능합니다." : "현재는 등급 조정 단계가 아닙니다."}">조정 저장</button>
+                   <span class="pill amber" style="font-size:11px;">${user.role === "chairman" && !presidentApproved ? "사장 승인 대기" : (user.role === "president" && presidentApproved) || (user.role === "chairman" && chairmanApproved) ? "승인 완료 · 조정 마감" : "조정 단계 아님"}</span>`}
+            </div>
+          </div>
+          <div class="panel-body">
+            <!-- 필터 바 -->
+            <div class="approval-filter-bar">
+              <div class="approval-filter-search">
+                <span class="filter-icon">🔍</span>
+                <input id="approval_name_search" placeholder="이름 검색…"
+                  value="${esc(state.ui.approvalFilterName||"")}"
+                  oninput="App.setApprovalFilter('name', this.value)"
+                  style="border:none;background:transparent;outline:none;width:120px;font-size:13px;" />
+                ${state.ui.approvalFilterName ? `<button onclick="App.setApprovalFilter('name','')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:0 4px;">×</button>` : ""}
+              </div>
+              <div class="approval-filter-selects">
+                <div class="af-select-wrap ${filterDiv?"active":""}">
+                  <label>부서</label>
+                  <select onchange="App.setApprovalFilter('div', this.value)">
+                    <option value="">전체</option>
+                    ${divOptions.map(d => `<option value="${esc(d)}" ${filterDiv===d?"selected":""}>${esc(d)}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="af-select-wrap ${filterTeam?"active":""}">
+                  <label>팀</label>
+                  <select onchange="App.setApprovalFilter('team', this.value)">
+                    <option value="">전체</option>
+                    ${teamOptions.map(t => `<option value="${esc(t)}" ${filterTeam===t?"selected":""}>${esc(t)}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="af-select-wrap ${filterGrade2?"active":""}">
+                  <label>직급</label>
+                  <select onchange="App.setApprovalFilter('grade2', this.value)">
+                    <option value="">전체</option>
+                    ${gradeOptions.map(g => `<option value="${esc(g)}" ${filterGrade2===g?"selected":""}>${esc(g)}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="af-select-wrap ${filterGrade?"active":""}">
+                  <label>등급</label>
+                  <select onchange="App.setApprovalFilter('grade', this.value)">
+                    <option value="">전체</option>
+                    ${GRADES.map(g => `<option value="${g}" ${filterGrade===g?"selected":""}>${g}등급</option>`).join("")}
+                  </select>
+                </div>
+                ${(filterDiv||filterTeam||filterGrade2||filterGrade||state.ui.approvalFilterName) ?
+                  `<button class="button ghost" onclick="App.clearApprovalFilters()" style="font-size:12px;padding:4px 10px;">필터 초기화</button>` : ""}
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>순위</th><th>구성원</th><th>역할 / 부서</th>
+                  <th>
+                    <button onclick="App.setApprovalSort('score')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">
+                      종합 점수 ${sortField==="score" ? (sortDir==="desc"?"▼":"▲") : "↕"}
+                    </button>
+                  </th>
+                  <th>
+                    <button onclick="App.setApprovalSort('grade')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">
+                      최종 등급 ${sortField==="grade" ? (sortDir==="desc"?"▼":"▲") : "↕"}
+                    </button>
+                  </th>
+                  <th>조정 등급</th>
+                  <th>조정 사유</th>
+                </tr></thead>
+                <tbody id="approval-result-tbody">
+                  ${(() => { state.ui._approvalTotalCount = filteredEvaluatees.length; return ""; })()}
+                  ${filteredEvaluatees.map((employee, idx) => {
+                    const result = getResult(employee.id);
+                    const evaluation = evaluations()[employee.id];
+                    const adjGrade = getAdjustmentGrade(evaluation, result);
+                    const adjReason = evaluation?.adjustment?.reason || "";
+                    return `<tr data-name="${esc((employee.name||"").toLowerCase())}">
+                      <td><strong class="approval-rank" style="color:var(--primary);">${idx + 1}</strong></td>
+                      <td>
+                        <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                          <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                        </button>
+                        <br/><span class="muted">${esc(employee.employeeNo || "")}</span>
+                      </td>
+                      <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.division || "")} · ${esc(employee.team || "")}</span></td>
+                      <td class="score" style="font-size:16px;">${result.scoreText}</td>
+                      <td>${gradeBadge(result.finalGrade)}</td>
+                      <td>${adjustLocked ? gradeBadge(adjGrade) : adjGradeSelectPlain(`adj_grade_${employee.id}`, adjGrade, { onchange: `App.promptAdjReason('${employee.id}', this)` })}</td>
+                      <td>
+                        ${adjustmentStageRecordsHtml(evaluation, ["president", "chairman"])}
+                        ${adjustLocked
+                          ? (adjReason ? `<span class="muted" style="font-size:12px;">${esc(adjReason)}</span>` : (adjustmentStageRecordsHtml(evaluation, ["president","chairman"]) ? "" : '<span class="muted">-</span>'))
+                          : `<textarea class="compact-textarea" id="adj_reason_${employee.id}" placeholder="등급 조정 시 사유 입력">${esc(adjReason)}</textarea>`}
+                      </td>
+                    </tr>`;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        ` : ""}
+      </div>
+    </section>`;
+}
+
+function renderGradeDistCards(gradeCounts, total, headGrade) {
+  const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
+  const dist = (state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {});
+  return GRADES.map(g => {
+    const cur      = gradeCounts[g] || 0;
+    const guidePct = Number(dist[g] ?? 0);
+    // 가이드 정원은 ceil로 계산: 21명×30%=6.3 → 7명까지 허용(반올림 오차 수용)
+    // 실제 초과(8명 등)는 정확히 잡음
+    const guideCt  = guidePct > 0 ? Math.ceil(total * guidePct / 100) : 0;
+    const curPct   = total ? Math.round(cur / total * 100) : 0;
+    const over     = (guidePct === 0 && cur > 0) || (guideCt > 0 && cur > guideCt);
+    const color    = gradeColors[g];
+    const barPct   = guidePct > 0 ? Math.min(curPct / guidePct * 100, 150) : (cur > 0 ? 100 : 0);
+
+    return `
+    <div style="border:${over ? `2.5px solid #dc2626` : `1.5px solid ${color}33`};border-radius:12px;padding:14px 14px 10px;background:${over ? "#fff5f5" : "#fff"};position:relative;overflow:hidden;">
+      ${over ? `<div style="position:absolute;top:0;right:0;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:3px 9px;border-radius:0 12px 0 8px;letter-spacing:.03em;">⚠ 초과</div>` : ""}
+
+      <!-- 등급 라벨 -->
+      <div style="font-size:12px;font-weight:800;color:${over?"#dc2626":color};margin-bottom:8px;letter-spacing:.04em;">${g}등급</div>
+
+      <!-- 가이드 vs 현재 (나란히 크게) -->
+      <div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:10px;">
+        <!-- 가이드 -->
+        <div style="flex:1;background:${color}14;border-radius:8px;padding:8px 10px;text-align:center;">
+          <div style="font-size:10.5px;font-weight:700;color:${color};margin-bottom:3px;">가이드</div>
+          <div style="font-size:20px;font-weight:800;color:${color};">${guideCt}<span style="font-size:12px;font-weight:500;color:var(--muted);">명</span></div>
+          <div style="font-size:11px;color:var(--muted);">${guidePct}%</div>
+        </div>
+        <!-- 화살표 -->
+        <div style="font-size:16px;color:${over?"#dc2626":"var(--muted)"};padding-bottom:12px;">→</div>
+        <!-- 현재 -->
+        <div style="flex:1;background:${over?"#fecaca":color+"22"};border-radius:8px;padding:8px 10px;text-align:center;border:${over?`1.5px solid #dc2626`:`1px solid ${color}33`};">
+          <div style="font-size:10.5px;font-weight:700;color:${over?"#dc2626":color};margin-bottom:3px;">현재</div>
+          <div style="font-size:20px;font-weight:800;color:${over?"#dc2626":color};">${cur}<span style="font-size:12px;font-weight:500;color:var(--muted);">명</span></div>
+          <div style="font-size:11px;color:${over?"#dc2626":"var(--muted)"};">${curPct}%</div>
+        </div>
+      </div>
+
+      <!-- 진행 바 (가이드 대비) -->
+      <div style="height:6px;border-radius:4px;background:var(--line);overflow:hidden;">
+        <div style="width:${Math.min(barPct,100)}%;height:100%;border-radius:4px;background:${over?"#dc2626":color};transition:width .3s;"></div>
+      </div>
+      ${over ? `<div style="font-size:10.5px;color:#dc2626;font-weight:700;margin-top:5px;text-align:center;">가이드 대비 +${cur - guideCt}명 초과</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderApprovalDetailPanel(employeeId) {
+  const employee = cycleUserById(employeeId) || userById(employeeId);
+  if (!employee) return `<div class="component-card"><p class="muted">구성원 정보를 찾을 수 없습니다.</p></div>`;
+  const ev = evaluations()[employeeId];
+  const result = calculateFinal(employeeId);
+  if (!ev) return `<div class="component-card"><p class="muted">평가 데이터가 없습니다.</p></div>`;
+
+  const stageRow = (label, review, status) => {
+    if (!review || !["submitted","completed"].includes(status)) return "";
+    const score = review.performance?.score ?? review.score ?? "";
+    const grade = review.performance?.grade ?? review.grade ?? "";
+    const comment = review.overallFeedback || review.performance?.comment || review.comment || "";
+    return `
+      <div style="border-left:3px solid var(--line);padding:8px 12px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <strong style="font-size:13px;">${label}</strong>
+          <div style="display:flex;gap:6px;">${score ? `<span class="score" style="font-size:14px;">${typeof score==="number"?score.toFixed(1):score}점</span>` : ""}${grade ? gradeBadge(grade) : ""}</div>
+        </div>
+        ${comment ? `<p style="font-size:12px;color:var(--muted);margin:0;line-height:1.5;">${esc(comment)}</p>` : ""}
+      </div>`;
+  };
+
+  // 상향평가 수신 결과
+  const upwardReceived = (getUpwardAssignments ? getUpwardAssignments() : []).filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
+  const upwardAvg = upwardReceived.length ? (upwardReceived.reduce((s, a) => s + (Number(a.answer?.score) || 0), 0) / upwardReceived.length).toFixed(1) : null;
+
+  // 동료평가 수신 결과
+  const peerReceived = (getPeerAssignments ? getPeerAssignments() : []).filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
+  const peerAvg = peerReceived.length ? (peerReceived.reduce((s, a) => s + (Number(a.answer?.score) || 0), 0) / peerReceived.length).toFixed(1) : null;
+
+  return `
+    <div class="component-card" style="position:sticky;top:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
+        <div>
+          <strong style="font-size:16px;">${esc(employee.name)}</strong>
+          <span class="pill blue" style="margin-left:6px;font-size:11px;">${ROLE_LABELS[employee.role]||""}</span>
+          <br/><span class="muted" style="font-size:12px;">${esc(employee.division||"")} ${esc(employee.team&&employee.team!==employee.division?" · "+employee.team:"")}</span>
+        </div>
+        <div style="text-align:right;">
+          <div class="score" style="font-size:20px;">${result.scoreText}</div>
+          <div>${gradeBadge(result.finalGrade)}</div>
+        </div>
+      </div>
+      <div>
+        ${stageRow("자기평가", ev.self, ev.status?.self)}
+        ${stageRow("1차 평가", ev.first, ev.status?.first)}
+        ${stageRow("2차 평가", ev.second, ev.status?.second)}
+        ${upwardAvg ? `<div style="border-left:3px solid var(--line);padding:8px 12px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;"><strong style="font-size:13px;">상향평가</strong><span class="score" style="font-size:14px;">${upwardAvg}점</span></div><p style="font-size:12px;color:var(--muted);margin:4px 0 0;">${upwardReceived.length}건 수신</p></div>` : ""}
+        ${peerAvg ? `<div style="border-left:3px solid var(--line);padding:8px 12px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;"><strong style="font-size:13px;">동료평가</strong><span class="score" style="font-size:14px;">${peerAvg}점</span></div><p style="font-size:12px;color:var(--muted);margin:4px 0 0;">${peerReceived.length}건 수신</p></div>` : ""}
+      </div>
+      <button class="button secondary" style="width:100%;margin-top:8px;" onclick="App.setApprovalDetail('')">닫기</button>
+    </div>`;
+}
+
+function renderAIFeedbackPanels(evaluation, visibility, ignorePublished) {
+  const ai = evaluation?.aiFeedback;
+  if (!ai?.generatedAt) return "";
+  if (!ignorePublished && !evaluation.published) return "";
+
+  const showOverall  = visibility?.finalFeedback  !== false;
+  const showUpward   = visibility?.feedbackUpward  !== false;
+  const showPeer     = visibility?.feedbackPeer    !== false;
+  const hasAnyFeedback = (showOverall && ai.overall) || (showUpward && ai.upward) || (showPeer && ai.peer);
+  if (!hasAnyFeedback && !((Array.isArray(ai.strengths) && ai.strengths.length) || (Array.isArray(ai.weaknesses) && ai.weaknesses.length)) && !(ai.ref1Title || ai.ref1Url || ai.ref2Title || ai.ref2Url)) return "";
+
+  const naverUrl = (q) => q ? `https://search.naver.com/search.naver?query=${encodeURIComponent(q)}` : "";
+
+  const feedbackBlock = (label, text, color) => text
+    ? `<div style="margin-bottom:20px;">
+         <div style="font-size:14px;font-weight:700;color:${color};margin-bottom:8px;">${label}</div>
+         <div class="report-feedback" style="font-size:17px;line-height:1.9;">${esc(text)}</div>
+       </div>`
+    : "";
+
+  const keywordPills = (keywords, color, bg) => (Array.isArray(keywords) ? keywords : [])
+    .filter(Boolean)
+    .map(k => `<span style="display:inline-block;padding:6px 14px;border-radius:20px;background:${bg};color:${color};font-size:14px;font-weight:700;margin:4px;">${esc(k)}</span>`)
+    .join("");
+
+  const refCard = (n) => {
+    const title  = ai[`ref${n}Title`]  || "";
+    const url    = ai[`ref${n}Url`]    || "";
+    const source = ai[`ref${n}Source`] || "";
+    const desc   = ai[`ref${n}Desc`]   || "";
+    if (!title) return "";
+    const linkUrl = url || `https://search.naver.com/search.naver?where=blog&query=${encodeURIComponent(title)}`;
+    const linkLabel = url ? "게시물 바로가기 →" : "네이버에서 검색하기 →";
+    return `
+      <a href="${esc(linkUrl)}" target="_blank" rel="noopener"
+        style="display:flex;gap:14px;padding:16px;border:1px solid var(--line);border-radius:12px;text-decoration:none;color:var(--text);background:var(--surface-2);transition:box-shadow .15s;flex:1;min-width:240px;align-items:flex-start;"
+        onmouseover="this.style.boxShadow='0 6px 18px rgba(0,0,0,.13)'" onmouseout="this.style.boxShadow=''">
+        <div style="width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;">📚</div>
+        <div style="display:flex;flex-direction:column;gap:4px;min-width:0;">
+          ${source ? `<div style="font-size:11px;color:var(--muted);">${esc(source)}</div>` : ""}
+          <div style="font-size:13px;font-weight:700;line-height:1.4;color:var(--primary);word-break:break-word;">${esc(title)}</div>
+          ${desc ? `<div style="font-size:12px;color:var(--muted);line-height:1.5;">${esc(desc)}</div>` : ""}
+          <div style="font-size:11px;color:#6366f1;font-weight:600;margin-top:4px;display:flex;align-items:center;gap:3px;">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            ${linkLabel}
+          </div>
+        </div>
+      </a>`;
+  };
+
+  const hasRef = (ai.ref1Title || ai.ref2Title);
+  const hasKeywords = (Array.isArray(ai.strengths) && ai.strengths.length) || (Array.isArray(ai.weaknesses) && ai.weaknesses.length);
+
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>최종 피드백</h2></div></div>
+      <div class="panel-body grid" style="gap:12px;">
+        ${showOverall ? feedbackBlock("📋 종합 평가 피드백", ai.overall, "var(--primary)") : ""}
+        ${showUpward  ? feedbackBlock("⬆ 상향평가 피드백",  ai.upward,   "#059669")       : ""}
+        ${showPeer    ? feedbackBlock("👥 동료평가 피드백",  ai.peer,     "#7c3aed")       : ""}
+      </div>
+    </section>
+    ${hasKeywords ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <section class="panel" style="text-align:center;">
+        <div class="panel-head"><div><h2>✨ 강점</h2></div></div>
+        <div class="panel-body">${keywordPills(ai.strengths, "#065f46", "#d1fae5") || '<span class="muted">-</span>'}</div>
+      </section>
+      <section class="panel" style="text-align:center;">
+        <div class="panel-head"><div><h2>🔧 개선점</h2></div></div>
+        <div class="panel-body">${keywordPills(ai.weaknesses, "#7c2d12", "#ffedd5") || '<span class="muted">-</span>'}</div>
+      </section>
+    </div>` : ""}
+    ${ai.suggestions ? `
+    <section class="panel">
+      <div class="panel-head"><div><h2>💡 제언</h2></div></div>
+      <div class="panel-body"><div class="report-feedback" style="font-size:17px;line-height:1.9;">${esc(ai.suggestions)}</div></div>
+    </section>` : ""}
+    ${hasRef ? `
+    <section class="panel">
+      <div class="panel-head"><div><h2>📚 참고자료</h2></div></div>
+      <div class="panel-body">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          ${refCard(1)}
+          ${refCard(2)}
+        </div>
+      </div>
+    </section>` : ""}
+  `;
+}
+
+function renderEvaluatorTendencyPanel(employee, visibility, ignoreResultsVisible) {
+  if (!visibility?.evaluatorTendency) return "";
+  const cycle = activeCycle();
+  const tendency = cycle?.aiEvaluatorTendency;
+  if (!tendency?.evaluators) return "";
+  if (!ignoreResultsVisible && !cycle?.resultsVisible) return "";
+
+  // 현재 사용자(평가자 본인)의 성향 분석 데이터 조회
+  const entry = tendency.evaluators[employee.id];
+  if (!entry) return "";
+
+  const leniencyBar = (score) => {
+    const clipped = Math.max(0, Math.min(100, score));
+    const color = clipped >= 70 ? "#059669" : clipped >= 40 ? "#d97706" : "#dc2626";
+    const label = clipped >= 70 ? "관대" : clipped >= 40 ? "중립" : "엄격";
+    return `
+      <div style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+        <span style="font-size:11px;color:var(--muted);width:28px;">엄격</span>
+        <div style="flex:1;background:var(--line);border-radius:99px;height:8px;position:relative;">
+          <div style="height:100%;width:${clipped}%;background:${color};border-radius:99px;"></div>
+          <div style="position:absolute;top:50%;transform:translate(-50%,-50%);left:${clipped}%;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.2);"></div>
+        </div>
+        <span style="font-size:11px;color:var(--muted);width:28px;">관대</span>
+        <span style="font-size:12px;font-weight:700;color:${color};min-width:52px;text-align:right;">${clipped}점 (${label})</span>
+      </div>`;
+  };
+
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>평가자 성향 분석</h2></div></div>
+      <div class="panel-body">
+        ${leniencyBar(entry.leniencyScore)}
+        <div style="font-size:13px;color:var(--muted);line-height:1.7;background:var(--surface-2);padding:10px 14px;border-radius:8px;border:1px solid var(--line);margin-top:8px;">
+          ${esc(entry.coaching)}
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderReport(user) {
+  if (!isEvaluatee(user)) return `<div class="empty">이 계정은 리포트 대상이 아닙니다.</div>`;
+  const evaluation = evaluations()[user.id];
+  const result = calculateFinal(user.id);
+  const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const showCoverResult = visibility.finalGrade || visibility.finalScore;
+  const hasAIFeedback = !!(evaluation?.aiFeedback?.generatedAt);
+  const hasVisibleDetail = showCoverResult || visibility.summary || visibility.upwardSummary || visibility.peerSummary || (hasAIFeedback && (visibility.finalFeedback || visibility.feedbackUpward || visibility.feedbackPeer));
+  if (!canShowReleasedResults()) {
+    return `<section class="panel"><div class="panel-body"><div class="empty">아직 평가가 완료되지 않았습니다.<br />평가가 완료되면 내 리포트를 확인하실 수 있습니다.</div></div></section>`;
+  }
+  if (!evaluation.published) {
+    return `<section class="panel"><div class="panel-body"><div class="empty">아직 리포트가 공개되지 않았습니다.<br />어드민이 최종 조정 후 공개하면 확인할 수 있습니다.</div></div></section>`;
+  }
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-body">
+          <div class="${showCoverResult ? "report-cover" : "grid"}">
+            <div class="grid">
+              <div>
+                <h2 class="section-title">${esc(user.name)} 평가 리포트</h2>
+                <p class="muted">${esc(user.title)} · ${esc(user.division)} / ${esc(user.team)}</p>
+              </div>
+              <div class="notice ok">공개된 평가 리포트입니다.</div>
+            </div>
+            ${
+              showCoverResult
+                ? `<div class="report-grade grade-${result.finalGrade}">
+                    <div>
+                      ${visibility.finalGrade ? `<span>최종 등급</span><strong>${esc(result.finalGrade)}</strong>` : ""}
+                      ${visibility.finalScore ? `<p>${result.scoreText}점</p>` : ""}
+                    </div>
+                  </div>`
+                : ""
+            }
+          </div>
+        </div>
+      </section>
+      ${
+        visibility.summary || visibility.upwardSummary || visibility.peerSummary
+          ? `<section class="panel">
+              <div class="panel-head"><div><h2>평가 요약</h2></div></div>
+              <div class="panel-body grid">
+                ${[
+                  ...(visibility.summary ? COMPONENTS : []),
+                  ...(visibility.upwardSummary ? ["upward"] : []),
+                  ...(visibility.peerSummary ? ["peer"] : []),
+                ].map((component) => {
+                  const item = result.componentScores[component];
+                  return `<div><div class="toolbar" style="justify-content: space-between;"><strong>${WEIGHT_COMPONENT_LABELS[component]}</strong><span class="score">${item?.text || "-"}</span></div><div class="bar"><span style="width: ${Math.max(0, Math.min(100, item?.value || 0))}%"></span></div></div>`;
+                }).join("")}
+              </div>
+            </section>`
+          : ""
+      }
+      ${renderAIFeedbackPanels(evaluation, visibility)}
+      ${renderEvaluatorTendencyPanel(user, visibility)}
+      ${hasVisibleDetail ? "" : `<section class="panel"><div class="panel-body"><div class="empty">현재 공개된 리포트 항목이 없습니다.</div></div></section>`}
+
+      <!-- 인사팀 소통 버튼 영역 -->
+      ${(() => {
+        const fb = evaluation.reportFeedback || {};
+        return `
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            ${fb.resultConfirmed
+              ? `<button class="button" style="background:var(--green);border-color:var(--green);cursor:default;" disabled>✔ 결과 확인 완료 (${fb.confirmedAt ? fb.confirmedAt.slice(0,10) : ""})</button>`
+              : `<button class="button" onclick="App.confirmResult()">평가 결과 확인</button>`}
+            <button class="button secondary" onclick="App.openOpinionModal()">인사팀 소통</button>
+          </div>
+          ${fb.opinionSubmitted ? `<div class="notice ok" style="margin-top:8px;font-size:13px;">의견이 제출되었습니다.${fb.interviewRequested ? " · 면담 요청이 접수되었습니다." : ""}</div>` : ""}
+        `;
+      })()}
+
+      <!-- 인사팀 소통 모달 -->
+      ${state.ui.opinionModal ? `
+        <div class="goal-modal-overlay" style="z-index:600;" onclick="if(event.target===this)App.closeOpinionModal()">
+          <div class="goal-modal" style="max-width:520px;width:100%;">
+            <div class="goal-modal-head"><h2>인사팀 소통</h2><button class="modal-x" onclick="App.closeOpinionModal()">×</button></div>
+            <div class="goal-modal-body">
+              <p class="muted" style="margin-bottom:12px;">평가 결과에 대한 의견을 입력해 주세요. 인사팀 면담을 원하시면 아래 체크박스를 선택해 주세요.</p>
+              <textarea id="opinion_content" rows="6" placeholder="의견을 입력하세요..." style="width:100%;resize:vertical;">${esc((evaluation.reportFeedback || {}).opinion || "")}</textarea>
+              <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;font-size:14px;">
+                <input type="checkbox" id="opinion_interview_check" ${(evaluation.reportFeedback || {}).interviewRequested ? "checked" : ""} style="width:16px;height:16px;" />
+                인사팀 면담 신청
+              </label>
+            </div>
+            <div class="goal-modal-foot">
+              <button class="button secondary" onclick="App.closeOpinionModal()">취소</button>
+              <button class="button" onclick="App.submitOpinion()">제출</button>
+            </div>
+          </div>
+        </div>` : ""}
+    </div>
+  `;
+}
+
+function renderAdmin(user) {
+  if (user.role !== "admin") return `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  return renderAdminCycleList()
+    + (state.ui.cycleSettingsModal  ? renderCycleSettingsModal()  : "")
+    + (state.ui.cycleDetailModal    ? renderCycleDetailModal()    : "");
+}
+
+function renderAdminCycleList() {
+  const statusColor = { active: "var(--green)", paused: "var(--amber)", done: "var(--primary)" };
+  const statusIcon  = { active: "🟢", paused: "⏸", done: "✅" };
+  const cycleRows = state.cycles.map((c) => {
+    const color = statusColor[c.status] || "var(--muted)";
+    const icon  = statusIcon[c.status]  || "•";
+    const evalStart = c.selfStart || c.firstStart || "";
+    const evalEnd   = c.feedbackEnd || c.gradeEnd || "";
+    const dateRange = evalStart ? `${evalStart} ~ ${evalEnd || "?"}` : "기간 미설정";
+    return `
+      <div class="cycle-list-row" style="border-left:4px solid ${color};cursor:pointer;" onclick="App.openCycleDetailModal('${c.id}')">
+        <div class="cycle-list-main">
+          <div class="cycle-list-name">
+            <strong>${esc(c.name)}</strong>
+            <span class="pill" style="background:${color};color:#fff;font-size:11px;">${icon} ${cycleStatusLabel(c.status)}</span>
+          </div>
+          <div class="cycle-list-meta muted" style="font-size:12px;margin-top:4px;">
+            평가 기간: ${esc(dateRange)}${c.referenceDate ? ` &nbsp;·&nbsp; 기준일: ${esc(c.referenceDate)}` : ""}
+          </div>
+        </div>
+        <div class="cycle-list-actions" onclick="event.stopPropagation()">
+          <button class="button secondary sm" onclick="App.openCycleSettings('${c.id}')">세팅 편집</button>
+          <button class="button danger sm" onclick="App.deleteCycleById('${c.id}')">삭제</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>평가 관리</h2>
+          </div>
+          <div class="toolbar">
+            <button class="button ghost" onclick="App.createCycleAndOpen()">+ 새로운 평가 만들기</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          ${state.cycles.length ? `<div class="cycle-list">${cycleRows}</div>`
+            : `<div class="empty" style="padding:32px 0;">평가 사이클이 없습니다. 새 평가를 만들어 주세요.</div>`}
+        </div>
+      </section>
+    </div>`;
+}
+
+function renderCycleDetailModal() {
+  const modal = state.ui.cycleDetailModal || {};
+  const tab = modal.tab || "dashboard";
+  const fullscreen = !!modal.fullscreen;
+  const cycle = selectedCycle();
+
+  // 결과 공개가 이미 켜져 있으면 플래그 자동 세팅 (기존 데이터 마이그레이션)
+  if (cycle.resultsVisible && !cycle.feedbackMgmtUnlocked) {
+    cycle.feedbackMgmtUnlocked = true;
+    saveState();
+  }
+  const feedbackUnlocked = !!cycle.feedbackMgmtUnlocked;
+  const hrGroupActive = hasHRGroupMembers();
+  const TABS = [
+    { key: "dashboard", label: "📊 평가 진행 현황", locked: false },
+    { key: "hrGroup",   label: "📋 종합평가", locked: !hrGroupActive, lockTitle: "상대평가 그룹을 인사총무팀으로 배정한 구성원이 있을 때 활성화됩니다." },
+    { key: "adjust",    label: "🛠️ 최종 결과/리포트 공개", locked: false },
+    { key: "feedback",  label: "💬 피드백 관리", locked: !feedbackUnlocked },
+  ];
+  const tabsHtml = TABS.map(({ key, label, locked, lockTitle }) =>
+    locked
+      ? `<button class="cycle-modal-tab" disabled title="${lockTitle || "활성화 조건이 충족되지 않았습니다."}" style="opacity:0.4;cursor:not-allowed;">${label} 🔒</button>`
+      : `<button class="cycle-modal-tab ${tab === key ? "active" : ""}" onclick="App.setCycleDetailTab('${key}')">${label}</button>`
+  ).join("");
+
+  const modalStyle = fullscreen
+    ? "width:100%;height:100%;max-width:100%;max-height:100%;border-radius:0;"
+    : "max-width:1200px;width:97%;max-height:92vh;";
+
+  let bodyHtml;
+  if (tab === "dashboard") {
+    bodyHtml = `
+      <div class="grid">
+        ${renderEvalFlowStageBanner()}
+        <section class="panel">
+          <div class="panel-head">
+            <div><h2>사이클 상태 변경</h2><p class="muted">${esc(cycle.name)}의 진행 상태를 변경합니다.</p></div>
+            <div class="field" style="flex-direction:row;align-items:center;gap:8px;margin:0;">
+              <label style="white-space:nowrap;">사이클 상태</label>
+              <select id="dash_cycle_status" style="width:150px;" onchange="App.saveCycleStatusOnly()">
+                <option value="active" ${cycle.status === "active" ? "selected" : ""}>🟢 진행</option>
+                <option value="paused" ${cycle.status === "paused" ? "selected" : ""}>⏸ 중지</option>
+                <option value="done"   ${cycle.status === "done"   ? "selected" : ""}>✅ 평가 완료</option>
+              </select>
+            </div>
+          </div>
+        </section>
+        ${renderAdminProgressSummary()}
+        <section class="panel">
+          <div class="panel-head"><div><h2>조직별 진행 현황</h2><p class="muted">본부를 클릭하면 해당 본부 구성원의 평가 진행 상세를 확인할 수 있습니다.</p></div></div>
+          <div class="panel-body">${renderGroupedStatus()}</div>
+        </section>
+        ${renderReminderMailSection()}
+        ${state.ui.adjustmentSessionDivision ? renderAdjustmentSessionModal(state.ui.adjustmentSessionDivision) : ""}
+      </div>`;
+  } else if (tab === "hrGroup") {
+    bodyHtml = renderAdminHRGroupComprehensive();
+  } else if (tab === "feedback") {
+    bodyHtml = renderFeedbackMgmt();
+  } else {
+    bodyHtml = renderAdminAdjustments();
+  }
+
+  return `
+    <div class="goal-modal-overlay cycle-detail-overlay ${fullscreen ? "cycle-settings-overlay--fs" : ""}" style="z-index:510;" onclick="if(event.target===this)App.closeCycleDetailModal()">
+      <div class="goal-modal cycle-settings-modal" style="${modalStyle}display:flex;flex-direction:column;">
+        <div class="goal-modal-head" style="flex-shrink:0;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <h2 style="margin:0;">${esc(cycle.name)}</h2>
+            <span class="pill" style="font-size:11px;">${cycleStatusLabel(cycle.status)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="modal-x" onclick="App.toggleCycleDetailFullscreen()" title="${fullscreen ? "창 크기로 보기" : "전체화면으로 보기"}" style="font-size:18px;">⛶</button>
+            <button class="modal-x" onclick="App.closeCycleDetailModal()" title="닫기">×</button>
+          </div>
+        </div>
+        <div class="cycle-modal-tabs" style="flex-shrink:0;display:flex;gap:4px;padding:10px 20px 0;border-bottom:1px solid var(--line);background:var(--surface);">
+          ${tabsHtml}
+        </div>
+        <div class="goal-modal-body cycle-settings-body" style="flex:1;overflow-y:auto;padding:20px;">
+          ${bodyHtml}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderCycleSettingsModal() {
+  const modal = state.ui.cycleSettingsModal || {};
+  const section = modal.section || "progress";
+  const fullscreen = !!modal.fullscreen;
+  const cycle = selectedCycle();
+  const MODAL_TABS = [
+    { key: "progress",  label: "① 기간 설정" },
+    { key: "people",    label: "② 평가권한" },
+    { key: "weights",   label: "③ 가중치·등급" },
+    { key: "templates", label: "④ 템플릿" },
+    { key: "reports",   label: "⑤ 리포트" },
+  ];
+  const tabsHtml = MODAL_TABS.map(({ key, label }) => {
+    const active = section === key;
+    return `<button class="cycle-modal-tab ${active ? "active" : ""}" onclick="App.setCycleSettingsSection('${key}')">${label}</button>`;
+  }).join("");
+
+  const modalStyle = fullscreen
+    ? "width:100%;height:100%;max-width:100%;max-height:100%;border-radius:0;"
+    : "max-width:1100px;width:97%;max-height:92vh;";
+
+  const fsIcon   = fullscreen ? "⛶" : "⛶";
+  const fsTitle  = fullscreen ? "창 크기로 보기" : "전체화면으로 보기";
+
+  return `
+    <div class="goal-modal-overlay cycle-settings-overlay ${fullscreen ? "cycle-settings-overlay--fs" : ""}" style="z-index:500;" onclick="if(event.target===this)App.closeCycleSettings()">
+      <div class="goal-modal cycle-settings-modal" style="${modalStyle}display:flex;flex-direction:column;">
+        <div class="goal-modal-head" style="flex-shrink:0;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <h2 style="margin:0;">${esc(cycle.name)} — 세팅</h2>
+            <span class="pill" style="font-size:11px;">${cycleStatusLabel(cycle.status)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="modal-x" onclick="App.toggleCycleSettingsFullscreen()" title="${fsTitle}" style="font-size:18px;">${fsIcon}</button>
+            <button class="modal-x" onclick="App.closeCycleSettings()" title="닫기">×</button>
+          </div>
+        </div>
+        <div class="cycle-modal-tabs" style="flex-shrink:0;display:flex;gap:4px;padding:10px 20px 0;border-bottom:1px solid var(--line);background:var(--surface);">
+          ${tabsHtml}
+        </div>
+        <div class="goal-modal-body cycle-settings-body" style="flex:1;overflow-y:auto;padding:20px;">
+          ${renderAdminSection(section)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderAdminSection(section) {
+  if (section === "cycleDash")   return renderAdminCycleDashboard();
+  if (section === "people")      return renderAdminPeople();
+  if (section === "weights")     return renderAdminWeightsAndGrades();
+  if (section === "templates")   return renderAdminTemplates();
+  if (section === "reports")     return renderAdminReports();
+  if (section === "adjustments") return renderAdminAdjustments();
+  return renderAdminProgress();
+}
+
+// ③ 가중치+등급 통합 페이지
+function renderAdminWeightsAndGrades() {
+  return `
+    <div class="grid">
+      ${renderAdminWeightSection()}
+      ${renderAdminGrades()}
+    </div>`;
+}
+
+function renderAdminWeightSection() {
+  const roleLabels = { member: "팀원", teamLead: "팀장", divisionHead: "본부장" };
+  const cycle = selectedCycle();
+  const useAI = !!cycle?.useAIEval;
+  const weightRows = ["member","teamLead","divisionHead"].map(role => {
+    const w = state.roleWeights[role] || {};
+    const total = WEIGHT_COMPONENTS.reduce((s,c) => s + Number(w[c]||0), 0);
+    const ok = Math.abs(total - 100) < 0.5;
+    const cells = WEIGHT_COMPONENTS.map(c =>
+      `<td><input type="number" id="weight_${role}_${c}" value="${Number(w[c]||0).toFixed(1)}" min="0" max="100" step="5" style="width:68px;text-align:center;"></td>`
+    ).join("");
+    return `<tr><td><strong>${roleLabels[role]}</strong></td>${cells}<td><span class="pill ${ok?"green":"red"}" id="wt_total_${role}">${total.toFixed(1)}%</span></td></tr>`;
+  }).join("");
+  const evalwRows = ["member","teamLead","divisionHead"].map(role => {
+    const ew = state.evaluatorWeights[role] || {first:60, second:40};
+    const aiW = Number(ew.ai || 0);
+    const total = ew.first + ew.second + (useAI ? aiW : 0);
+    const ok = total === 100;
+    return `<tr>
+      <td><strong>${roleLabels[role]}</strong></td>
+      <td><input type="number" id="evalw_${role}_first" value="${ew.first}" min="0" max="100" style="width:68px;text-align:center;"></td>
+      <td><input type="number" id="evalw_${role}_second" value="${ew.second}" min="0" max="100" style="width:68px;text-align:center;"></td>
+      ${useAI ? `<td><input type="number" id="evalw_${role}_ai" value="${aiW}" min="0" max="100" style="width:68px;text-align:center;"></td>` : ""}
+      <td><span class="pill ${ok?"green":"red"}">${total}%</span></td>
+    </tr>`;
+  }).join("");
+  const thead = `<tr><th>역할</th>${WEIGHT_COMPONENTS.map(c => `<th>${WEIGHT_COMPONENT_LABELS[c]}</th>`).join("")}<th>합계</th></tr>`;
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>역할별 평가 가중치</h2><p class="muted">각 평가 구성요소의 반영 비율을 설정합니다. 합계가 100%가 되어야 합니다.</p></div>
+        <button class="button" onclick="App.saveTemplates()">저장</button>
+      </div>
+      <div class="panel-body">
+        <div class="table-wrap">
+          <table><thead>${thead}</thead><tbody>${weightRows}</tbody></table>
+        </div>
+        <!-- AI 평가 기능 토글 -->
+        <div style="margin-top:18px;padding:14px 16px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:14px;font-weight:700;margin-bottom:3px;">AI 평가 기능</div>
+              <div class="muted" style="font-size:12px;">AI가 자기평가 제출 시 업적평가 항목을 자동 채점하고 근거를 생성합니다. 활성화하면 아래 평가자 반영 비율에 AI 평가자 비율을 설정할 수 있습니다.</div>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+              <input type="checkbox" id="cycle_useAIEval" ${useAI ? "checked" : ""} onchange="App.toggleCycleAIEval(this.checked)" style="width:16px;height:16px;cursor:pointer;">
+              AI 평가 ${useAI ? '<span class="pill green" style="font-size:11px;">사용 중</span>' : '<span class="pill" style="font-size:11px;background:var(--line);">미사용</span>'}
+            </label>
+          </div>
+        </div>
+        <div style="margin-top:18px;">
+          <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;">평가자 반영 비율 (1차 / 2차${useAI ? " / AI" : ""})</h3>
+          ${useAI ? `<div class="notice" style="font-size:12px;margin-bottom:8px;background:var(--primary-lt);border-color:var(--primary-mid);">💡 AI 평가자 비율은 <strong>업적평가</strong> 점수에만 반영됩니다. 1차 + 2차 + AI 비율의 합계가 100%가 되어야 합니다.</div>` : ""}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>역할</th><th>1차 평가자 (%)</th><th>2차 평가자 (%)</th>${useAI ? "<th>AI 평가자 (%)</th>" : ""}<th>합계</th></tr></thead>
+              <tbody>${evalwRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderEvalFlowStageBanner() {
+  const flowStage = getEvalFlowStage();
+  const stageLabels = ["", "평가 세팅", "평가 수행 중", "종합평가", "사장 승인", "회장 승인", "리포트 공개"];
+  const stageColors = ["","var(--muted)","var(--primary)","var(--amber)","var(--green)","var(--violet)","#0ea5e9"];
+  const lastStep = 6;
+  return `
+    <div class="panel" style="border-left:4px solid ${stageColors[flowStage]};">
+      <div class="panel-body" style="padding:14px 18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:3px;">현재 평가 진행 단계</div>
+          <div style="font-size:18px;font-weight:700;color:${stageColors[flowStage]};">STEP ${flowStage} · ${stageLabels[flowStage]}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          ${[1,2,3,4,5,6].map(s => `
+            <div style="display:flex;align-items:center;gap:4px;">
+              <div style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;
+                background:${s<=flowStage?stageColors[s]:"var(--line)"};color:${s<=flowStage?"#fff":"var(--muted)"};">${s}</div>
+              <span style="font-size:12px;color:${s===flowStage?"var(--ink)":"var(--muted)"};">${stageLabels[s]}</span>
+              ${s<lastStep?`<span style="color:var(--line);margin:0 2px;">›</span>`:""}
+            </div>`).join("")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderAdminProgress() {
+  const cycle = selectedCycle();
+  return `
+    <div class="grid">
+      <!-- 평가명 + 상태 -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>평가 기본 정보</h2>
+            <p class="muted">평가명과 상태를 설정합니다.</p>
+          </div>
+          <div class="toolbar">
+            <button class="button secondary" onclick="App.saveCycleSettings()">저장</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="form-grid">
+            ${adminInput("cycle_name", "평가명", cycle.name)}
+            <div class="field">
+              <label for="cycle_status">사이클 상태</label>
+              <select id="cycle_status">
+                <option value="paused" ${cycle.status === "paused" ? "selected" : ""}>⏸ 중지</option>
+                <option value="active" ${cycle.status === "active" ? "selected" : ""}>🟢 진행</option>
+                <option value="done"   ${cycle.status === "done"   ? "selected" : ""}>✅ 평가 완료</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="cycle_referenceDate">평가 기준일</label>
+              <input type="date" id="cycle_referenceDate" value="${cycle.referenceDate || ""}" onchange="App.autoFillPhaseDates(this.value)" />
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- 평가 기간 설정 -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>단계별 평가 기간 설정</h2>
+            <p class="muted">상태가 <strong>진행</strong>이고 설정 기간 안에 있을 때만 각 단계 제출이 가능합니다.</p>
+          </div>
+          <div class="toolbar">
+            <button class="button secondary" onclick="App.saveCycleSettings()">세팅 저장</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table style="min-width:500px;">
+              <thead><tr><th>단계</th><th>시작일</th><th>종료일</th><th>현재 상태</th></tr></thead>
+              <tbody>
+                ${[
+                  ["자기평가",    "cycle_selfStart",     "cycle_selfEnd",     cycle.selfStart,     cycle.selfEnd],
+                  ["1차 평가",    "cycle_firstStart",    "cycle_firstEnd",    cycle.firstStart,    cycle.firstEnd],
+                  ["2차 평가",    "cycle_secondStart",   "cycle_secondEnd",   cycle.secondStart,   cycle.secondEnd],
+                  ["상향평가",    "cycle_upwardStart",   "cycle_upwardEnd",   cycle.upwardStart,   cycle.upwardEnd],
+                  ["동료평가",    "cycle_peerStart",     "cycle_peerEnd",     cycle.peerStart,     cycle.peerEnd],
+                  ["등급 확정",   "cycle_gradeStart",    "cycle_gradeEnd",    cycle.gradeStart,    cycle.gradeEnd],
+                  ["피드백 공개", "cycle_feedbackStart", "cycle_feedbackEnd", cycle.feedbackStart, cycle.feedbackEnd],
+                ].map(([label, startId, endId, startVal, endVal]) => {
+                  const active = isDateInRange(startVal, endVal);
+                  const past = endVal && endVal < new Date().toISOString().slice(0,10);
+                  const statusBadge = active
+                    ? `<span class="pill green">진행중</span>`
+                    : past
+                      ? `<span class="pill" style="background:var(--line);">완료</span>`
+                      : `<span class="pill" style="color:var(--muted);">예정</span>`;
+                  return `<tr>
+                    <td><strong>${label}</strong></td>
+                    <td><input type="date" id="${startId}" value="${esc(startVal ?? "")}" style="width:140px;"></td>
+                    <td><input type="date" id="${endId}"   value="${esc(endVal   ?? "")}" style="width:140px;"></td>
+                    <td>${statusBadge}</td>
+                  </tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <div class="notice" style="background:var(--primary-lt);border-color:var(--primary-mid);">
+        평가권한 설정 → 가중치·등급 → 평가 템플릿 → 리포트 설정 순서로 세팅을 진행한 뒤,
+        <strong>⑤ 리포트 설정</strong> 단계에서 <strong>평가 시작하기</strong>로 평가를 시작하세요.
+      </div>
+    </div>
+  `;
+}
+
+function renderEvalStartPanel() {
+  const cycle = selectedCycle();
+  return `
+    <section class="panel" style="border-left:4px solid ${cycle.status === "active" ? "var(--green)" : "var(--primary)"};">
+      <div class="panel-head">
+        <div>
+          <h2>${cycle.status === "active" ? "평가 진행 중" : "평가 시작"}</h2>
+          <p class="muted">${cycle.status === "active"
+            ? "이 평가는 현재 진행 중입니다. 진행 상태 변경은 '평가 진행 현황' 메뉴에서 할 수 있습니다."
+            : "모든 세팅을 마쳤다면 평가를 시작하세요. 시작하면 설정된 기간에 따라 구성원이 평가를 작성할 수 있습니다."}</p>
+        </div>
+        <div class="toolbar">
+          ${cycle.status === "active"
+            ? `<span class="pill green" style="font-size:13px;">🟢 진행중</span>`
+            : `<button class="button" onclick="App.startEvaluation()">▶ 평가 시작하기</button>`}
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderAdminCycleDashboard() {
+  const cycle = selectedCycle();
+  return `
+    <div class="grid">
+      ${renderEvalFlowStageBanner()}
+      <!-- 사이클 선택 + 상태 -->
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>평가 진행 현황 조회</h2><p class="muted">조회할 평가 사이클을 선택하고, 진행 상태를 변경합니다.</p></div>
+          <div class="toolbar">
+            <div class="field" style="flex-direction:row;align-items:center;gap:8px;margin:0;">
+              <label style="white-space:nowrap;">사이클 상태</label>
+              <select id="dash_cycle_status" style="width:150px;" onchange="App.saveCycleStatusOnly()">
+                <option value="active" ${cycle.status === "active" ? "selected" : ""}>🟢 진행</option>
+                <option value="paused" ${cycle.status === "paused" ? "selected" : ""}>⏸ 중지</option>
+                <option value="done" ${cycle.status === "done" ? "selected" : ""}>✅ 평가 완료</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="field" style="max-width:320px;">
+            <label for="dash_cycle_select">평가 사이클 선택</label>
+            <select id="dash_cycle_select" onchange="App.switchCycle(this.value)">
+              ${state.cycles.map(c => `<option value="${c.id}" ${c.id === cycle.id ? "selected" : ""}>${esc(c.name)} · ${cycleStatusLabel(c.status)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+      </section>
+      <!-- 진행 현황 요약 카드 + 평가 일정 -->
+      ${renderAdminProgressSummary()}
+      <!-- 조직별 진행 현황 (본부 단위, 클릭 시 구성원 상세) -->
+      <section class="panel">
+        <div class="panel-head"><div><h2>조직별 진행 현황</h2><p class="muted">본부를 클릭하면 해당 본부 구성원의 평가 진행 상세를 확인할 수 있습니다.</p></div></div>
+        <div class="panel-body">${renderGroupedStatus()}</div>
+      </section>
+      <!-- 평가 미수행자 독려 메일 -->
+      ${renderReminderMailSection()}
+      ${state.ui.adjustmentSessionDivision ? renderAdjustmentSessionModal(state.ui.adjustmentSessionDivision) : ""}
+    </div>
+  `;
+}
+
+// 조정 세션 모달: 해당 본부 종합평가 내용을 띄우고 등급을 조정해 제출 처리
+function renderAdjustmentSessionModal(division) {
+  const cycle = selectedCycle();
+  const rec = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
+  const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""))
+    .sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+  // 본부장 등급 기준 배분 가이드
+  const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
+  const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
+  const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
+  const total = members.length;
+  const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
+  members.forEach((e) => { const g = getAdjustmentGrade(evaluations()[e.id], calculateFinal(e.id)); if (GRADES.includes(g)) counts[g] += 1; });
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeAdjustmentSession()">
+      <div class="goal-modal" style="max-width:1000px;width:96%;">
+        <div class="goal-modal-head">
+          <h2>조정 세션 — ${esc(division)}</h2>
+          <button onclick="App.closeAdjustmentSession()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+        </div>
+        <div class="goal-modal-body">
+          <div class="notice warn" style="font-size:12px;">본부장 원안 사유: ${esc(rec?.distributionReason || "-")}</div>
+          <div class="notice info" style="font-size:12px;">배분 가이드(본부장 등급 ${esc(headGrade)} 기준): ${GRADES.map((g) => `${g} ${Math.round(total * Number(dist[g] || 0) / 100)}명(${Number(dist[g] || 0)}%)`).join(" · ")}</div>
+          <div id="session-dist-status" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
+            ${GRADES.map((g) => { const guide = Math.round(total * Number(dist[g] || 0) / 100); const over = (Number(dist[g] || 0) === 0 && counts[g] > 0) || (guide > 0 && counts[g] > guide); return `<span class="pill ${over ? "red" : "green"}" style="font-size:12px;">${g}: ${counts[g]}/${guide}명${over ? " ⚠" : ""}</span>`; }).join("")}
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>순위</th><th>구성원</th><th>차수별 점수</th><th>동료평가</th><th>종합점수</th><th>추천등급</th><th>조정 등급</th></tr></thead>
+              <tbody>
+                ${members.map((emp, idx) => {
+                  const ev = evaluations()[emp.id];
+                  const result = calculateFinal(emp.id);
+                  const cur = getAdjustmentGrade(ev, result);
+                  return `<tr>
+                    <td><strong style="color:var(--primary);">${idx + 1}</strong></td>
+                    <td><button onclick="App.openMemberDetail('${emp.id}', { hideGrades: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);text-decoration:underline;">${esc(emp.name)}</strong></button><br/><span class="muted" style="font-size:11px;">${esc(emp.team || "")} ${esc(emp.employeeNo || "")}</span></td>
+                    <td>${renderStageComponentScores(emp, ev, { hiddenStages: [], hideExtras: true })}</td>
+                    <td>${peerScoreCellHtml(emp)}</td>
+                    <td class="score" style="font-size:16px;">${result.scoreText}</td>
+                    <td>${gradeBadge(result.autoGrade)}</td>
+                    <td><select id="sess_grade_${emp.id}" data-default="${esc(cur)}" onchange="App.refreshSessionDist('${esc(division)}')" style="width:72px;font-weight:700;">${GRADES.map((g) => `<option value="${g}" ${cur === g ? "selected" : ""}>${g}</option>`).join("")}</select></td>
+                  </tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeAdjustmentSession()">닫기</button>
+          <button class="button" onclick="App.completeAdjustmentSession('${esc(division)}')">조정 세션 완료 / 제출</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function adminInput(id, label, value, type = "text") {
+  return `<div class="field"><label for="${id}">${esc(label)}</label><input id="${id}" type="${type}" value="${esc(value ?? "")}" /></div>`;
+}
+
+function comboInput(id, label, value, options, listId = `${id}_options`) {
+  return `<div class="field"><label for="${id}">${esc(label)}</label>${comboControl(id, value, options, listId)}</div>`;
+}
+
+function comboControl(id, value, options, listId) {
+  return `<input id="${id}" list="${listId}" value="${esc(value ?? "")}" autocomplete="off" />`;
+}
+
+function renderDataList(id, options) {
+  return `<datalist id="${id}">${options.map((option) => `<option value="${esc(option)}"></option>`).join("")}</datalist>`;
+}
+
+function organizationFieldOptions() {
+  const users = state.users.filter((user) => user.role !== "admin");
+  const orgTree = buildOrganizationTree();
+  const rootNodes = orgTree.nodes.filter((node) => node.type === "root");
+  const divisionNodes = orgTree.nodes.filter((node) => node.type === "division");
+  const teamNodes = orgTree.nodes.filter((node) => node.type === "team");
+  const titles = TITLE_ORDER.flat().concat(["팀장", "본부장", "사장", "회장", "대표이사"]);
+  const unique = (values) => [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
+  return {
+    orgRoots: unique([...users.map((user) => user.orgRoot), ...rootNodes.map((node) => node.name), "COO", "CEO & Chairman"]),
+    divisions: unique([...users.map((user) => user.division), ...divisionNodes.map((node) => node.name)]),
+    teams: unique([...users.map((user) => user.team), ...teamNodes.map((node) => node.name)]),
+    titles: unique([...users.flatMap((user) => [user.title, user.position, user.jobTitle]), ...titles]),
+  };
+}
+
+function renderOrganizationDataLists(options) {
+  return [
+    renderDataList("org_root_options", options.orgRoots),
+    renderDataList("division_options", options.divisions),
+    renderDataList("team_options", options.teams),
+    renderDataList("title_options", options.titles),
+  ].join("");
+}
+
+function renderGroupedStatus() {
+  const evaluatees = cycleUsers().filter(isEvaluatee);
+  const divisions = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const memberRow = (employee) => {
+    const evaluation = evaluations()[employee.id];
+    const upwardAssignment = upwardAssignmentForEvaluator(employee.id);
+    const peerAssignments = peerAssignmentsForEvaluator(employee.id);
+    const peerDone = peerAssignments.filter(a => isCompletedStatus(a.status)).length;
+    const peerStatus = peerAssignments.length ? `<span class="pill ${peerDone === peerAssignments.length ? "green" : peerDone ? "blue" : "amber"}">${peerDone}/${peerAssignments.length}</span>` : "-";
+    return `<tr>
+      <td><strong>${esc(employee.name)}</strong><br /><span class="muted">${esc(employee.team||"")} ${esc(employee.employeeNo || "")}</span></td>
+      <td>${ROLE_LABELS[employee.role]}</td>
+      <td>${stageStatusBadge(evaluation.status.self)}</td>
+      <td>${employee.evaluator1Id ? stageStatusBadge(evaluation.status.first) : "-"}</td>
+      <td>${employee.evaluator2Id ? stageStatusBadge(evaluation.status.second) : "-"}</td>
+      <td>${upwardAssignment ? stageStatusBadge(upwardAssignment.status) : "-"}</td>
+      <td>${peerStatus}</td>
+      <td>${evaluation.published ? '<span class="pill green">공개</span>' : '<span class="pill amber">미공개</span>'}</td>
+    </tr>`;
+  };
+  return divisions.map(div => {
+    const members = evaluatees.filter(e => (e.division||"미지정") === div).sort(compareEmployeesForDisplay);
+    const n = members.length;
+    const selfDone = members.filter(e => evaluations()[e.id]?.status?.self === "submitted").length;
+    const firstTargets = members.filter(e => e.evaluator1Id);
+    const firstDone = firstTargets.filter(e => evaluations()[e.id]?.status?.first === "completed").length;
+    const secondTargets = members.filter(e => e.evaluator2Id);
+    const secondDone = secondTargets.filter(e => evaluations()[e.id]?.status?.second === "completed").length;
+    const pill = (done, t) => t ? `<span class="pill ${done===t?"green":"amber"}" style="font-size:11px;">${done}/${t}</span>` : '<span class="muted" style="font-size:11px;">-</span>';
+    const submissionRecord = activeCycle().resultSubmissions?.[divisionSubmissionKey(div)];
+    const needsSession = Boolean(submissionRecord?.needsAdjustmentSession);
+    return `
+      <details class="org-group"${needsSession ? " open" : ""}>
+        <summary>
+          <span>${esc(div)} <span class="muted">${n}명</span>${needsSession ? ` <span class="pill red" style="font-size:11px;">⚠ 평가 등급 조정 세션 필요</span>` : ""}</span>
+          <span style="display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted);">
+            자기 ${pill(selfDone, n)} · 1차 ${pill(firstDone, firstTargets.length)} · 2차 ${pill(secondDone, secondTargets.length)}
+          </span>
+        </summary>
+        ${needsSession ? `<div class="notice warn" style="margin:6px 0;">
+          <strong>⚠ ${esc(div)} 본부 — 평가 등급 배분율 초과로 조정 세션이 필요합니다.</strong>
+          ${submissionRecord.distributionReason ? `<br/><span class="muted">본부장 사유: ${esc(submissionRecord.distributionReason)}</span>` : ""}
+          <div style="margin-top:8px;"><button class="button sm" onclick="App.openAdjustmentSession('${esc(div)}')">조정 세션 시작하기</button></div>
+        </div>` : ""}
+        <div class="table-wrap" style="margin:6px 0;">
+          <table>
+            <thead><tr><th>구성원</th><th>역할</th><th>자기평가</th><th>1차</th><th>2차</th><th>상향평가</th><th>동료평가</th><th>리포트</th></tr></thead>
+            <tbody>${members.map(memberRow).join("")}</tbody>
+          </table>
+        </div>
+      </details>`;
+  }).join("");
+}
+
+function renderAdminPeople() {
+  const subTab = state.ui.peopleSubTab || "targets";
+  const subTabsHtml = [
+    { key: "targets", label: "평가 대상자 관리" },
+    { key: "relative", label: "상대평가 그룹 설정" },
+  ].map(({ key, label }) =>
+    `<button class="cycle-modal-tab ${subTab === key ? "active" : ""}" style="font-size:13px;padding:6px 14px;" onclick="state.ui.peopleSubTab='${key}';render();">${label}</button>`
+  ).join("");
+
+  return `
+    <div class="grid">
+      <div style="display:flex;gap:6px;margin-bottom:4px;">${subTabsHtml}</div>
+      ${subTab === "relative" ? renderRelativeGroupTab() : renderAdminPeopleTargets()}
+    </div>
+  `;
+}
+
+function renderAdminPeopleTargets() {
+  const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && user.role !== "admin").sort(compareEmployeesForDisplay);
+  const targetUsers = cycleUsers().filter(isEvaluatee).sort(compareEmployeesForDisplay);
+  const upwardTargetOptions = targetUsers.filter((user) => ["teamLead", "divisionHead"].includes(user.role) && isEvaluatorCandidate(user)).sort(compareEmployeesForDisplay);
+  const peerTargetOptions = targetUsers.filter(isEvaluatee).sort(compareEmployeesForDisplay);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>평가권한 관리</h2>
+          <p class="muted">본부/팀별로 평가자와 상향평가 배정을 한 화면에서 관리합니다.</p>
+        </div>
+        <div class="toolbar">
+          <button class="button ghost" onclick="App.autoAssignEvaluators()">조직도 기준 자동 지정</button>
+          <button class="button ghost" onclick="App.downloadEvaluationRightsExcel()">📥 엑셀 다운로드</button>
+          <button class="button" onclick="App.saveEvaluationRights()">현재 세팅 저장</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${renderPeerCountConfig()}
+        ${renderAutoTargetSelection(targetUsers)}
+        ${renderEvaluationTargetManager(targetUsers)}
+        ${renderPeopleFilterBar(targetUsers)}
+        ${renderPeoplePickerDatalists(evaluatorOptions, upwardTargetOptions, peerTargetOptions)}
+        ${renderGroupedPeople(targetUsers, (employees) => renderEvaluatorTable(employees, evaluatorOptions, upwardTargetOptions, peerTargetOptions))}
+      </div>
+    </section>
+  `;
+}
+
+function renderAdminHRGroupComprehensive() {
+  const cycle = activeCycle();
+  const rows = getHRGroupMembers();
+
+  if (!rows.length) {
+    return `<section class="panel"><div class="panel-body"><div class="empty">인사총무팀 상대평가 그룹에 배정된 구성원이 없습니다.<br/>평가권한 → 상대평가 그룹 설정에서 구성원을 인사총무팀으로 배정하세요.</div></div></section>`;
+  }
+
+  const allEvalsDone = rows.every((employee) => {
+    const ev = evaluations()[employee.id];
+    if (!ev) return false;
+    const selfOk = ev.status.self === "submitted";
+    const firstOk = !employee.evaluator1Id || ev.status.first === "completed";
+    const secondOk = !employee.evaluator2Id || ev.status.second === "completed";
+    return selfOk && firstOk && secondOk;
+  });
+
+  const submission = cycle.resultSubmissions?.[HR_GROUP_SCOPE_KEY];
+  const isSubmitted = Boolean(submission?.submitted);
+
+  if (!allEvalsDone) {
+    const missing = getMissingEvaluationItemsForUsers(rows, { ignoreTeamLeadSecond: true });
+    return `
+      <section class="panel" id="result-submission-panel">
+        <div class="panel-head">
+          <div><h2>종합평가 — 인사총무팀 그룹</h2><p class="muted">모든 1·2차 평가가 완료된 후 종합평가를 진행할 수 있습니다.</p></div>
+        </div>
+        <div class="panel-body grid">
+          <div class="notice warn"><strong>⚠ 미완료 평가가 있습니다.</strong> 아래 항목이 완료되면 종합평가가 활성화됩니다.</div>
+          ${renderResultSubmissionStatusTable(rows)}
+        </div>
+      </section>`;
+  }
+
+  const sortedRows = [...rows].sort((a, b) => {
+    const sa = calculateFinal(a.id).rawScore ?? -1;
+    const sb = calculateFinal(b.id).rawScore ?? -1;
+    return sb - sa;
+  });
+
+  const gradeCounts = Object.fromEntries(GRADES.map((g) => [g, 0]));
+  sortedRows.forEach((employee) => {
+    const ev = evaluations()[employee.id];
+    const g = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : calculateFinal(employee.id).autoGrade;
+    if (GRADES.includes(g)) gradeCounts[g]++;
+  });
+  const total = sortedRows.length;
+  // 기준 조직 등급: UI 상태에서 관리 (저장 안 됨, 이 화면에서만 사용)
+  const refGrade = GRADES.includes(state.ui.hrGroupRefGrade) ? state.ui.hrGroupRefGrade : "B";
+  const dist = state.distributionMatrix[refGrade] || state.distributionMatrix["B"] || {};
+
+  return `
+    <section class="panel" id="result-submission-panel">
+      <div class="panel-head">
+        <div>
+          <h2>종합평가 — 인사총무팀 그룹</h2>
+          <p class="muted">인사총무팀 상대평가 그룹 · 총 ${total}명 · 점수 내림차순 정렬</p>
+        </div>
+        <div class="toolbar">
+          ${isSubmitted
+            ? `<span class="pill green">제출완료 · ${esc(formatDateTime(submission.submittedAt))}</span>`
+            : `<span class="pill amber">미제출</span>`}
+          <button class="button secondary" onclick="App.hrGroupAutoGrade()">자동 등급 배분</button>
+          <button class="button ghost" onclick="App.saveHRGroupComprehensive(false)">임시 저장</button>
+          <button class="button" onclick="App.saveHRGroupComprehensive(true)">종합평가 확정 제출</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        <div class="notice info">
+          <strong>인사총무팀 그룹 종합평가</strong><br/>
+          상대평가 그룹이 인사총무팀으로 배정된 구성원들의 종합평가를 진행합니다. 이름을 클릭하면 상세 평가 내용을 확인할 수 있습니다.
+        </div>
+        <div class="component-card" id="grade-dist-panel" data-head-grade="${esc(refGrade)}" data-total="${total}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <h3 style="margin:0;">등급 배분 현황</h3>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:13px;color:var(--muted);white-space:nowrap;">기준 조직 등급</span>
+              <div style="display:flex;gap:4px;">
+                ${GRADES.map(g => `
+                  <button onclick="App.setHRGroupRefGrade('${g}')"
+                    style="width:34px;height:34px;border-radius:8px;border:2px solid ${refGrade===g ? "var(--primary)" : "var(--line)"};
+                           background:${refGrade===g ? "var(--primary)" : "var(--surface-2)"};
+                           color:${refGrade===g ? "#fff" : "var(--text)"};font-weight:700;font-size:14px;cursor:pointer;">
+                    ${g}
+                  </button>`).join("")}
+              </div>
+              <span style="font-size:12px;color:var(--muted);">가이드: S-인사위논의 · A-${dist.A||20}% · B-${dist.B||50}% · C-${dist.C||20}% · D-${dist.D||10}%</span>
+            </div>
+          </div>
+          <div id="grade-dist-bars" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">
+            ${renderGradeDistCards(gradeCounts, total, refGrade)}
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>순위</th><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th><th>종합 점수</th><th>추천 등급</th><th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th></tr></thead>
+            <tbody>
+              ${sortedRows.map((employee, idx) => {
+                const ev = evaluations()[employee.id];
+                const result = calculateFinal(employee.id);
+                const curGrade = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : result.autoGrade;
+                return `
+                  <tr>
+                    <td><strong style="font-size:16px;color:var(--primary);">${idx + 1}</strong></td>
+                    <td>
+                      <button onclick="App.openMemberDetail('${employee.id}', { hideGrades: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                        <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                      </button>
+                      <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
+                    </td>
+                    <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.team || employee.division || "")}</span></td>
+                    <td style="font-size:12px;">
+                      ${["self","first","second"].filter(s => result.stageScores?.[s] != null).map(s => `${STAGE_LABELS[s]}: <strong>${result.stageScores[s].toFixed(1)}</strong>`).join("<br/>")}
+                    </td>
+                    <td style="font-size:12px;">${result.upwardScore != null ? `상향: <strong>${result.upwardScore.toFixed(1)}</strong><br/>` : ""}${result.peerScore != null ? `동료: <strong>${result.peerScore.toFixed(1)}</strong>` : "-"}</td>
+                    <td><strong style="font-size:15px;">${esc(result.scoreText || "-")}</strong></td>
+                    <td>${gradeBadge(result.autoGrade)}</td>
+                    <td>${isSubmitted
+                      ? gradeBadge(curGrade)
+                      : orgGradeSelect(`org_adj_grade_${employee.id}`, curGrade, employee.id, result.autoGrade)}
+                    </td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
+}
+
+// ── 상대평가 그룹 설정 ────────────────────────────────────────────────
+function renderRelativeGroupTab() {
+  const cycle = selectedCycle();
+  const allUsers = cycleUsers(cycle);
+  // 팀원(member)만 대상
+  const members = allUsers.filter(u => isEvaluatee(u) && u.role === "member").sort(compareEmployeesForDisplay);
+
+  if (!cycle.relativeGroups) cycle.relativeGroups = {};
+
+  // 자동 그룹: 본부의 divisionHead 이름
+  const autoGroup = (u) => {
+    if (!u.division) return "";
+    const head = allUsers.find(x => x.role === "divisionHead" && x.division === u.division);
+    return head ? head.name : "";
+  };
+
+  // 필터
+  const fSearch  = (state.ui.rgSearch  || "").trim().toLowerCase();
+  const fDiv     = state.ui.rgDiv     || "";
+  const fTeam    = state.ui.rgTeam    || "";
+  const fGroup   = state.ui.rgGroup   || "";
+  const fLocked  = state.ui.rgLocked  || "";
+
+  const mkRow = (u) => {
+    const rg = cycle.relativeGroups[u.id] || {};
+    const auto  = autoGroup(u);
+    const final = rg.overrideGroup !== undefined ? rg.overrideGroup : auto;
+    return { u, auto, final, rg };
+  };
+
+  let allRows = members.map(mkRow);
+
+  // 필터 적용
+  if (fSearch) allRows = allRows.filter(({u}) => (u.name+(u.employeeNo||u.employeeId||"")).toLowerCase().includes(fSearch));
+  if (fDiv)    allRows = allRows.filter(({u}) => (u.division||"") === fDiv);
+  if (fTeam)   allRows = allRows.filter(({u}) => (u.team||"") === fTeam);
+  if (fGroup)  allRows = allRows.filter(({final}) => final === fGroup);
+  if (fLocked === "확정")   allRows = allRows.filter(({rg}) => rg.locked);
+  if (fLocked === "미확정") allRows = allRows.filter(({rg}) => !rg.locked);
+
+  // 팀 단위 그룹핑: division → team
+  const teamGroups = [];
+  allRows.forEach(row => {
+    const div  = row.u.division || "미지정";
+    const team = row.u.team     || "미지정";
+    let dg = teamGroups.find(g => g.div === div);
+    if (!dg) { dg = { div, teams: [] }; teamGroups.push(dg); }
+    let tg = dg.teams.find(t => t.team === team);
+    if (!tg) { tg = { team, rows: [] }; dg.teams.push(tg); }
+    tg.rows.push(row);
+  });
+
+  const allDivisions = [...new Set(members.map(u => u.division||"").filter(Boolean))].sort();
+  const allTeams     = fDiv
+    ? [...new Set(members.filter(u=>(u.division||"")===fDiv).map(u=>u.team||"").filter(Boolean))].sort()
+    : [...new Set(members.map(u=>u.team||"").filter(Boolean))].sort();
+  const allFinalGroups = [...new Set(members.map(u=>mkRow(u).final).filter(Boolean))].sort();
+  const headNames = [...new Set(allUsers.filter(u => u.role === "divisionHead").map(u => u.name))].sort();
+
+  // 집계 (전체 멤버 기준)
+  const totalCount   = members.length;
+  const lockedCount  = members.filter(u => cycle.relativeGroups[u.id]?.locked).length;
+
+  // 평가 대상자 관리 스타일: details/summary 아코디언 + table
+  const HR_GROUP_LABEL = "인사총무팀";
+  const headOptsFn = (selectedVal) =>
+    `<option value="">-- 미배정 --</option><option value="${HR_GROUP_LABEL}" ${selectedVal===HR_GROUP_LABEL?"selected":""}>${HR_GROUP_LABEL} (어드민 종합평가)</option>${headNames.map(n=>`<option value="${esc(n)}" ${selectedVal===n?"selected":""}>${esc(n)}</option>`).join("")}`;
+
+  const groupedHtml = teamGroups.map(({ div, teams }) => {
+    const divTotal = teams.reduce((s, t) => s + t.rows.length, 0);
+    const teamsHtml = teams.map(({ team, rows }) => {
+      const allLocked  = rows.every(r => r.rg.locked);
+      const teamKey    = `rg_team_${esc(div)}__${esc(team)}`.replace(/\s/g,"_");
+      // 팀 대표 자동그룹
+      const teamAuto   = rows[0]?.auto || "";
+
+      const memberRowsHtml = rows.map(({u, auto, final, rg}) => {
+        const isModified = rg.overrideGroup !== undefined;
+        return `
+          <tr class="rg-member-row" style="${rg.locked?"background:var(--primary-weak);":""}" data-div="${esc(div)}" data-team="${esc(team)}">
+            <td><strong>${esc(u.name)}</strong><br/><span class="muted">${esc(u.employeeNo||u.employeeId||"")}</span></td>
+            <td>${esc(u.title||"팀원")}<br/><span class="muted">${esc(u.team||"")}</span></td>
+            <td>
+              ${rg.locked
+                ? `<span style="font-weight:600;">${esc(final||"-")}</span>`
+                : `<select id="rg_group_${u.id}" style="width:160px;">
+                    ${headOptsFn(final)}
+                  </select>`}
+            </td>
+            <td>
+              ${isModified
+                ? `<span class="pill orange" style="font-size:11px;">수동</span>`
+                : `<span class="muted" style="font-size:12px;">자동</span>`}
+            </td>
+            <td>
+              <input type="text" id="rg_reason_${u.id}" value="${esc(rg.overrideReason||"")}"
+                placeholder="수정사유" style="width:120px;font-size:12px;" ${rg.locked?"disabled":""}>
+            </td>
+            <td>
+              ${rg.locked
+                ? `<button class="button ghost" style="font-size:12px;padding:4px 10px;" onclick="App.unlockRelativeGroup('${u.id}')">확정 취소</button>`
+                : `<button class="button secondary" style="font-size:12px;padding:4px 10px;" onclick="App.saveRelativeGroupRow('${u.id}')">확정</button>`}
+            </td>
+          </tr>`;
+      }).join("");
+
+      return `
+        <details class="team-group" open>
+          <summary>
+            ${esc(team)} <span>${rows.length}명</span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px;" onclick="event.stopPropagation()">
+              ${allLocked
+                ? `<button class="button ghost" style="font-size:12px;padding:4px 10px;" onclick="App.unlockTeamRelativeGroup('${esc(div)}','${esc(team)}')">팀 확정 취소</button>`
+                : `<select id="${teamKey}" style="width:160px;font-size:12px;"><option value="">-- 팀 일괄 배정 --</option><option value="인사총무팀">인사총무팀 (어드민 종합평가)</option>${headNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select>
+                   <button class="button" style="font-size:12px;padding:4px 12px;" onclick="App.lockTeamRelativeGroup('${esc(div)}','${esc(team)}','${teamKey}')">팀 전체 확정</button>`}
+            </span>
+          </summary>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>구성원</th><th>직책</th><th>상대평가그룹</th><th>수정여부</th><th>수정사유</th><th>확정</th></tr></thead>
+              <tbody>${memberRowsHtml}</tbody>
+            </table>
+          </div>
+        </details>`;
+    }).join("");
+
+    return `
+      <details class="org-group" open>
+        <summary>${esc(div)} <span>${divTotal}명</span></summary>
+        ${teamsHtml}
+      </details>`;
+  }).join("");
+
+  return `
+    <section class="panel">
+      <div class="panel-head" style="align-items:center;flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;">
+          <button class="button" onclick="App.autoGenerateRelativeGroups()">상대평가그룹 자동 생성</button>
+          <button class="button secondary" onclick="App.lockAllRelativeGroups()">전체 확정</button>
+          <button class="button ghost" onclick="App.downloadRelativeGroupsCsv()">📥 CSV 다운로드</button>
+        </div>
+        <div style="font-size:12px;color:var(--muted);">총 ${totalCount}명 · 확정 ${lockedCount}명</div>
+      </div>
+      <div class="panel-body" style="padding-top:0;">
+        <!-- 평가 대상자 관리와 동일한 필터바 스타일 -->
+        <div class="approval-filter-bar">
+          <div class="approval-filter-search">
+            <span class="filter-icon">🔍</span>
+            <input placeholder="이름·사번 검색…"
+              oninput="state.ui.rgSearchDraft=this.value;"
+              onkeydown="if(event.key==='Enter'){state.ui.rgSearch=this.value.trim();render();}"
+              onblur="state.ui.rgSearch=(state.ui.rgSearchDraft||'').trim();render();"
+              value="${esc(state.ui.rgSearchDraft != null ? state.ui.rgSearchDraft : fSearch)}"
+              style="border:none;background:transparent;outline:none;width:130px;font-size:13px;" />
+          </div>
+          <div class="approval-filter-selects">
+            <div class="af-select-wrap"><label>부서</label>
+              <select onchange="state.ui.rgDiv=this.value;state.ui.rgTeam='';render();">
+                <option value="">전체</option>
+                ${allDivisions.map(d=>`<option value="${esc(d)}" ${fDiv===d?"selected":""}>${esc(d)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="af-select-wrap"><label>팀</label>
+              <select onchange="state.ui.rgTeam=this.value;render();">
+                <option value="">전체</option>
+                ${allTeams.map(t=>`<option value="${esc(t)}" ${fTeam===t?"selected":""}>${esc(t)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="af-select-wrap"><label>그룹</label>
+              <select onchange="state.ui.rgGroup=this.value;render();">
+                <option value="">전체</option>
+                ${allFinalGroups.map(g=>`<option value="${esc(g)}" ${fGroup===g?"selected":""}>${esc(g)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="af-select-wrap"><label>확정</label>
+              <select onchange="state.ui.rgLocked=this.value;render();">
+                <option value="">전체</option>
+                <option value="확정" ${fLocked==="확정"?"selected":""}>확정</option>
+                <option value="미확정" ${fLocked==="미확정"?"selected":""}>미확정</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 본부/팀 아코디언 목록 -->
+        ${groupedHtml || `<div class="empty">조건에 해당하는 팀원이 없습니다.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderPeopleFilterBar(targetUsers) {
+  const divOptions   = [...new Set(targetUsers.map(e => e.division || "미지정"))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const teamOptions  = [...new Set(targetUsers.map(e => e.team || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const roleOptions  = [...new Set(targetUsers.map(e => e.role))];
+  const gradeOptions = [...new Set(targetUsers.map(e => e.grade || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  return `
+    <div class="approval-filter-bar">
+      <div class="approval-filter-search">
+        <span class="filter-icon">🔍</span>
+        <input id="people_filter_name" placeholder="이름·사번 검색…" oninput="App.filterPeopleAdvanced()"
+          style="border:none;background:transparent;outline:none;width:130px;font-size:13px;" />
+      </div>
+      <div class="approval-filter-selects">
+        <div class="af-select-wrap"><label>부서</label>
+          <select id="people_filter_div" onchange="App.filterPeopleAdvanced()"><option value="">전체</option>${divOptions.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select>
+        </div>
+        <div class="af-select-wrap"><label>팀</label>
+          <select id="people_filter_team" onchange="App.filterPeopleAdvanced()"><option value="">전체</option>${teamOptions.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+        </div>
+        <div class="af-select-wrap"><label>역할</label>
+          <select id="people_filter_role" onchange="App.filterPeopleAdvanced()"><option value="">전체</option>${roleOptions.map(r=>`<option value="${esc(r)}">${esc(ROLE_LABELS[r]||r)}</option>`).join("")}</select>
+        </div>
+        ${gradeOptions.length ? `<div class="af-select-wrap"><label>직급</label>
+          <select id="people_filter_grade2" onchange="App.filterPeopleAdvanced()"><option value="">전체</option>${gradeOptions.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join("")}</select>
+        </div>` : ""}
+      </div>
+    </div>`;
+}
+
+function renderPeerCountConfig() {
+  const count = state.peerCount || 3;
+  const cycle = selectedCycle();
+  const useUpward = cycle.useUpward !== false;
+  const usePeer = cycle.usePeer !== false;
+  return `
+    <div class="component-card">
+      <h3>상향평가 · 동료평가 진행 설정</h3>
+      <p class="muted">이번 평가에서 상향평가·동료평가를 진행할지 선택합니다. 동료평가를 진행하면 1인당 평가 대상 수를 설정할 수 있습니다.</p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;">
+        <label class="goal-metric-toggle ${useUpward?"on":""}" style="flex:1;min-width:240px;">
+          <span><strong>상향평가 진행</strong><small>구성원이 조직장을 평가합니다.</small></span>
+          <input type="checkbox" id="cycle_use_upward" ${useUpward?"checked":""} onchange="App.toggleCycleEvalUse('upward', this.checked)" />
+          <span class="goal-metric-switch"></span>
+        </label>
+        <label class="goal-metric-toggle ${usePeer?"on":""}" style="flex:1;min-width:240px;">
+          <span><strong>동료평가 진행</strong><small>같은 조직 동료끼리 평가합니다.</small></span>
+          <input type="checkbox" id="cycle_use_peer" ${usePeer?"checked":""} onchange="App.toggleCycleEvalUse('peer', this.checked)" />
+          <span class="goal-metric-switch"></span>
+        </label>
+      </div>
+      ${usePeer ? `
+        <div class="form-grid" style="margin-top:12px;">
+          <div class="field" style="max-width:240px;">
+            <label for="peer_count_setting">동료평가 대상 수 (명)</label>
+            <input id="peer_count_setting" type="number" min="1" max="10" value="${count}" style="width:80px;" />
+          </div>
+          <div class="field compact-field">
+            <label>&nbsp;</label>
+            <button class="button secondary" onclick="App.savePeerCount()">대상 수 적용</button>
+          </div>
+        </div>` : ""}
+    </div>
+  `;
+}
+
+function tenureMonths(joinDate, now = new Date()) {
+  if (!joinDate) return null;
+  const d = new Date(joinDate);
+  if (isNaN(d.getTime())) return null;
+  let months = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
+  if (now.getDate() < d.getDate()) months -= 1;
+  return months;
+}
+
+function autoExcludeMatches(targetUsers, months, condition = "미만", includeLeave = true) {
+  return targetUsers.filter((user) => {
+    if (includeLeave && user.workStatus === "휴직") return true;
+    const t = tenureMonths(user.joinDate);
+    if (t === null) return false;
+    return condition === "이하" ? t <= months : t < months;
+  });
+}
+
+function renderAutoTargetSelection(targetUsers) {
+  const cycle = selectedCycle();
+  const months = Number(cycle.autoExcludeMonths) || 3;
+  const condition = cycle.autoExcludeCondition || "미만";
+  const includeLeave = cycle.autoExcludeLeave !== false;
+  const matches = autoExcludeMatches(targetUsers, months, condition, includeLeave);
+  const newbieCount = matches.filter((u) => u.workStatus !== "휴직").length;
+  const leaveCount = matches.filter((u) => u.workStatus === "휴직").length;
+  return `
+    <div class="component-card">
+      <h3>평가 제외자 자동 선정</h3>
+      <p class="muted">설정한 기준에 해당하는 구성원을 평가 대상자 목록에서 자동으로 제외합니다.</p>
+      <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+        <div class="field" style="margin:0;">
+          <label>입사 기준 개월 수</label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input id="auto_exclude_months" type="number" min="0" max="60" value="${months}" style="width:72px;" />
+            <span class="muted" style="font-size:13px;">개월</span>
+            <select id="auto_exclude_condition" style="width:80px;">
+              <option value="미만" ${condition === "미만" ? "selected" : ""}>미만</option>
+              <option value="이하" ${condition === "이하" ? "selected" : ""}>이하</option>
+            </select>
+            <span class="muted" style="font-size:13px;">제외</span>
+          </div>
+        </div>
+        <div class="field" style="margin:0;">
+          <label>휴직자 포함</label>
+          <div style="display:flex;align-items:center;gap:6px;height:38px;">
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-weight:400;">
+              <input type="checkbox" id="auto_exclude_leave" ${includeLeave ? "checked" : ""} style="width:15px;height:15px;" />
+              휴직자도 제외
+            </label>
+          </div>
+        </div>
+        <button class="button secondary" onclick="App.applyAutoTargetSelection()">자동 선정 적용</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderEvaluationTargetManager(targetUsers) {
+  const cycle = selectedCycle();
+  const targetIds = new Set(targetUsers.map((user) => user.id));
+  const excluded = state.users
+    .filter((user) => isEvaluatee(user) && user.active !== false && !targetIds.has(user.id))
+    .sort(compareEmployeesForDisplay);
+  const exclusionReasons = cycle.exclusionReasons || {};
+  return `
+    <div class="component-card">
+      <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">
+        <div class="field" style="flex:1;min-width:240px;margin:0;">
+          <label for="new_evaluation_target_id">평가 제외자 명단 <span class="muted" style="font-weight:400;">(${excluded.length}명)</span></label>
+          <select id="new_evaluation_target_id">
+            <option value="">평가 제외자 확인</option>
+            ${excluded.map((user) => `<option value="${esc(user.id)}">${esc(userOptionLabel(user))}${exclusionReasons[user.id] ? ` · ${exclusionReasons[user.id]}` : ""}</option>`).join("")}
+          </select>
+        </div>
+        <button class="button secondary" ${excluded.length ? "" : "disabled"} onclick="App.addEvaluationTarget()">평가 대상자로 변경</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderEvaluatorWeightConfig() {
+  const weights = state.evaluatorWeights || {};
+  return `
+    <div class="component-card">
+      <h3>피평가자별 평가 반영 비율(%)</h3>
+      <p class="muted">점수 계산 시 1차/2차 평가 반영 비율입니다. 1차 평가자 부재 시 2차 100%, 2차 평가자 부재 시 1차 100%로 자동 반영됩니다.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>피평가자</th><th>1차 평가 반영(%)</th><th>2차 평가 반영(%)</th><th>확인</th></tr></thead>
+          <tbody>
+            ${[
+              ["member", ROLE_LABELS.member],
+              ["teamLead", ROLE_LABELS.teamLead],
+              ["divisionHead", ROLE_LABELS.divisionHead],
+            ]
+              .map(([role, label]) => {
+                const first = Number(weights?.[role]?.first ?? 0);
+                const second = Number(weights?.[role]?.second ?? 0);
+                const guide =
+                  role === "member"
+                    ? "1차=팀장, 2차=본부장"
+                    : role === "teamLead"
+                    ? "1차=본부장, 2차=사장/대표"
+                    : "1차=사장/대표";
+                return `
+                  <tr>
+                    <td><strong>${esc(label)}</strong><br /><span class="muted">${esc(guide)}</span></td>
+                    <td><input class="compact-input" id="eval_ratio_${role}_first" type="number" min="0" max="100" value="${esc(first)}" /></td>
+                    <td><input class="compact-input" id="eval_ratio_${role}_second" type="number" min="0" max="100" value="${esc(second)}" /></td>
+                    <td class="score">${first + second}%</td>
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderPeoplePickerDatalists(evaluatorOptions, upwardTargetOptions, peerTargetOptions) {
+  const renderList = (id, options) => `
+    <datalist id="${id}">
+      ${options.map((user) => `<option value="${esc(userOptionLabel(user))}"></option>`).join("")}
+    </datalist>
+  `;
+  return `${renderList("evaluator_picker_options", evaluatorOptions)}${renderList("upward_picker_options", upwardTargetOptions)}${renderList("peer_picker_options", peerTargetOptions)}`;
+}
+
+function renderEvaluatorTable(employees, evaluatorOptions, upwardTargetOptions, peerTargetOptions) {
+  const cycle = selectedCycle();
+  const showUpward = cycle.useUpward !== false;
+  const showPeer = cycle.usePeer !== false;
+  const peerCount = state.peerCount || 3;
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>조직</th><th>1차 평가자</th><th>2차 평가자</th>${showUpward ? "<th>상향평가 대상 조직장</th>" : ""}${showPeer ? Array.from({length: peerCount}, (_,i) => `<th>동료평가 ${i+1}</th>`).join("") : ""}<th>저장</th><th>대상 관리</th></tr></thead>
+        <tbody>
+          ${employees.map((employee) => {
+            const peerTargets = peerTargetsForEvaluator(employee.id);
+            return `
+              <tr class="people-filter-row" data-search="${esc(personSearchText(employee))}" data-name="${esc(((employee.name||"")+" "+(employee.employeeNo||"")).toLowerCase())}" data-div="${esc(employee.division||"미지정")}" data-team="${esc(employee.team||"")}" data-role="${esc(employee.role)}" data-grade2="${esc(employee.grade||"")}">
+                <td><strong>${esc(employee.name)}</strong><br /><span class="muted">${esc(employee.employeeNo || "")}</span></td>
+                <td>${ROLE_LABELS[employee.role]}<br /><span class="muted">${esc(employee.title || "")}</span></td>
+                <td>${esc(employee.division || "-")}<br /><span class="muted">${esc(employee.team || "-")}</span>${employee.orgRoot ? `<br /><span class="muted">상위: ${esc(employee.orgRoot)}</span>` : ""}</td>
+                <td>${userPicker(`emp_${employee.id}_evaluator1Id`, employee.evaluator1Id || "", evaluatorOptions, "evaluator_picker_options")}</td>
+                <td>${userPicker(`emp_${employee.id}_evaluator2Id`, employee.evaluator2Id || "", evaluatorOptions, "evaluator_picker_options")}</td>
+                ${showUpward ? `<td>${userPicker(`emp_${employee.id}_upwardTargetId`, upwardTargetIdForEvaluator(employee.id), upwardTargetOptions, "upward_picker_options")}</td>` : ""}
+                ${showPeer ? Array.from({length: peerCount}, (_,index) => `<td>${userPicker(`emp_${employee.id}_peerTarget_${index}`, peerTargets[index]?.id || "", peerTargetOptions, "peer_picker_options")}</td>`).join("") : ""}
+                <td><button class="button secondary" onclick="App.saveEvaluators('${employee.id}')">저장</button></td>
+                <td><button class="button danger" onclick="App.removeEvaluationTargetWithReason('${employee.id}')">제외</button></td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminOrganization() {
+  const orgOptions = organizationFieldOptions();
+  const orgTree = buildOrganizationTree();
+  return `
+    <div class="grid">
+      ${renderOrganizationDataLists(orgOptions)}
+      <section class="panel" id="admin-organization-panel">
+        <div class="panel-head">
+          <div>
+            <h2>조직 관리</h2>
+          </div>
+          <div class="toolbar">
+            <button class="button secondary" onclick="App.openRetireePanel()">퇴사자 관리</button>
+            <button class="button" onclick="App.saveOrganizationSettings()">현재 세팅 저장</button>
+          </div>
+        </div>
+        <div class="panel-body grid">
+          <div class="organization-layout">
+            ${renderOrganizationChartEditor(orgTree)}
+            <div class="org-right-panel">
+              ${renderOrganizationMemberInfoPanel()}
+              ${renderMemberUploadPanel()}
+            </div>
+          </div>
+          <details class="org-group" data-detail-key="organization:member-list">
+            <summary>구성원 상세 목록 <span>${state.users.filter((user) => user.role !== "admin" && !isRetired(user)).length}명</span></summary>
+            ${renderGroupedPeople(state.users.filter((user) => user.role !== "admin" && !isRetired(user)), (employees) => renderOrganizationPeopleTable(employees, orgOptions))}
+          </details>
+        </div>
+      </section>
+    </div>
+    ${state.ui.retireePopupId ? renderRetireePopup(state.ui.retireePopupId) : ""}
+    ${state.ui.showRetireePanel ? renderRetireePanelModal() : ""}
+    ${state.ui.orgAddPopup === "org" ? renderOrgAddPopupModal() : ""}
+    ${state.ui.orgAddPopup === "member" ? renderMemberAddPopupModal() : ""}
+  `;
+}
+
+function renderOrgAddPopupModal() {
+  const tree = buildOrganizationTree();
+  return `
+    <div class="goal-modal-overlay" style="z-index:450;" onclick="if(event.target===this)App.closeOrgAddPopup()">
+      <div class="goal-modal" style="max-width:520px;width:96%;max-height:90vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>조직 추가</h2>
+          <button class="modal-x" onclick="App.closeOrgAddPopup()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:20px;">
+          <p class="muted" style="margin:0 0 16px;">상위 조직·본부·팀 등 조직(폴더)을 새로 만듭니다.</p>
+          <div class="field"><label for="quick_org_node_name">새 조직명</label>
+            <input id="quick_org_node_name" placeholder="예) 신사업팀" />
+          </div>
+          <div class="form-grid" style="margin-top:12px;">
+            <div class="field"><label for="quick_org_node_type">조직 구분</label>
+              <select id="quick_org_node_type">
+                <option value="root">상위 조직</option>
+                <option value="division">본부</option>
+                <option value="team">팀</option>
+              </select>
+            </div>
+            <div class="field"><label for="quick_org_node_parent">상위 조직</label>
+              <select id="quick_org_node_parent">
+                <option value="">상위 없음</option>
+                ${organizationNodeOptions(tree, "")}
+              </select>
+            </div>
+          </div>
+          <div class="toolbar" style="margin-top:16px;">
+            <button class="button" onclick="App.createOrgNodeFromMemberForm()">조직 추가</button>
+            <button class="button secondary" onclick="App.closeOrgAddPopup()">닫기</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderMemberAddPopupModal() {
+  const tree = buildOrganizationTree();
+  const orgOptions = organizationFieldOptions();
+  const selectedNodeId = state.ui.selectedNewEmployeeOrgNode || "";
+  const selectedNode = tree.byId[selectedNodeId];
+  const selectedPath = organizationNodePath(selectedNode, tree);
+  return `
+    <div class="goal-modal-overlay" style="z-index:450;" onclick="if(event.target===this)App.closeOrgAddPopup()">
+      <div class="goal-modal" style="max-width:680px;width:96%;max-height:92vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>구성원 추가</h2>
+          <button class="modal-x" onclick="App.closeOrgAddPopup()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:20px;">
+          <p class="muted" style="margin:0 0 16px;">소속 조직을 선택하고 구성원 정보를 입력해 등록합니다.</p>
+          <div class="field">
+            <label for="new_employee_org_node">소속 조직</label>
+            <select id="new_employee_org_node" onchange="App.selectOrgForNewEmployee(this.value)">
+              <option value="">조직을 선택하세요</option>
+              ${organizationNodeOptions(tree, selectedNodeId)}
+            </select>
+            <span class="muted" style="font-size:11px;">새 조직이 필요하면 <strong>조직 추가</strong> 팝업에서 먼저 만들어 주세요.</span>
+          </div>
+          <div class="form-grid compact-org-fields" style="margin-top:12px;">
+            ${comboInput("new_orgRoot", "상위 조직", selectedPath.orgRoot || "", orgOptions.orgRoots, "org_root_options")}
+            ${comboInput("new_division", "본부", selectedPath.division || "", orgOptions.divisions, "division_options")}
+            ${comboInput("new_team", "팀", selectedPath.team || "", orgOptions.teams, "team_options")}
+          </div>
+          <div class="form-grid" style="margin-top:4px;">
+            ${adminInput("new_name", "이름", "")}
+            ${adminInput("new_employeeNo", "사번", "")}
+            ${adminInput("new_email", "이메일", "")}
+            ${adminInput("new_phone", "연락처", "")}
+            ${comboInput("new_title", "직책", "", orgOptions.titles, "title_options")}
+            <div class="field"><label for="new_role">권한</label>${roleSelect("new_role", "member")}</div>
+            <div class="field"><label for="new_active">활성 상태</label>
+              <select id="new_active">
+                <option value="true">활성</option>
+                <option value="false">비활성</option>
+              </select>
+            </div>
+            <div class="field"><label for="new_joinDate">입사일자</label><input id="new_joinDate" type="date" /></div>
+            <div class="field"><label for="new_workStatus">근무상태</label>
+              <select id="new_workStatus">
+                <option value="근무">근무</option>
+                <option value="휴직">휴직</option>
+              </select>
+            </div>
+          </div>
+          <div class="toolbar" style="margin-top:16px;">
+            <button class="button" onclick="App.addEmployee()">구성원 추가</button>
+            <button class="button secondary" onclick="App.closeOrgAddPopup()">닫기</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderRetireePanelModal() {
+  const query = (state.ui.retireePanelSearch || "").toLowerCase();
+  const retirees = state.users
+    .filter((user) => user.role !== "admin" && isRetired(user))
+    .filter((user) => !query || (user.name || "").toLowerCase().includes(query))
+    .sort((a, b) => String(b.retireDate || "").localeCompare(String(a.retireDate || "")));
+  return `
+    <div class="goal-modal-overlay" style="z-index:450;" onclick="if(event.target===this)App.closeRetireePanel()">
+      <div class="goal-modal" style="max-width:860px;width:96%;max-height:90vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>퇴사자 관리</h2>
+          <button class="modal-x" onclick="App.closeRetireePanel()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:20px;">
+          <p class="muted" style="margin:0 0 14px;">퇴사 처리된 구성원입니다. 조직도와 평가 대상에서 제외됩니다.</p>
+          <div style="display:flex;gap:8px;margin-bottom:16px;">
+            <input id="retiree_search_input" placeholder="이름으로 검색" value="${esc(state.ui.retireePanelSearch || "")}"
+              oninput="App.setRetireePanelSearch(this.value)"
+              style="flex:1;max-width:260px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;" />
+          </div>
+          ${retirees.length
+            ? `<div class="table-wrap">
+                <table>
+                  <thead><tr><th>이름</th><th>사번</th><th>소속</th><th>직책</th><th>입사일자</th><th>퇴사일</th><th>관리</th></tr></thead>
+                  <tbody>
+                    ${retirees.map((user) => `
+                      <tr>
+                        <td><button class="button ghost" style="padding:0;font-weight:700;text-decoration:underline;cursor:pointer;" onclick="App.openRetireePopup('${esc(user.id)}')">${esc(user.name || "-")}</button></td>
+                        <td>${esc(user.employeeNo || "-")}</td>
+                        <td>${esc([user.orgRoot, user.division, user.team].filter((v) => v && v !== "미지정").join(" / ") || "-")}</td>
+                        <td>${esc(user.title || "-")}</td>
+                        <td>${esc(user.joinDate || "-")}</td>
+                        <td>${esc(user.retireDate || "-")}</td>
+                        <td><button class="button secondary" onclick="App.restoreRetiree('${esc(user.id)}')">복직</button></td>
+                      </tr>`).join("")}
+                  </tbody>
+                </table>
+              </div>`
+            : `<div class="empty" style="padding:24px 0;">${query ? "검색 결과가 없습니다." : "퇴사자가 없습니다."}</div>`
+          }
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderRetireePanel() {
+  const retirees = state.users
+    .filter((user) => user.role !== "admin" && isRetired(user))
+    .sort((a, b) => String(b.retireDate || "").localeCompare(String(a.retireDate || "")));
+  return `
+    <section class="panel retiree-panel">
+      <div class="panel-head">
+        <div>
+          <h2>퇴사자 관리</h2>
+          <p class="muted">퇴사 처리된 구성원입니다. 조직도와 평가 대상에서 제외됩니다.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        ${
+          retirees.length
+            ? `<div class="table-wrap">
+                <table>
+                  <thead><tr><th>이름</th><th>사번</th><th>소속</th><th>직책</th><th>입사일자</th><th>퇴사일</th><th>관리</th></tr></thead>
+                  <tbody>
+                    ${retirees.map((user) => `
+                      <tr>
+                        <td><button class="button ghost" style="padding:0;font-weight:700;text-decoration:underline;cursor:pointer;" onclick="App.openRetireePopup('${esc(user.id)}')">${esc(user.name || "-")}</button></td>
+                        <td>${esc(user.employeeNo || "-")}</td>
+                        <td>${esc([user.orgRoot, user.division, user.team].filter((v) => v && v !== "미지정").join(" / ") || "-")}</td>
+                        <td>${esc(user.title || "-")}</td>
+                        <td>${esc(user.joinDate || "-")}</td>
+                        <td>${esc(user.retireDate || "-")}</td>
+                        <td><button class="button secondary" onclick="App.restoreRetiree('${esc(user.id)}')">복직</button></td>
+                      </tr>`).join("")}
+                  </tbody>
+                </table>
+              </div>`
+            : `<div class="empty" style="padding:24px 0;">퇴사자가 없습니다.</div>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderRetireePopup(userId) {
+  const user = userById(userId);
+  if (!user) return "";
+  return `
+    <div class="goal-modal-overlay" style="z-index:500;" onclick="if(event.target===this)App.closeRetireePopup()">
+      <div class="goal-modal" style="max-width:900px;width:96%;max-height:90vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>${esc(user.name)} 구성원 정보</h2>
+          <button class="modal-x" onclick="App.closeRetireePopup()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:16px;">
+          ${renderDashboardHeader(user)}
+          ${renderDashboardGoalsSection(user)}
+          ${renderDashboardEvalSection(user, false)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderOrganizationMemberInfoPanel() {
+  const userId = state.ui.selectedOrgMemberId || "";
+  const user = userId ? userById(userId) : null;
+  if (!user) {
+    return `
+      <section class="panel organization-member-info" id="org-member-info-panel">
+        <div class="panel-head"><div><h2>구성원 정보</h2><p class="muted">조직도에서 구성원 이름을 클릭하면 정보가 표시됩니다.</p></div></div>
+        <div class="panel-body"><div class="empty" style="padding:24px 0;">좌측 조직도에서 구성원 이름을 클릭해 주세요.</div></div>
+      </section>`;
+  }
+  const tree = buildOrganizationTree();
+  const orgOptions = organizationFieldOptions();
+  return `
+    <section class="panel organization-member-info" id="org-member-info-panel">
+      <div class="panel-head">
+        <div>
+          <div class="member-info-avatar-inline">${esc((user.name||"?").slice(0,2))}</div>
+          <h2 style="display:inline;margin-left:10px;">${esc(user.name)}</h2>
+          <span class="pill blue" style="margin-left:8px;">${ROLE_LABELS[user.role]||user.role}</span>
+        </div>
+        <div class="toolbar">
+          <button class="button" onclick="App.saveMemberInfoPanel()">저장</button>
+          <button class="button secondary" onclick="App.clearSelectedOrgMember()">닫기</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field"><label>이름</label><input id="mip_name" value="${esc(user.name||"")}" /></div>
+          <div class="field"><label>사번</label><input id="mip_empno" value="${esc(user.employeeNo||"")}" /></div>
+          <div class="field"><label>이메일</label><input id="mip_email" type="email" value="${esc(user.email||"")}" /></div>
+          <div class="field"><label>연락처</label><input id="mip_phone" value="${esc(user.phone||"")}" /></div>
+          <div class="field"><label>직책</label><input id="mip_title" value="${esc(user.title||"")}" /></div>
+          <div class="field"><label>권한(역할)</label>
+            <select id="mip_role">
+              ${["admin","chairman","president","divisionHead","teamLead","member"].map(r=>`<option value="${r}" ${user.role===r?"selected":""}>${ROLE_LABELS[r]||r}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><label>소속 조직 노드</label>
+            <select id="mip_orgnode">
+              <option value="">-- 선택 --</option>
+              ${organizationNodeOptions(tree, user.orgNodeId||"")}
+            </select>
+          </div>
+          <div class="field"><label>활성 상태</label>
+            <select id="mip_active">
+              <option value="true" ${user.active!==false?"selected":""}>활성</option>
+              <option value="false" ${user.active===false?"selected":""}>비활성</option>
+            </select>
+          </div>
+          <div class="field"><label>입사일자</label><input id="mip_joindate" type="date" value="${esc(user.joinDate||"")}" /></div>
+          <div class="field"><label>근무상태</label>
+            <select id="mip_workstatus">
+              <option value="근무" ${(user.workStatus||"근무")==="근무"?"selected":""}>근무</option>
+              <option value="휴직" ${user.workStatus==="휴직"?"selected":""}>휴직</option>
+            </select>
+          </div>
+          <div class="field"><label>퇴사 여부</label>
+            <select id="mip_retired" onchange="App.toggleRetireDateField(this.value)">
+              <option value="false" ${user.retired!==true?"selected":""}>재직</option>
+              <option value="true" ${user.retired===true?"selected":""}>퇴사</option>
+            </select>
+          </div>
+          <div class="field" id="mip_retiredate_field" style="${user.retired===true?"":"display:none;"}"><label>퇴사일</label><input id="mip_retiredate" type="date" value="${esc(user.retireDate||"")}" /></div>
+          <div class="field"><label>비밀번호 변경</label><input id="mip_password" type="password" placeholder="변경할 비밀번호 (비워두면 유지)" autocomplete="new-password" /></div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderOrganizationSourceCard() {
+  return `
+    <div class="component-card">
+      <h3>조직 관리 기준</h3>
+      <p class="muted">조직관리 탭에서 저장한 현재 조직도 세팅이 표준입니다. ERP 연동 가져오기 기능은 사용하지 않습니다.</p>
+    </div>
+  `;
+}
+
+function renderOrganizationChartEditor(tree = buildOrganizationTree()) {
+  const roots = tree.childrenByParent.root || [];
+  const divisions = tree.nodes.filter((node) => node.type === "division");
+  return `
+    <section class="component-card org-chart-editor tree-mode">
+      <div class="org-tree-toolbar">
+        <div>
+          <h3>조직도 설정</h3>
+          <p class="muted">폴더와 구성원을 드래그해서 조직도를 직접 구성합니다.</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div class="org-search-row">
+            <input id="org_tree_filter" placeholder="조직/구성원 검색" oninput="App.filterOrgTree(this.value)" />
+            <button class="button secondary" onclick="App.filterOrgTree(valueOf('org_tree_filter'))">검색</button>
+          </div>
+          <button class="button secondary sm" onclick="App.openOrgAddPopup('org')">+ 조직 추가</button>
+          <button class="button sm" onclick="App.openOrgAddPopup('member')">+ 구성원 추가</button>
+        </div>
+      </div>
+      <div class="org-tree-box" ondragover="App.allowOrgDrop(event)">
+        ${roots.length ? roots.map((node) => renderOrganizationTreeNode(node, tree, 0, true)).join("") : `<div class="empty">조직을 생성해 주세요.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+// 조직 추가 전용 패널
+function renderAddOrgNodePanel(tree = buildOrganizationTree()) {
+  return `
+    <section class="panel organization-add-panel">
+      <div class="panel-head"><div><h2>조직 추가</h2><p class="muted">상위 조직·본부·팀 등 조직(폴더)을 새로 만듭니다.</p></div></div>
+      <div class="panel-body">
+        <div class="field"><label for="quick_org_node_name">새 조직명</label>
+          <input id="quick_org_node_name" placeholder="예) 신사업팀" />
+        </div>
+        <div class="form-grid">
+          <div class="field"><label for="quick_org_node_type">조직 구분</label>
+            <select id="quick_org_node_type">
+              <option value="root">상위 조직</option>
+              <option value="division">본부</option>
+              <option value="team">팀</option>
+            </select>
+          </div>
+          <div class="field"><label for="quick_org_node_parent">상위 조직</label>
+            <select id="quick_org_node_parent">
+              <option value="">상위 없음</option>
+              ${organizationNodeOptions(tree, "")}
+            </select>
+          </div>
+        </div>
+        <div class="toolbar"><button class="button" onclick="App.createOrgNodeFromMemberForm()">조직 추가</button></div>
+      </div>
+    </section>
+  `;
+}
+
+// 구성원 추가 전용 패널
+function renderAddEmployeePanel(orgOptions, tree = buildOrganizationTree()) {
+  const selectedNodeId = state.ui.selectedNewEmployeeOrgNode || "";
+  const selectedNode = tree.byId[selectedNodeId];
+  const selectedPath = organizationNodePath(selectedNode, tree);
+  return `
+    <section class="panel organization-add-panel">
+      <div class="panel-head"><div><h2>구성원 추가</h2><p class="muted">소속 조직을 선택하고 구성원 정보를 입력해 등록합니다.</p></div></div>
+      <div class="panel-body">
+        <div class="field">
+          <label for="new_employee_org_node">소속 조직</label>
+          <select id="new_employee_org_node" onchange="App.selectOrgForNewEmployee(this.value)">
+            <option value="">조직을 선택하세요</option>
+            ${organizationNodeOptions(tree, selectedNodeId)}
+          </select>
+          <span class="muted" style="font-size:11px;">새 조직이 필요하면 위 <strong>조직 추가</strong> 패널에서 먼저 만들어 주세요.</span>
+        </div>
+        <div class="form-grid compact-org-fields">
+          ${comboInput("new_orgRoot", "상위 조직", selectedPath.orgRoot || "", orgOptions.orgRoots, "org_root_options")}
+          ${comboInput("new_division", "본부", selectedPath.division || "", orgOptions.divisions, "division_options")}
+          ${comboInput("new_team", "팀", selectedPath.team || "", orgOptions.teams, "team_options")}
+        </div>
+        <div class="form-grid">
+          ${adminInput("new_name", "이름", "")}
+          ${adminInput("new_employeeNo", "사번", "")}
+          ${adminInput("new_email", "이메일", "")}
+          ${adminInput("new_phone", "연락처", "")}
+          ${comboInput("new_title", "직책", "", orgOptions.titles, "title_options")}
+          <div class="field"><label for="new_role">권한</label>${roleSelect("new_role", "member")}</div>
+          <div class="field"><label for="new_active">활성 상태</label>
+            <select id="new_active">
+              <option value="true">활성</option>
+              <option value="false">비활성</option>
+            </select>
+          </div>
+          <div class="field"><label for="new_joinDate">입사일자</label><input id="new_joinDate" type="date" /></div>
+          <div class="field"><label for="new_workStatus">근무상태</label>
+            <select id="new_workStatus">
+              <option value="근무">근무</option>
+              <option value="휴직">휴직</option>
+            </select>
+          </div>
+        </div>
+        <div class="toolbar"><button class="button" onclick="App.addEmployee()">구성원 추가</button></div>
+      </div>
+    </section>
+  `;
+}
+
+// 파일(엑셀) 업로드로 구성원 일괄 추가
+function renderMemberUploadPanel() {
+  return `
+    <section class="panel organization-add-panel">
+      <div class="panel-head"><div><h2>구성원 일괄 추가</h2></div></div>
+      <div class="panel-body">
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.downloadMemberTemplate()">⬇ 양식 다운로드</button>
+          <button class="button" onclick="document.getElementById('member_upload_input').click()">📤 파일 업로드</button>
+          <input type="file" id="member_upload_input" accept=".xlsx" style="display:none;" onchange="App.handleMemberUpload(event)" />
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderOrganizationTreeNode(node, tree, depth = 0, open = false) {
+  const children = tree.childrenByParent[node.id] || [];
+  const directUsers = directUsersForOrganizationNode(node, tree).sort(compareEmployeesForDisplay);
+  const total = usersForOrganizationNode(node, tree).length;
+  const searchText = [node.name, orgNodeTypeLabel(node.type), ...directUsers.map((user) => personSearchText(user))].join(" ").toLowerCase();
+  return `
+    <details class="org-tree-node ${node.type}" ${open || depth < 1 ? "open" : ""} draggable="true" data-org-node-id="${esc(node.id)}" data-search="${esc(searchText)}" ondragstart="App.startOrgDrag(event, 'node', ${jsLiteral(node.id)})" ondragover="App.allowOrgDrop(event)" ondrop="App.dropOnOrgNode(event, ${jsLiteral(node.id)})">
+      <summary class="org-tree-summary">
+        <span class="tree-expander" aria-hidden="true"></span>
+        <span class="folder-icon" aria-hidden="true"></span>
+        <span class="org-tree-name">${esc(node.name)}</span>
+        <span class="org-tree-count">${total}명</span>
+        <button class="org-tree-action" onclick="event.preventDefault(); event.stopPropagation(); App.selectOrgForNewEmployee(${jsLiteral(node.id)})">선택</button>
+        <button class="org-tree-delete" onclick="event.preventDefault(); event.stopPropagation(); App.deleteOrgNode(${jsLiteral(node.id)})" title="조직 삭제">×</button>
+      </summary>
+      <div class="org-tree-branch">
+        ${directUsers.length ? `<div class="org-tree-members">${directUsers.map(renderOrganizationTreeMember).join("")}</div>` : ""}
+        ${children.map((child) => renderOrganizationTreeNode(child, tree, depth + 1)).join("")}
+        ${!directUsers.length && !children.length ? `<div class="org-drop-hint">여기로 조직이나 구성원을 이동</div>` : ""}
+      </div>
+    </details>
+  `;
+}
+
+function renderOrganizationTreeMember(user) {
+  return `
+    <div class="org-tree-member" draggable="true" data-search="${esc(personSearchText(user))}" ondragstart="App.startOrgDrag(event, 'employee', ${jsLiteral(user.id)})" onclick="App.selectOrgMember(${jsLiteral(user.id)})" style="cursor:pointer;" title="${esc(user.name)} 클릭하여 정보 수정">
+      <span class="member-line" aria-hidden="true"></span>
+      <strong style="color:var(--primary);">${esc(user.name)}</strong>
+      <span>${esc(user.title || ROLE_LABELS[user.role] || "-")}</span>
+    </div>
+  `;
+}
+
+function organizationNodeOptions(tree = buildOrganizationTree(), selectedId = "") {
+  const typeOrder = { root: 1, division: 2, team: 3 };
+  return [...tree.nodes]
+    .sort((a, b) => (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9) || organizationNodeFullLabel(a, tree).localeCompare(organizationNodeFullLabel(b, tree), "ko"))
+    .map((node) => `<option value="${esc(node.id)}" ${selectedId === node.id ? "selected" : ""}>${esc(organizationNodeFullLabel(node, tree))}</option>`)
+    .join("");
+}
+
+function organizationNodeFullLabel(node, tree = buildOrganizationTree()) {
+  const path = organizationNodePath(node, tree);
+  if (node.type === "root") return `${node.name}`;
+  if (node.type === "division") return `${path.orgRoot || "-"} / ${node.name}`;
+  return `${path.orgRoot || "-"} / ${path.division || "-"} / ${node.name}`;
+}
+
+function createOrganizationNodeRecordFromValues(name, type, parentId) {
+  const tree = buildOrganizationTree();
+  const parent = parentId ? tree.byId[parentId] : null;
+  if (!name) return { error: "조직명을 입력해 주세요." };
+  if (type === "root" && parentId) return { error: "상위 조직은 부모 조직 없이 생성합니다." };
+  if (type !== "root" && !parent) return { error: "상위 조직을 선택해 주세요." };
+  const normalizedParentId = type === "root" ? "" : parentId;
+  const duplicate = tree.nodes.some((node) => node.type === type && node.parentId === normalizedParentId && node.name === name);
+  if (duplicate) return { error: "이미 같은 위치에 동일한 이름의 조직이 있습니다." };
+  const node = {
+    id: `org-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    name,
+    parentId: normalizedParentId,
+  };
+  state.organizationNodes = state.organizationNodes || [];
+  state.organizationNodes.push(node);
+  return { node };
+}
+
+function selectOrganizationNodeForInputs(nodeId) {
+  const tree = buildOrganizationTree();
+  const node = tree.byId[nodeId];
+  const orgRoot = document.getElementById("new_orgRoot");
+  const division = document.getElementById("new_division");
+  const team = document.getElementById("new_team");
+  const select = document.getElementById("new_employee_org_node");
+  if (!node) {
+    if (orgRoot) orgRoot.value = "";
+    if (division) division.value = "";
+    if (team) team.value = "";
+    if (select) select.value = "";
+    return;
+  }
+  const path = organizationNodePath(node, tree);
+  if (orgRoot) orgRoot.value = path.orgRoot || "";
+  if (division) division.value = path.division || "";
+  if (team) team.value = path.team || "";
+  if (select) select.value = nodeId;
+}
+
+function buildOrganizationTree() {
+  const nodes = [];
+  const byKey = new Map();
+  const addNode = (source) => {
+    const name = String(source.name || "미지정").trim() || "미지정";
+    const type = source.type || "team";
+    const parentId = source.parentId || "";
+    const key = `${type}|${parentId}|${name}`;
+    if (byKey.has(key)) return byKey.get(key);
+    const node = {
+      id: source.id || derivedOrgNodeId(type, name, parentId),
+      type,
+      name,
+      parentId,
+      manual: Boolean(source.manual),
+    };
+    nodes.push(node);
+    byKey.set(key, node);
+    return node;
+  };
+
+  (state.organizationNodes || []).forEach((node) => addNode({ ...node, manual: true }));
+  state.users.filter((user) => user.role !== "admin" && !isRetired(user)).forEach((user) => {
+    if (user.orgNodeId) return;
+    const root = addNode({ type: "root", name: user.orgRoot || "미지정" });
+    if (user.division && user.division !== "미지정") {
+      const division = addNode({ type: "division", name: user.division, parentId: root.id });
+      if (user.team && user.team !== "미지정") addNode({ type: "team", name: user.team, parentId: division.id });
+    }
+  });
+
+  const byId = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  nodes.forEach((node) => {
+    if (node.parentId && !byId[node.parentId]) node.parentId = "";
+  });
+  const childrenByParent = {};
+  nodes.forEach((node) => {
+    const parentKey = node.parentId || "root";
+    childrenByParent[parentKey] = childrenByParent[parentKey] || [];
+    childrenByParent[parentKey].push(node);
+  });
+  Object.values(childrenByParent).forEach((children) => children.sort(compareOrganizationNodes));
+  return { nodes, byId, childrenByParent };
+}
+
+function derivedOrgNodeId(type, name, parentId = "") {
+  return type === "root" ? `root:${slugId(name)}` : `${type}:${slugId(parentId)}:${slugId(name)}`;
+}
+
+function compareOrganizationNodes(a, b) {
+  const typeOrder = { root: 1, division: 2, team: 3 };
+  return (typeOrder[a.type] || 9) - (typeOrder[b.type] || 9) || a.name.localeCompare(b.name, "ko");
+}
+
+function orgNodeTypeLabel(type) {
+  return { root: "상위 조직", division: "본부", team: "팀" }[type] || "조직";
+}
+
+function organizationNodePath(node, tree = buildOrganizationTree()) {
+  if (!node) return {};
+  const path = [];
+  let current = node;
+  const guard = new Set();
+  while (current && !guard.has(current.id)) {
+    path.unshift(current);
+    guard.add(current.id);
+    current = tree.byId[current.parentId];
+  }
+  return organizationFieldsFromPath(path);
+}
+
+function usersForOrganizationNode(node, tree = buildOrganizationTree()) {
+  const descendantIds = new Set(descendantOrgNodeIds(node.id, tree));
+  const path = organizationNodePath(node, tree);
+  return state.users.filter((user) => {
+    if (user.role === "admin") return false;
+    if (isRetired(user)) return false;
+    if (user.orgNodeId) return descendantIds.has(user.orgNodeId);
+    if (node.type === "root") return (user.orgRoot || "미지정") === path.orgRoot;
+    if (node.type === "division") return (user.orgRoot || "미지정") === path.orgRoot && (user.division || "미지정") === path.division;
+    return (user.orgRoot || "미지정") === path.orgRoot && (user.division || "미지정") === path.division && (user.team || "미지정") === path.team;
+  });
+}
+
+function directUsersForOrganizationNode(node, tree = buildOrganizationTree()) {
+  const path = organizationNodePath(node, tree);
+  return usersForOrganizationNode(node, tree).filter((user) => {
+    if (user.orgNodeId) return user.orgNodeId === node.id;
+    if (node.type === "root") return !user.division || user.division === "미지정";
+    if (node.type === "division") return !user.team || user.team === "미지정";
+    return (user.team || "미지정") === path.team;
+  });
+}
+
+function descendantOrgNodeIds(nodeId, tree = buildOrganizationTree()) {
+  const ids = [nodeId];
+  (tree.childrenByParent[nodeId] || []).forEach((child) => {
+    ids.push(...descendantOrgNodeIds(child.id, tree));
+  });
+  return ids;
+}
+
+function upsertOrganizationNodeRecord(node, parentId = node.parentId || "") {
+  state.organizationNodes = state.organizationNodes || [];
+  const existing = state.organizationNodes.find((item) => item.id === node.id);
+  if (existing) {
+    existing.name = node.name;
+    existing.type = node.type;
+    existing.parentId = parentId;
+    return existing;
+  }
+  const record = { id: node.id, name: node.name, type: node.type, parentId };
+  state.organizationNodes.push(record);
+  return record;
+}
+
+function placeEmployeeInOrganizationNode(employee, node, tree = buildOrganizationTree()) {
+  syncUserFieldsToOrganizationNode(employee, node, tree.nodes);
+}
+
+function moveOrganizationNode(source, target, tree = buildOrganizationTree()) {
+  if (source.id === target.id || descendantOrgNodeIds(source.id, tree).includes(target.id)) {
+    window.alert("자기 자신이나 하위 조직으로는 이동할 수 없습니다.");
+    return false;
+  }
+  if (source.type === "root") {
+    window.alert("최상위 조직은 다른 조직 아래로 이동할 수 없습니다.");
+    return false;
+  }
+  upsertOrganizationNodeRecord(source, target.id);
+  const nextTree = buildOrganizationTree();
+  usersForOrganizationNode(source, nextTree).forEach((user) => {
+    const userNode = nextTree.byId[user.orgNodeId] || nextTree.byId[source.id];
+    if (userNode) syncUserFieldsToOrganizationNode(user, userNode, nextTree.nodes);
+  });
+  return true;
+}
+
+function renderOrganizationPeopleTable(employees, orgOptions = organizationFieldOptions()) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>이름</th><th>사번</th><th>권한</th><th>직책</th><th>상위 조직</th><th>본부</th><th>팀</th><th>상태</th><th>관리</th></tr></thead>
+        <tbody>
+          ${employees.map((employee) => `
+            <tr>
+              <td><input id="emp_${employee.id}_name" value="${esc(employee.name)}" /></td>
+              <td><input id="emp_${employee.id}_employeeNo" value="${esc(employee.employeeNo || "")}" /></td>
+              <td>${roleSelect(`emp_${employee.id}_role`, employee.role)}</td>
+              <td>${comboControl(`emp_${employee.id}_title`, employee.title || "", orgOptions.titles, "title_options")}</td>
+              <td>${comboControl(`emp_${employee.id}_orgRoot`, employee.orgRoot || "", orgOptions.orgRoots, "org_root_options")}</td>
+              <td>${comboControl(`emp_${employee.id}_division`, employee.division || "", orgOptions.divisions, "division_options")}</td>
+              <td>${comboControl(`emp_${employee.id}_team`, employee.team || "", orgOptions.teams, "team_options")}</td>
+              <td><select id="emp_${employee.id}_active"><option value="true" ${employee.active !== false ? "selected" : ""}>활성</option><option value="false" ${employee.active === false ? "selected" : ""}>비활성</option></select></td>
+              <td><div class="toolbar"><button class="button secondary" onclick="App.saveEmployee('${employee.id}')">저장</button><button class="button danger" onclick="App.deleteEmployee('${employee.id}')">삭제</button></div></td>
+              <input id="emp_${employee.id}_email" type="hidden" value="${esc(employee.email || "")}" />
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminTemplates() {
+  const component = selectedTemplateComponent();
+  const variants = templateVariantsForKind(component);
+  const index = selectedTemplateIndex(component);
+  const template = variants[index];
+  const isPerformance = component === "performance";
+  return `
+    <div class="grid">
+      <!-- 통합 템플릿 편집 -->
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>템플릿 관리 및 편집</h2><p class="muted">평가 종류를 선택하고 템플릿을 편집합니다.</p></div>
+          <div class="toolbar">
+            ${!isPerformance ? `<button class="button secondary" onclick="App.addTemplateVariant('${component}')">+ 템플릿 추가</button>` : ""}
+            ${!isPerformance ? `
+              <button class="button ghost" onclick="App.downloadTemplateForm('${component}')" title="엑셀(CSV) 양식을 내려받아 문항을 작성한 뒤 업로드하세요.">📥 엑셀 양식 다운로드</button>
+              <button class="button ghost" onclick="document.getElementById('tpl_upload_input').click()">📤 엑셀 양식 업로드</button>
+              <input type="file" id="tpl_upload_input" accept=".csv,.xlsx,.xls" style="display:none;" onchange="App.handleTemplateUpload(event, '${component}')" />
+            ` : ""}
+            ${!isPerformance ? `<button class="button secondary" onclick="App.openTemplatePreviewModal('${component}', ${index})">🔍 반영 예시 확인하기</button>` : ""}
+            <button class="button" onclick="App.saveSelectedTemplate()">템플릿 저장</button>
+            ${!isPerformance && variants.length > 1 ? `<button class="button danger" onclick="App.removeSelectedTemplateVariant()">삭제</button>` : ""}
+          </div>
+        </div>
+        <div class="panel-body">
+          <!-- 평가 종류 탭 -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line);padding-bottom:12px;">
+            ${TEMPLATE_KINDS.map(kind => `
+              <button onclick="App.selectTemplateComponent('${kind}')" style="
+                padding:6px 14px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid ${kind===component?"var(--primary)":"var(--line)"};
+                background:${kind===component?"var(--primary)":"var(--surface)"};color:${kind===component?"#fff":"var(--ink-2)"};">
+                ${WEIGHT_COMPONENT_LABELS[kind]}
+              </button>`).join("")}
+          </div>
+          ${isPerformance ? renderPerformanceTemplateAdmin(variants, index, template) : (() => {
+            const variantTabs = variants.length > 1 ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+              ${variants.map((v,i) => `<button onclick="App.selectTemplateVariant('${component}','${v.id}')" style="
+                padding:4px 12px;border-radius:6px;font-size:12px;cursor:pointer;border:1.5px solid ${i===index?"var(--primary)":"var(--line)"};
+                background:${i===index?"var(--primary-weak)":"var(--surface)"};color:${i===index?"var(--primary)":"var(--ink-2)"};">
+                ${esc(v.label)}${i===0?" (기본)":""}
+              </button>`).join("")}
+            </div>` : "";
+            return `${variantTabs}
+              ${template ? renderTemplateEditorSimple(component, template, index) : `<div class="empty">선택된 템플릿이 없습니다.</div>`}`;
+          })()}
+        </div>
+      </section>
+      <!-- 템플릿 적용 대상 -->
+      ${renderTemplateAssignmentPanel()}
+    </div>
+    ${state.ui.templatePreviewModal ? renderTemplatePreviewModal() : ""}
+  `;
+}
+
+function renderPerformanceTemplateAdmin(variants, index, template) {
+  const previewRole = state.ui.performancePreviewRole || "member";
+  const mockMember = { id: "preview-member", name: "팀원 예시", role: "member", team: "예시팀", division: "예시본부", title: "팀원" };
+  const mockLeader = { id: "preview-leader", name: "팀장 예시", role: "teamLead", team: "예시팀", division: "예시본부", title: "팀장" };
+  const previewEmployee = previewRole === "leader" ? mockLeader : mockMember;
+  const mockPerfData = { achievements: [{ name: "", goal: "", achievementLevel: "", detail: "", weight: 100, score: "", grade: "" }] };
+  const previewHtml = renderPerformanceForm("tpl_preview", mockPerfData, template || variants[0], "self", previewEmployee);
+
+  return `
+    <div style="display:flex;gap:8px;margin-bottom:16px;">
+      <button onclick="App.setPerformancePreviewRole('member')" style="padding:5px 16px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid ${previewRole==="member"?"var(--primary)":"var(--line)"};background:${previewRole==="member"?"var(--primary)":"var(--surface)"};color:${previewRole==="member"?"#fff":"var(--ink-2)"};">팀원 템플릿</button>
+      <button onclick="App.setPerformancePreviewRole('leader')" style="padding:5px 16px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid ${previewRole==="leader"?"var(--primary)":"var(--line)"};background:${previewRole==="leader"?"var(--primary)":"var(--surface)"};color:${previewRole==="leader"?"#fff":"var(--ink-2)"};">팀장/본부장 템플릿</button>
+    </div>
+    <!-- 가이드 편집 (공통) — label hidden input은 syncTemplateEditor early-return 방지용 -->
+    <input type="hidden" id="tpl_performance_0_label" value="${esc(template?.label || variants[0]?.label || "업적평가 기본")}" />
+    <div class="field" style="margin-bottom:20px;">
+      <label for="tpl_performance_0_guide">가이드 <span class="pill" style="background:var(--primary-lt);color:var(--primary);font-size:11px;">수정 가능</span></label>
+      <textarea id="tpl_performance_0_guide" rows="3">${esc(template?.guide || variants[0]?.guide || "")}</textarea>
+    </div>
+    <!-- 피평가자 화면 예시 -->
+    <div style="border:1.5px dashed var(--line);border-radius:10px;padding:16px;background:var(--bg);">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:10px;letter-spacing:.04em;">📋 ${previewRole==="leader" ? "팀장/본부장" : "팀원"} 피평가자 화면 예시</div>
+      <div class="tpl-preview-body" style="pointer-events:none;opacity:.92;">
+        ${previewHtml}
+      </div>
+    </div>
+  `;
+}
+
+function renderTemplatePreviewModal() {
+  const { component, templateIndex } = state.ui.templatePreviewModal;
+  const variants = templateVariantsForKind(component);
+  const template = variants[templateIndex] || variants[0];
+  const mockEmployee = { id: "preview-mock", name: "예시 구성원", role: "member", team: "예시팀", division: "예시본부", title: "팀원" };
+  const mockData = component === "performance"
+    ? { achievements: [{ name: "", goal: "", achievementLevel: "", detail: "", weight: 100, score: "", grade: "" }] }
+    : { itemScores: {}, comment: "" };
+  const previewHtml = component === "performance"
+    ? renderPerformanceForm("tpl_modal_preview", mockData, template, "self", mockEmployee)
+    : renderScaleItemForm("tpl_modal_preview", component, mockData, template, "self");
+
+  const compLabel = WEIGHT_COMPONENT_LABELS[component] || component;
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeTemplatePreviewModal()" style="z-index:2000;">
+      <div class="goal-modal" style="max-width:680px;width:94vw;max-height:88vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>${esc(compLabel)} — 피평가자 화면 예시</h2>
+          <button onclick="App.closeTemplatePreviewModal()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:20px;">
+          <div class="notice" style="margin-bottom:16px;font-size:12px;">현재 저장된 템플릿이 적용된 피평가자(자기평가) 화면 예시입니다. 등급 선택 등 일부 인터랙션은 비활성화되어 있습니다.</div>
+          <div class="tpl-preview-body" style="pointer-events:none;opacity:.95;">
+            ${previewHtml}
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeTemplatePreviewModal()">닫기</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function selectedTemplateComponent() {
+  const component = state.ui.templateComponent;
+  return TEMPLATE_KINDS.includes(component) ? component : "performance";
+}
+
+function selectedTemplateIndex(component = selectedTemplateComponent()) {
+  const variants = templateVariantsForKind(component);
+  const selectedId = state.ui.templateSelections?.[component] || variants[0]?.id;
+  const index = variants.findIndex((template) => template.id === selectedId);
+  return index >= 0 ? index : 0;
+}
+
+function selectedTemplate(component = selectedTemplateComponent()) {
+  const variants = templateVariantsForKind(component);
+  return variants[selectedTemplateIndex(component)] || variants[0];
+}
+
+function renderTemplateManagementPanel() {
+  const component = selectedTemplateComponent();
+  const template = selectedTemplate(component);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>템플릿 관리</h2>
+          <p class="muted">평가 종류와 템플릿을 선택해 생성, 수정, 삭제합니다.</p>
+        </div>
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.addTemplateVariant('${component}')">템플릿 생성</button>
+          <button class="button" onclick="App.saveSelectedTemplate()">템플릿 저장</button>
+          <button class="button danger" onclick="App.removeSelectedTemplateVariant()">선택 템플릿 삭제</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <div class="field">
+            <label for="template_component_select">평가 종류</label>
+            <select id="template_component_select" onchange="App.selectTemplateComponent(this.value)">
+              ${TEMPLATE_KINDS.map((item) => `<option value="${item}" ${item === component ? "selected" : ""}>${WEIGHT_COMPONENT_LABELS[item]}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="template_variant_select">템플릿 선택</label>
+            <select id="template_variant_select" onchange="App.selectTemplateVariant('${component}', this.value)">
+              ${templateVariantsForKind(component).map((item) => `<option value="${esc(item.id)}" ${item.id === template.id ? "selected" : ""}>${esc(item.label)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderSelectedTemplateEditorPanel() {
+  const component = selectedTemplateComponent();
+  const variants = templateVariantsForKind(component);
+  const index = selectedTemplateIndex(component);
+  const template = variants[index];
+  return `
+    <section class="panel template-editor">
+      <div class="panel-head">
+        <div>
+          <h2>${esc(WEIGHT_COMPONENT_LABELS[component])} 템플릿 편집</h2>
+          <p class="muted">위 콤보박스에서 선택한 템플릿의 문항과 등급 점수를 편집합니다.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        ${template ? renderTemplateEditor(component, template, index, variants.length) : `<div class="empty">선택된 템플릿이 없습니다.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderWeightTable() {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>역할</th>${WEIGHT_COMPONENTS.map((component) => `<th>${WEIGHT_COMPONENT_LABELS[component]}(%)</th>`).join("")}<th>합계</th></tr></thead>
+        <tbody>
+          ${["member", "teamLead", "divisionHead"].map((role) => {
+            const weights = state.roleWeights[role];
+            const sum = WEIGHT_COMPONENTS.reduce((total, component) => total + Number(weights[component] || 0), 0);
+            return `<tr><td>${ROLE_LABELS[role]}</td>${WEIGHT_COMPONENTS.map((component) => `<td><input class="compact-input" id="weight_${role}_${component}" type="number" min="0" max="100" value="${esc(weights[component])}" /></td>`).join("")}<td class="score">${sum}%</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderTemplateAssignmentPanel() {
+  const evaluatees = cycleUsers().filter(isEvaluatee);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>템플릿 적용 대상 설정</h2>
+          <p class="muted">본부별 일괄 적용 후 필요한 구성원만 개별로 다른 템플릿을 지정할 수 있습니다.</p>
+        </div>
+        <div class="toolbar">
+          <button class="button" onclick="App.applyAllDivisionTemplates()">전체 일괄 적용</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${renderDivisionTemplateBulkControls(evaluatees)}
+        ${renderTemplateFilterBar(evaluatees)}
+        ${renderGroupedPeople(evaluatees, (employees) => renderTemplateAssignmentTable(employees), { open: false })}
+      </div>
+    </section>
+  `;
+}
+
+function renderTemplateFilterBar(evaluatees) {
+  const divOptions   = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const teamOptions  = [...new Set(evaluatees.map(e => e.team || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const roleOptions  = [...new Set(evaluatees.map(e => e.role))];
+  const gradeOptions = [...new Set(evaluatees.map(e => e.grade || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  return `
+    <div class="approval-filter-bar">
+      <div class="approval-filter-search">
+        <span class="filter-icon">🔍</span>
+        <input id="tpl_filter_name" placeholder="이름·사번 검색…" oninput="App.filterTemplateAssign()"
+          style="border:none;background:transparent;outline:none;width:130px;font-size:13px;" />
+      </div>
+      <div class="approval-filter-selects">
+        <div class="af-select-wrap"><label>부서</label>
+          <select id="tpl_filter_div" onchange="App.filterTemplateAssign()"><option value="">전체</option>${divOptions.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select>
+        </div>
+        <div class="af-select-wrap"><label>팀</label>
+          <select id="tpl_filter_team" onchange="App.filterTemplateAssign()"><option value="">전체</option>${teamOptions.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+        </div>
+        <div class="af-select-wrap"><label>역할</label>
+          <select id="tpl_filter_role" onchange="App.filterTemplateAssign()"><option value="">전체</option>${roleOptions.map(r=>`<option value="${esc(r)}">${esc(ROLE_LABELS[r]||r)}</option>`).join("")}</select>
+        </div>
+        ${gradeOptions.length ? `<div class="af-select-wrap"><label>직급</label>
+          <select id="tpl_filter_grade2" onchange="App.filterTemplateAssign()"><option value="">전체</option>${gradeOptions.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join("")}</select>
+        </div>` : ""}
+      </div>
+    </div>`;
+}
+
+function renderDivisionTemplateBulkControls(evaluatees) {
+  const divisions = [...new Set(evaluatees.map((employee) => employee.division || "미지정"))].sort((a, b) => a.localeCompare(b, "ko"));
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>본부</th>${TEMPLATE_KINDS.map((kind) => `<th>${WEIGHT_COMPONENT_LABELS[kind]}</th>`).join("")}<th>적용</th></tr></thead>
+        <tbody>
+          ${divisions.map((division) => `
+            <tr>
+              <td><strong>${esc(division)}</strong></td>
+              ${TEMPLATE_KINDS.map((kind) => `<td>${templateSelect(`bulk_tpl_${kind}_${slugId(division)}`, divisionBulkTemplateSelection(division, kind, evaluatees), kind, "", true)}</td>`).join("")}
+              <td><button class="button secondary" onclick="App.applyDivisionTemplates(${jsLiteral(division)})">본부 적용</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function divisionBulkTemplateSelection(division, component, evaluatees = cycleUsers().filter(isEvaluatee)) {
+  const targets = evaluatees.filter((employee) => (employee.division || "미지정") === division);
+  if (!targets.length) return defaultTemplateIdForKind(component);
+  const selectedIds = [...new Set(targets.map((employee) => assignedTemplateIdForKind(employee, component)))];
+  return selectedIds.length === 1 ? selectedIds[0] : "";
+}
+
+function renderTemplateAssignmentTable(employees) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>조직</th>${TEMPLATE_KINDS.map((kind) => `<th>${WEIGHT_COMPONENT_LABELS[kind]}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${employees.map((employee) => `
+            <tr class="tpl-filter-row" data-name="${esc(((employee.name||"")+" "+(employee.employeeNo||"")).toLowerCase())}" data-div="${esc(employee.division||"미지정")}" data-team="${esc(employee.team||"")}" data-role="${esc(employee.role)}" data-grade2="${esc(employee.grade||"")}">
+              <td><strong>${esc(employee.name)}</strong><br /><span class="muted">${esc(employee.employeeNo || "")}</span></td>
+              <td>${ROLE_LABELS[employee.role]}</td>
+              <td>${esc(employee.division || "-")}<br /><span class="muted">${esc(employee.team || "-")}</span></td>
+              ${TEMPLATE_KINDS.map((kind) => `<td>${templateSelect(`tpl_assign_${employee.id}_${kind}`, assignedTemplateIdForKind(employee, kind), kind, `App.setTemplateAssignment(${jsLiteral(employee.id)}, ${jsLiteral(kind)}, this.value)`)}</td>`).join("")}
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function templateSelect(id, selected, component, onChange = "", includeMixedOption = false) {
+  const handler = onChange ? ` onchange="${onChange}"` : "";
+  const mixedOption = includeMixedOption ? `<option value="" ${!selected ? "selected" : ""}>개별 지정(혼합)</option>` : "";
+  return `<select id="${id}"${handler}>${mixedOption}${templateVariantsForKind(component).map((template) => `<option value="${esc(template.id)}" ${selected === template.id ? "selected" : ""}>${esc(template.label)}</option>`).join("")}</select>`;
+}
+
+function renderTemplateVariantManager(component) {
+  const variants = templateVariantsFor(component);
+  return `
+    <section class="panel template-editor">
+      <div class="panel-head">
+        <div>
+          <h2>${esc(COMPONENT_LABELS[component])} 템플릿</h2>
+          <p class="muted">여러 템플릿을 만들어 두고, 위 적용 대상 설정에서 구성원별로 배정합니다.</p>
+        </div>
+        <button class="button secondary" onclick="App.addTemplateVariant('${component}')">템플릿 추가</button>
+      </div>
+      <div class="panel-body grid">
+        ${variants.map((template, index) => renderTemplateEditor(component, template, index, variants.length)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderTemplateEditorSimple(component, template, templateIndex) {
+  const isPerformance = component === "performance";
+  return `
+    <div class="template-canvas">
+      <div class="form-grid" style="margin-bottom:12px;">
+        <div class="field">
+          <label for="tpl_${component}_${templateIndex}_label">템플릿 이름</label>
+          <input id="tpl_${component}_${templateIndex}_label" value="${esc(template.label)}" />
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:16px;">
+        <label for="tpl_${component}_${templateIndex}_guide">가이드</label>
+        <textarea id="tpl_${component}_${templateIndex}_guide" rows="2">${esc(template.guide || "")}</textarea>
+      </div>
+      <h4 style="font-size:13px;font-weight:700;margin-bottom:10px;">${isPerformance ? "업적 항목" : "평가 문항"}</h4>
+      ${
+        isPerformance
+          ? `<div class="field"><textarea id="tpl_${component}_${templateIndex}_items" rows="4" placeholder="항목명 | 가이드 (줄바꿈으로 구분)">${esc(template.items.map((item) => `${item.name} | ${item.guide || ""}`).join("\n"))}</textarea></div>`
+          : `<div class="template-question-list">
+              ${template.items.map((item, i) => renderTemplateItemEditor(component, templateIndex, item, i)).join("")}
+              <button class="button secondary" style="margin-top:4px;" onclick="App.addTemplateItem('${component}', ${templateIndex})">+ 문항 추가</button>
+            </div>`
+      }
+      <p class="muted" style="font-size:12px;margin-top:14px;">※ 응답 등급별 환산 점수(S/A/B/C/D)는 <strong>평가 세팅 → 가중치·등급</strong> 탭에서 설정합니다.</p>
+    </div>
+  `;
+}
+
+function renderTemplateEditor(component, template, templateIndex, templateCount) {
+  const isPerformance = component === "performance";
+  return `
+    <div class="template-canvas">
+      <div class="toolbar" style="justify-content: space-between;">
+        <div>
+          <h3>${esc(template.label)}${templateIndex === 0 ? ' <span class="pill blue">기본</span>' : ""}</h3>
+          <p class="muted">질문, 가이드, 항목, 등급 환산 점수를 설정합니다.</p>
+        </div>
+        ${templateCount > 1 ? `<button class="button danger" onclick="App.removeTemplateVariant('${component}', ${templateIndex})">템플릿 삭제</button>` : ""}
+      </div>
+      <div class="notice warn">수정 가능한 정보 안내: 템플릿 이름, 질문/가이드, 평가 항목, 등급 점수와 설명을 변경할 수 있습니다.</div>
+      <h3>템플릿의 이름을 지어주세요.</h3>
+      <div class="field"><label for="tpl_${component}_${templateIndex}_label">템플릿 이름</label><input id="tpl_${component}_${templateIndex}_label" value="${esc(template.label)}" /></div>
+      <h3>질문을 입력하세요.</h3>
+      <div class="field"><label for="tpl_${component}_${templateIndex}_question">질문</label><input id="tpl_${component}_${templateIndex}_question" value="${esc(template.question || "")}" /></div>
+      <div class="field"><label for="tpl_${component}_${templateIndex}_guide">가이드</label><textarea id="tpl_${component}_${templateIndex}_guide">${esc(template.guide || "")}</textarea></div>
+      <h3>${component === "performance" ? "업적 입력 항목을 설정하세요." : "평가 문항을 설정하세요."}</h3>
+      ${
+        isPerformance
+          ? `<div class="field"><label for="tpl_${component}_${templateIndex}_items">항목 이름 | 가이드</label><textarea id="tpl_${component}_${templateIndex}_items">${esc(template.items.map((item) => `${item.name} | ${item.guide || ""}`).join("\n"))}</textarea></div>`
+          : `<div class="template-question-list">
+              ${template.items.map((item, index) => renderTemplateItemEditor(component, templateIndex, item, index)).join("")}
+              <button class="button secondary" onclick="App.addTemplateItem('${component}', ${templateIndex})">문항 추가</button>
+            </div>`
+      }
+      <h3>답변 등급별 점수를 설정하세요.</h3>
+      ${template.grades.map((grade) => `
+        <div class="grade-config">
+          <div class="field"><label>등급 이름</label><input id="tpl_${component}_${templateIndex}_grade_${grade.grade}_name" value="${esc(grade.grade)}" disabled /></div>
+          <div class="field"><label>환산 점수</label><input id="tpl_${component}_${templateIndex}_grade_${grade.grade}_score" type="number" value="${esc(grade.score)}" /></div>
+          <div class="field wide"><label>설명</label><input id="tpl_${component}_${templateIndex}_grade_${grade.grade}_desc" value="${esc(grade.description || "")}" /></div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderTemplateItemEditor(component, templateIndex, item, index) {
+  return `
+    <div class="template-question-card">
+      <div class="toolbar" style="justify-content: space-between;">
+        <strong>질문 ${index + 1}</strong>
+        <button class="icon-button" onclick="App.removeTemplateItem('${component}', ${templateIndex}, ${index})" title="삭제">×</button>
+      </div>
+      <div class="field">
+        <label for="tpl_${component}_${templateIndex}_item_${index}_name">질문</label>
+        <textarea id="tpl_${component}_${templateIndex}_item_${index}_name" maxlength="500">${esc(item.name || "")}</textarea>
+      </div>
+      <div class="field">
+        <label for="tpl_${component}_${templateIndex}_item_${index}_guide">가이드</label>
+        <textarea id="tpl_${component}_${templateIndex}_item_${index}_guide">${esc(item.guide || "")}</textarea>
+      </div>
+    </div>
+  `;
+}
+
+function renderUpwardTemplateEditorPanel() {
+  return `
+    <section class="panel template-editor">
+      <div class="panel-head">
+        <div>
+          <h2>상향평가 템플릿</h2>
+          <p class="muted">기존 역량/자세·태도평가처럼 5지선다 등급 문항을 설계합니다.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        ${renderUpwardTemplateEditor()}
+      </div>
+    </section>
+  `;
+}
+
+function renderUpwardTemplateEditor() {
+  const template = state.upwardTemplate;
+  return `
+    <div class="template-canvas">
+      <div class="notice warn">상향평가 문항을 추가/삭제/수정하면 피평가자의 평가하기 화면에 바로 반영됩니다.</div>
+      <h3>템플릿의 이름을 지어주세요.</h3>
+      <div class="field"><label for="up_tpl_label">템플릿 이름</label><input id="up_tpl_label" value="${esc(template.label)}" /></div>
+      <h3>질문을 입력하세요.</h3>
+      <div class="field"><label for="up_tpl_question">질문</label><input id="up_tpl_question" value="${esc(template.question || "")}" /></div>
+      <div class="field"><label for="up_tpl_guide">가이드</label><textarea id="up_tpl_guide">${esc(template.guide || "")}</textarea></div>
+      <h3>상향평가 문항을 설정하세요.</h3>
+      <div class="template-question-list">
+        ${template.items.map((item, index) => renderUpwardTemplateItemEditor(item, index)).join("")}
+        <button class="button secondary" onclick="App.addUpwardTemplateItem()">문항 추가</button>
+      </div>
+      <h3>답변 등급별 점수를 설정하세요.</h3>
+      ${template.grades.map((grade) => `
+        <div class="grade-config">
+          <div class="field"><label>등급 이름</label><input id="up_tpl_grade_${grade.grade}_name" value="${esc(grade.grade)}" disabled /></div>
+          <div class="field"><label>환산 점수</label><input id="up_tpl_grade_${grade.grade}_score" type="number" value="${esc(grade.score)}" /></div>
+          <div class="field wide"><label>설명</label><input id="up_tpl_grade_${grade.grade}_desc" value="${esc(grade.description || "")}" /></div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderUpwardTemplateItemEditor(item, index) {
+  return `
+    <div class="template-question-card">
+      <div class="toolbar" style="justify-content: space-between;">
+        <strong>질문 ${index + 1}</strong>
+        <button class="icon-button" onclick="App.removeUpwardTemplateItem(${index})" title="삭제">×</button>
+      </div>
+      <div class="field">
+        <label for="up_tpl_item_${index}_name">질문</label>
+        <textarea id="up_tpl_item_${index}_name" maxlength="500">${esc(item.name || "")}</textarea>
+      </div>
+      <div class="field">
+        <label for="up_tpl_item_${index}_guide">가이드</label>
+        <textarea id="up_tpl_item_${index}_guide">${esc(item.guide || "")}</textarea>
+      </div>
+    </div>
+  `;
+}
+
+function renderPeerTemplateEditorPanel() {
+  return `
+    <section class="panel template-editor">
+      <div class="panel-head">
+        <div>
+          <h2>동료평가 템플릿</h2>
+          <p class="muted">동료평가 문항과 등급별 환산 점수를 설정합니다.</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        ${renderPeerTemplateEditor()}
+      </div>
+    </section>
+  `;
+}
+
+function renderPeerTemplateEditor() {
+  const template = state.peerTemplate;
+  return `
+    <div class="template-canvas">
+      <div class="notice warn">동료평가 문항을 추가/삭제/수정하면 동료평가 화면에 바로 반영됩니다.</div>
+      <h3>템플릿의 이름을 지어주세요.</h3>
+      <div class="field"><label for="peer_tpl_label">템플릿 이름</label><input id="peer_tpl_label" value="${esc(template.label)}" /></div>
+      <h3>질문을 입력하세요.</h3>
+      <div class="field"><label for="peer_tpl_question">질문</label><input id="peer_tpl_question" value="${esc(template.question || "")}" /></div>
+      <div class="field"><label for="peer_tpl_guide">가이드</label><textarea id="peer_tpl_guide">${esc(template.guide || "")}</textarea></div>
+      <h3>동료평가 문항을 설정하세요.</h3>
+      <div class="template-question-list">
+        ${template.items.map((item, index) => renderPeerTemplateItemEditor(item, index)).join("")}
+        <button class="button secondary" onclick="App.addPeerTemplateItem()">문항 추가</button>
+      </div>
+      <h3>답변 등급별 점수를 설정하세요.</h3>
+      ${template.grades.map((grade) => `
+        <div class="grade-config">
+          <div class="field"><label>등급 이름</label><input id="peer_tpl_grade_${grade.grade}_name" value="${esc(grade.grade)}" disabled /></div>
+          <div class="field"><label>환산 점수</label><input id="peer_tpl_grade_${grade.grade}_score" type="number" value="${esc(grade.score)}" /></div>
+          <div class="field wide"><label>설명</label><input id="peer_tpl_grade_${grade.grade}_desc" value="${esc(grade.description || "")}" /></div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderPeerTemplateItemEditor(item, index) {
+  return `
+    <div class="template-question-card">
+      <div class="toolbar" style="justify-content: space-between;">
+        <strong>질문 ${index + 1}</strong>
+        <button class="icon-button" onclick="App.removePeerTemplateItem(${index})" title="삭제">×</button>
+      </div>
+      <div class="field">
+        <label for="peer_tpl_item_${index}_name">질문</label>
+        <textarea id="peer_tpl_item_${index}_name" maxlength="500">${esc(item.name || "")}</textarea>
+      </div>
+      <div class="field">
+        <label for="peer_tpl_item_${index}_guide">가이드</label>
+        <textarea id="peer_tpl_item_${index}_guide">${esc(item.guide || "")}</textarea>
+      </div>
+    </div>
+  `;
+}
+
+function renderUpwardAssignmentAddForm() {
+  const evaluatorOptions = getUpwardEvaluatorOptions();
+  const targetOptions = getUpwardTargetOptions();
+  return `
+    <div class="component-card">
+      <h3>상향평가 배정 추가</h3>
+      <div class="form-grid">
+        <div class="field"><label for="new_upward_evaluatorId">평가자</label>${userSelect("new_upward_evaluatorId", "", evaluatorOptions)}</div>
+        <div class="field"><label for="new_upward_targetId">평가 대상 조직장</label>${userSelect("new_upward_targetId", "", targetOptions)}</div>
+      </div>
+      <div class="toolbar"><button class="button secondary" onclick="App.addUpwardAssignment()">배정 추가</button></div>
+    </div>
+  `;
+}
+
+function renderUpwardAssignmentTree(assignments) {
+  const grouped = assignments.reduce((acc, assignment) => {
+    const target = userById(assignment.targetId);
+    if (!target) return acc;
+    const division = target.division || "미지정";
+    const team = target.team || "미지정";
+    acc[division] = acc[division] || {};
+    acc[division][team] = acc[division][team] || [];
+    acc[division][team].push(assignment);
+    return acc;
+  }, {});
+
+  return Object.entries(grouped)
+    .map(([division, teams]) => `
+      <details class="org-group" open>
+        <summary>${esc(division)} <span>${Object.values(teams).flat().length}건</span></summary>
+        ${Object.entries(teams)
+          .map(([team, teamAssignments]) => `
+            <details class="team-group" open>
+              <summary>${esc(team)} <span>${teamAssignments.length}건</span></summary>
+              ${renderUpwardAssignmentTable(teamAssignments)}
+            </details>
+          `)
+          .join("")}
+      </details>
+    `)
+    .join("");
+}
+
+function renderUpwardAssignmentTable(assignments) {
+  const evaluatorOptions = getUpwardEvaluatorOptions();
+  const targetOptions = getUpwardTargetOptions();
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>평가자</th><th>평가 대상 조직장</th><th>상태</th><th>설정</th></tr></thead>
+        <tbody>
+          ${assignments
+            .map((assignment) => {
+              const evaluator = userById(assignment.evaluatorId);
+              const target = userById(assignment.targetId);
+              return `
+                <tr class="people-filter-row" data-search="${esc(upwardAssignmentSearchText(assignment))}">
+                  <td>${userSelect(`up_assign_${assignment.id}_evaluatorId`, assignment.evaluatorId, evaluatorOptions)}<div class="muted">${esc(evaluator?.division || "-")} / ${esc(evaluator?.team || "-")}</div></td>
+                  <td>${userSelect(`up_assign_${assignment.id}_targetId`, assignment.targetId, targetOptions)}<div class="muted">${esc(target?.division || "-")} / ${esc(target?.team || "-")}</div></td>
+                  <td>${stageStatusBadge(assignment.status)}</td>
+                  <td>
+                    <div class="row-actions">
+                      <button class="button secondary" onclick="App.saveUpwardAssignment('${assignment.id}')">저장</button>
+                      <button class="button danger" onclick="App.removeUpwardAssignment('${assignment.id}')">삭제</button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminGrades() {
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><div><h2>점수별 등급 기준</h2><p class="muted">최종 점수에서 자동 등급을 산출하는 기준입니다.</p></div><button class="button" onclick="App.saveGrades()">등급 체계 저장</button></div>
+        <div class="panel-body"><div class="grid five">${GRADES.map((grade) => `<div class="field"><label for="threshold_${grade}">${grade} 최저점</label><input id="threshold_${grade}" type="number" min="0" max="100" value="${esc(state.gradeThresholds[grade])}" /></div>`).join("")}</div></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>본부 등급별 배분률</h2><p class="muted">본부 평가 등급에 따라 본부 팀원들의 등급 비율 가이드가 달라집니다.</p></div></div>
+        <div class="panel-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>본부 등급</th>${GRADES.map((grade) => `<th>${grade}(%)</th>`).join("")}<th>합계</th></tr></thead>
+              <tbody>
+                ${GRADES.map((parentGrade) => {
+                  const row = state.distributionMatrix[parentGrade] || {};
+                  const sum = GRADES.reduce((total, grade) => total + Number(row[grade] || 0), 0);
+                  return `<tr><td>${gradeBadge(parentGrade)}</td>${GRADES.map((grade) => `<td><input class="compact-input" id="dist_${parentGrade}_${grade}" type="number" min="0" max="100" value="${esc(row[grade] || 0)}" /></td>`).join("")}<td class="score">${sum}%</td></tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>자기평가 업적 개수 제한</h2><p class="muted">자기평가의 업적평가에서 구성원이 추가할 수 있는 업적의 최대 개수를 설정합니다. (0 = 제한 없음)</p></div><button class="button" onclick="App.saveMaxAchievements()">개수 저장</button></div>
+        <div class="panel-body">
+          <div class="field" style="max-width:260px;">
+            <label for="max_achievements">최대 업적 개수</label>
+            <input id="max_achievements" type="number" min="0" max="30" value="${esc(state.maxAchievements || 0)}" style="width:100px;" />
+          </div>
+        </div>
+      </section>
+      ${renderAnswerGradeScalePanel()}
+    </div>
+  `;
+}
+
+// 평가 응답 등급별 환산 점수 (평가 종류별) — 템플릿 편집에서 이동
+function renderAnswerGradeScalePanel() {
+  const rows = TEMPLATE_KINDS.map((component) => {
+    const tpl = templateVariantsForKind(component)[0];
+    const grades = (tpl && Array.isArray(tpl.grades) && tpl.grades.length) ? tpl.grades : defaultGradeScale();
+    const cells = GRADES.map((g) => {
+      const gr = grades.find((x) => x.grade === g) || { score: 0, description: "" };
+      return `<div class="ags-cell">
+        <span class="ags-grade grade ${g}">${g}</span>
+        <input id="ags_${component}_${g}_score" type="number" value="${esc(gr.score)}" />
+        <input id="ags_${component}_${g}_desc" value="${esc(gr.description || "")}" placeholder="설명" />
+      </div>`;
+    }).join("");
+    return `<div class="ags-row">
+      <div class="ags-label">${WEIGHT_COMPONENT_LABELS[component]}</div>
+      <div class="ags-cells">${cells}</div>
+    </div>`;
+  }).join("");
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>평가 응답 등급별 환산 점수</h2><p class="muted">평가 종류별 응답 등급(S/A/B/C/D)의 환산 점수와 설명을 설정합니다. 해당 평가 종류의 모든 템플릿에 적용됩니다.</p></div><button class="button" onclick="App.saveAnswerGradeScales()">환산 점수 저장</button></div>
+      <div class="panel-body">${rows}</div>
+    </section>`;
+}
+
+function renderAdminReports() {
+  const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>리포트 설정</h2>
+            <p class="muted">피평가자의 내 리포트 화면에 공개할 항목을 선택합니다.</p>
+          </div>
+          <button class="button" onclick="App.saveReportSettings()">리포트 설정 저장</button>
+        </div>
+        <div class="panel-body">
+          <div class="report-settings-grid">
+            ${reportVisibilityCard("report_finalGrade", "최종 등급", "최종 확정된 S/A/B/C/D 등급을 리포트에 공개합니다.", "🏆", visibility.finalGrade)}
+            ${reportVisibilityCard("report_finalScore", "최종 점수", "최종 산출 점수를 리포트에 공개합니다.", "📊", visibility.finalScore)}
+            ${reportVisibilityCard("report_summary", "평가 요약", "업적·역량·자세태도 점수를 항목별로 공개합니다.", "📋", visibility.summary)}
+            ${reportVisibilityCard("report_upwardSummary", "상향평가 결과", "상향평가 평균 점수와 의견을 공개합니다.", "⬆️", visibility.upwardSummary)}
+            ${reportVisibilityCard("report_peerSummary", "동료평가 결과", "동료평가 평균 점수와 의견을 공개합니다.", "👥", visibility.peerSummary)}
+            ${reportVisibilityCard("report_finalFeedback", "최종 피드백", "최종 조정에서 입력한 피드백을 공개합니다.", "💬", visibility.finalFeedback)}
+            ${reportVisibilityCard("report_feedbackUpward", "상향평가 피드백", "최종 피드백에 상향평가 의견 내용을 포함합니다.", "⬆️", visibility.feedbackUpward)}
+            ${reportVisibilityCard("report_feedbackPeer", "동료평가 피드백", "최종 피드백에 동료평가 의견 내용을 포함합니다.", "👥", visibility.feedbackPeer)}
+            ${reportVisibilityCard("report_evaluatorTendency", "AI 평가자 성향 분석", "나를 평가한 평가자의 AI 성향 분석 결과를 리포트에 포함합니다.", "🔍", visibility.evaluatorTendency)}
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>리포트 예시</h2>
+            <p class="muted">현재 선택한 공개 항목 기준의 미리보기입니다.</p>
+          </div>
+        </div>
+        <div class="panel-body" id="report_preview">${renderReportPreview(visibility)}</div>
+      </section>
+      ${renderEvalStartPanel()}
+    </div>
+  `;
+}
+
+function reportVisibilityToggle(id, label, help, checkedValue) {
+  return `
+    <label for="${id}" class="switch-row">
+      <span><strong>${esc(label)}</strong><small>${esc(help)}</small></span>
+      <input id="${id}" type="checkbox" ${checkedValue ? "checked" : ""} onchange="App.previewReportSettings()" />
+    </label>
+  `;
+}
+
+function reportVisibilityCard(id, label, help, icon, checkedValue) {
+  return `
+    <label for="${id}" class="report-vis-card ${checkedValue ? "active" : ""}">
+      <input id="${id}" type="checkbox" ${checkedValue ? "checked" : ""} onchange="App.previewReportSettings();this.closest('label').classList.toggle('active',this.checked);" style="position:absolute;opacity:0;pointer-events:none;" />
+      <div class="report-vis-icon">${icon}</div>
+      <div class="report-vis-body">
+        <strong>${esc(label)}</strong>
+        <small>${esc(help)}</small>
+      </div>
+      <div class="report-vis-toggle ${checkedValue ? "on" : ""}"></div>
+    </label>
+  `;
+}
+
+function currentReportVisibilityFromDom() {
+  return {
+    finalGrade: checked("report_finalGrade"),
+    finalScore: checked("report_finalScore"),
+    summary: checked("report_summary"),
+    upwardSummary: checked("report_upwardSummary"),
+    peerSummary: checked("report_peerSummary"),
+    finalFeedback: checked("report_finalFeedback"),
+    feedbackUpward: checked("report_feedbackUpward"),
+    feedbackPeer: checked("report_feedbackPeer"),
+    evaluatorTendency: checked("report_evaluatorTendency"),
+  };
+}
+
+function renderReportPreview(visibility) {
+  const showCoverResult = visibility.finalGrade || visibility.finalScore;
+  const showOverall  = visibility.finalFeedback  !== false;
+  const showUpward   = visibility.feedbackUpward  !== false;
+  const showPeer     = visibility.feedbackPeer    !== false;
+  const hasAIPreview = showOverall || showUpward || showPeer;
+  const hasVisibleDetail = showCoverResult || visibility.summary || visibility.upwardSummary || visibility.peerSummary || hasAIPreview;
+
+  const previewFeedbackBlock = (label, text, color) => text
+    ? `<div style="margin-bottom:16px;">
+         <div style="font-size:13px;font-weight:700;color:${color};margin-bottom:6px;">${label}</div>
+         <div class="report-feedback" style="font-size:15px;line-height:1.8;">${esc(text)}</div>
+       </div>`
+    : "";
+
+  return `
+    <div class="report-preview grid">
+      <section class="panel preview-panel">
+        <div class="panel-body">
+          <div class="${showCoverResult ? "report-cover" : "grid"}">
+            <div class="grid">
+              <div>
+                <h2 class="section-title">홍길동 평가 리포트</h2>
+                <p class="muted">과장 · 생산기술본부 / 공정기술팀</p>
+              </div>
+              <div class="notice ok">공개된 평가 리포트입니다.</div>
+            </div>
+            ${
+              showCoverResult
+                ? `<div class="report-grade grade-A">
+                    <div>
+                      ${visibility.finalGrade ? `<span>최종 등급</span><strong>A</strong>` : ""}
+                      ${visibility.finalScore ? `<p>91.2점</p>` : ""}
+                    </div>
+                  </div>`
+                : ""
+            }
+          </div>
+        </div>
+      </section>
+      ${
+        visibility.summary || visibility.upwardSummary || visibility.peerSummary
+          ? `<section class="panel preview-panel">
+              <div class="panel-head"><div><h2>평가 요약</h2><p class="muted">공개 설정에 따라 평가별 산출 점수를 표시합니다.</p></div></div>
+              <div class="panel-body grid">
+                ${[
+                  ...(visibility.summary ? [["업적평가", 92], ["역량평가", 90], ["자세·태도평가", 91]] : []),
+                  ...(visibility.upwardSummary ? [["상향평가", 88]] : []),
+                  ...(visibility.peerSummary ? [["동료평가", 93]] : []),
+                ]
+                  .map(([label, score]) => `<div><div class="toolbar" style="justify-content: space-between;"><strong>${label}</strong><span class="score">${score.toFixed(1)}</span></div><div class="bar"><span style="width: ${score}%"></span></div></div>`)
+                  .join("")}
+              </div>
+            </section>`
+          : ""
+      }
+      ${hasAIPreview ? `
+      <section class="panel preview-panel">
+        <div class="panel-head"><div><h2>최종 피드백</h2></div></div>
+        <div class="panel-body grid" style="gap:12px;">
+          ${showOverall  ? previewFeedbackBlock("📋 종합 평가 피드백", "목표 달성 기여도가 높고 협업 과정에서 안정적인 실행력을 보여주었습니다. AI가 분석한 종합 평가 내용이 표시됩니다.", "var(--primary)") : ""}
+          ${showUpward   ? previewFeedbackBlock("⬆ 상향평가 피드백",  "구성원과의 소통이 안정적이며 업무 방향을 명확히 안내합니다.", "#059669") : ""}
+          ${showPeer     ? previewFeedbackBlock("👥 동료평가 피드백",  "협업 시 책임감 있게 임하며 팀에 긍정적인 영향을 줍니다.", "#7c3aed") : ""}
+        </div>
+      </section>` : ""}
+      ${hasVisibleDetail ? "" : `<section class="panel preview-panel"><div class="panel-body"><div class="empty">현재 공개된 리포트 항목이 없습니다.</div></div></section>`}
+    </div>
+  `;
+}
+
+// ── 피드백 관리 (어드민) ─────────────────────────────────────────────
+function renderFeedbackMgmt() {
+  const cycle = selectedCycle();
+  const evaluatees = cycleUsers(cycle).filter(u => isEvaluatee(u) && u.active !== false);
+  const evs = evaluations();
+
+  // 필터 값 — 검색어는 입력 중 draft(fbSearchDraft) 사용, 확정값(fbSearch)만 필터에 적용
+  const fSearch   = (state.ui.fbSearch   || "").trim().toLowerCase();
+  const fDiv      = state.ui.fbDiv      || "";
+  const fGrade    = state.ui.fbGrade    || "";
+  const fStatus   = state.ui.fbStatus   || "";
+  const fConfirm  = state.ui.fbConfirm  || "";
+  const fOpinion  = state.ui.fbOpinion  || "";
+  const fInterview= state.ui.fbInterview|| "";
+  // 검색창 표시용 draft (아직 확정 안 된 입력값)
+  const fSearchDraft = state.ui.fbSearchDraft != null ? state.ui.fbSearchDraft : (state.ui.fbSearch || "");
+
+  const allDivisions = [...new Set(evaluatees.map(u => u.division || "").filter(Boolean))].sort();
+
+  let rows = evaluatees.map(u => {
+    const ev = evs[u.id] || {};
+    const result = calculateFinal(u.id);
+    const fb = ev.reportFeedback || {};
+    return { u, ev, result, fb };
+  });
+
+  // 필터 적용
+  if (fSearch) rows = rows.filter(({u}) => (u.name+(u.employeeNo||u.employeeId||"")).toLowerCase().includes(fSearch));
+  if (fDiv)    rows = rows.filter(({u}) => (u.division||"") === fDiv);
+  if (fGrade)  rows = rows.filter(({result}) => result.finalGrade === fGrade);
+  if (fStatus) rows = rows.filter(({fb}) => (fb.hrStatus||"미처리") === fStatus);
+  if (fConfirm === "확인") rows = rows.filter(({fb}) => fb.resultConfirmed);
+  if (fConfirm === "미확인") rows = rows.filter(({fb}) => !fb.resultConfirmed);
+  if (fOpinion === "제출") rows = rows.filter(({fb}) => fb.opinionSubmitted);
+  if (fOpinion === "미제출") rows = rows.filter(({fb}) => !fb.opinionSubmitted);
+  if (fInterview === "요청") rows = rows.filter(({fb}) => fb.interviewRequested);
+  if (fInterview === "미요청") rows = rows.filter(({fb}) => !fb.interviewRequested);
+
+  // 집계 — 항상 전체 대상 기준
+  const total      = evaluatees.length;
+  const confirmed  = evaluatees.filter(u => (evs[u.id]?.reportFeedback||{}).resultConfirmed).length;
+  const unconfirmed= total - confirmed;
+  const opinions   = evaluatees.filter(u => (evs[u.id]?.reportFeedback||{}).opinionSubmitted).length;
+  const interviews = evaluatees.filter(u => (evs[u.id]?.reportFeedback||{}).interviewRequested).length;
+  // HR 미확인: 의견 또는 면담 요청이 접수됐으나 hrConfirmed 가 false인 수
+  const needsHR    = evaluatees.filter(u => {
+    const fb = evs[u.id]?.reportFeedback || {};
+    return (fb.opinionSubmitted || fb.interviewRequested) && !fb.hrConfirmed;
+  }).length;
+
+  const statusOpts = ["미처리","처리중","처리완료","보류"];
+
+  const metricCard = (label, value, color) => `
+    <div style="flex:1;min-width:120px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 20px;">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${label}</div>
+      <div style="font-size:26px;font-weight:700;color:${color};">${value}</div>
+    </div>`;
+
+  return `
+    <section class="panel">
+      <div class="panel-head" style="align-items:flex-start;flex-direction:column;gap:14px;">
+
+        <!-- 요약 카드 -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%;">
+          ${metricCard("전체 대상",  total,      "var(--text)")}
+          ${metricCard("결과 확인",  confirmed,  "var(--green)")}
+          ${metricCard("미확인",     unconfirmed,"var(--amber)")}
+          ${metricCard("의견 제출",  opinions,   "var(--orange)")}
+          ${metricCard("면담 요청",  interviews, "var(--red)")}
+          ${metricCard("HR 미확인",  needsHR,    needsHR > 0 ? "var(--red)" : "var(--muted)")}
+        </div>
+
+        <!-- 필터 바 + 저장 버튼 -->
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;">
+          <div style="display:flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:6px;padding:0 8px;background:var(--bg);">
+            <input type="text" placeholder="사번/성명 검색" value="${esc(fSearchDraft)}"
+              oninput="state.ui.fbSearchDraft=this.value;"
+              onkeydown="if(event.key==='Enter'){state.ui.fbSearch=this.value.trim();state.ui.fbSearchDraft=this.value;render();}"
+              onblur="state.ui.fbSearch=(state.ui.fbSearchDraft||'').trim();render();"
+              style="border:none;outline:none;width:160px;background:transparent;padding:6px 0;" />
+            <button onclick="state.ui.fbSearch=(state.ui.fbSearchDraft||'').trim();render();"
+              style="border:none;background:none;cursor:pointer;color:var(--muted);padding:0;font-size:14px;">🔍</button>
+          </div>
+          <select onchange="state.ui.fbDiv=this.value;render();" style="width:140px;">
+            <option value="">본부실소 전체</option>
+            ${allDivisions.map(d=>`<option value="${esc(d)}" ${fDiv===d?"selected":""}>${esc(d)}</option>`).join("")}
+          </select>
+          <select onchange="state.ui.fbGrade=this.value;render();" style="width:100px;">
+            <option value="">최종등급</option>
+            ${GRADES.map(g=>`<option value="${g}" ${fGrade===g?"selected":""}>${g}등급</option>`).join("")}
+          </select>
+          <select onchange="state.ui.fbStatus=this.value;render();" style="width:120px;">
+            <option value="">처리상태 전체</option>
+            ${statusOpts.map(s=>`<option value="${s}" ${fStatus===s?"selected":""}>${s}</option>`).join("")}
+          </select>
+          <select onchange="state.ui.fbConfirm=this.value;render();" style="width:130px;">
+            <option value="">결과확인 전체</option>
+            <option value="확인" ${fConfirm==="확인"?"selected":""}>확인</option>
+            <option value="미확인" ${fConfirm==="미확인"?"selected":""}>미확인</option>
+          </select>
+          <select onchange="state.ui.fbOpinion=this.value;render();" style="width:130px;">
+            <option value="">의견제출 전체</option>
+            <option value="제출" ${fOpinion==="제출"?"selected":""}>제출</option>
+            <option value="미제출" ${fOpinion==="미제출"?"selected":""}>미제출</option>
+          </select>
+          <select onchange="state.ui.fbInterview=this.value;render();" style="width:130px;">
+            <option value="">면담요청 전체</option>
+            <option value="요청" ${fInterview==="요청"?"selected":""}>요청</option>
+            <option value="미요청" ${fInterview==="미요청"?"selected":""}>미요청</option>
+          </select>
+          <div style="flex:1;"></div>
+          <button class="button" onclick="App.saveFeedbackAll()">변경 내용 저장</button>
+        </div>
+      </div>
+
+      <div class="panel-body" style="padding-top:0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div><strong>피드백 목록</strong> <span class="muted" style="font-size:12px;">피평가자별 결과 확인 및 의견 제출 상태</span></div>
+          <span class="pill" style="font-size:12px;">${rows.length}건</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="font-size:12px;min-width:1100px;">
+            <thead>
+              <tr>
+                <th>사번</th><th>성명</th><th>본부실소</th><th>팀</th><th>직책</th>
+                <th>최종등급</th><th>결과확인</th><th>확인일시</th>
+                <th>의견제출</th><th>피평가자 의견</th>
+                <th>면담요청</th><th>제출일시</th>
+                <th>처리상태</th><th>HR 확인</th><th>HR 메모</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.length ? rows.map(({u, result, fb}) => {
+                const hasActivity = fb.opinionSubmitted || fb.interviewRequested;
+                return `
+                <tr>
+                  <td>${esc(u.employeeNo||u.employeeId||"")}</td>
+                  <td><strong>${esc(u.name)}</strong></td>
+                  <td>${esc(u.division||"")}</td>
+                  <td>${esc(u.team||"")}</td>
+                  <td>${esc(u.title||"")}</td>
+                  <td>${result.finalGrade ? gradeBadge(result.finalGrade) : '<span class="muted">-</span>'}</td>
+                  <td>${fb.resultConfirmed ? '<span class="pill green" style="font-size:11px;">확인</span>' : '<span class="pill" style="font-size:11px;background:var(--line);">미확인</span>'}</td>
+                  <td style="font-size:11px;color:var(--muted);">${fb.confirmedAt ? fb.confirmedAt.slice(0,16).replace("T"," ") : "-"}</td>
+                  <td>${fb.opinionSubmitted ? '<span class="pill orange" style="font-size:11px;">제출</span>' : '<span class="pill" style="font-size:11px;background:var(--line);">미제출</span>'}</td>
+                  <td style="max-width:160px;font-size:11px;">${fb.opinion ? `<span title="${esc(fb.opinion)}">${esc(fb.opinion.slice(0,30))}${fb.opinion.length>30?"…":""}</span>` : '<span class="muted">-</span>'}</td>
+                  <td>${fb.interviewRequested ? '<span class="pill red" style="font-size:11px;">요청</span>' : '<span class="pill" style="font-size:11px;background:var(--line);">미요청</span>'}</td>
+                  <td style="font-size:11px;color:var(--muted);">${fb.interviewAt ? fb.interviewAt.slice(0,16).replace("T"," ") : "-"}</td>
+                  <td>
+                    <select id="fb_status_${u.id}" style="width:90px;font-size:11px;">
+                      ${statusOpts.map(s=>`<option value="${s}" ${(fb.hrStatus||"미처리")===s?"selected":""}>${s}</option>`).join("")}
+                    </select>
+                  </td>
+                  <td>
+                    ${hasActivity ? `
+                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;">
+                      <input type="checkbox" id="fb_hrdone_${u.id}" ${fb.hrConfirmed?"checked":""}
+                        style="width:14px;height:14px;"
+                        onchange="App.toggleHrConfirmed('${u.id}',this.checked)" />
+                      확인
+                    </label>` : '<span class="muted" style="font-size:11px;">-</span>'}
+                  </td>
+                  <td><textarea id="fb_memo_${u.id}" rows="3" placeholder="메모" style="width:200px;font-size:11px;resize:vertical;">${esc(fb.hrMemo||"")}</textarea></td>
+                </tr>`;
+              }).join("")
+              : `<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:24px;">조회된 피드백 대상이 없습니다.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderAdminAdjustments() {
+  const readiness = getFinalAdjustmentReadiness();
+  const evaluatees = readiness.ready ? readiness.evaluatees : [];
+  if (readiness.ready) evaluatees.forEach(ensureAdjustmentDefaults);
+  const cycle = selectedCycle();
+  // 사장·회장 최종 승인 현황
+  const presidentApproval = cycle.resultSubmissions?.["approval:president"];
+  const chairmanApproval  = cycle.resultSubmissions?.["approval:chairman"];
+  const presidentApproved = Boolean(presidentApproval?.submitted);
+  const chairmanApproved  = Boolean(chairmanApproval?.submitted);
+  // 종합평가 전체 완료 여부 (AI 평가자 성향 분석 버튼 활성화 조건)
+  const divisionStatuses = getDivisionSubmissionStatuses();
+  const allDivisionsSubmitted = divisionStatuses.length > 0 && divisionStatuses.every(d => d.submitted);
+  const tendency = cycle.aiEvaluatorTendency;
+  const approvalStatusBar = `
+    <div class="approval-status-bar">
+      <div class="approval-status-item ${presidentApproved ? "done" : "wait"}">
+        <span class="approval-status-icon">${presidentApproved ? "✔" : "⏳"}</span>
+        <div>
+          <strong>사장 승인</strong>
+          <span>${presidentApproved ? `승인 완료 · ${esc(formatDateTime(presidentApproval.submittedAt))}` : "승인 대기 중"}</span>
+        </div>
+      </div>
+      <div class="approval-status-arrow">→</div>
+      <div class="approval-status-item ${chairmanApproved ? "done" : "wait"}">
+        <span class="approval-status-icon">${chairmanApproved ? "✔" : "⏳"}</span>
+        <div>
+          <strong>회장 최종 확정</strong>
+          <span>${chairmanApproved ? `확정 완료 · ${esc(formatDateTime(chairmanApproval.submittedAt))}` : (presidentApproved ? "확정 대기 중" : "사장 승인 후 진행")}</span>
+        </div>
+      </div>
+    </div>`;
+  return `
+    <section class="panel" id="admin-adjustments-panel">
+      <div class="panel-head">
+        <div>
+          <h2>최종 결과/리포트 공개</h2>
+          <p class="muted">본부/팀별 배분 현황을 보면서 같은 화면에서 평가 결과를 조정하고 리포트를 공개합니다.</p>
+        </div>
+        <div class="toolbar">
+          <label class="result-open-toggle" for="cycle_resultsVisible" title="${chairmanApproved ? "" : "회장 최종 확정 후 활성화됩니다."}">
+            <span>결과 공개${chairmanApproved ? "" : " 🔒"}</span>
+            <input id="cycle_resultsVisible" type="checkbox" ${chairmanApproved && cycle.resultsVisible ? "checked" : ""} ${chairmanApproved ? "" : "disabled"} onchange="App.saveResultVisibility()" />
+          </label>
+          <button class="button ghost" ${chairmanApproved && canPublishFeedback() ? "" : "disabled"} onclick="App.publishAll()">전체 공개</button>
+          <button class="button" ${chairmanApproved ? "" : "disabled"} onclick="${chairmanApproved ? "App.generateAllAIFeedback()" : ""}" title="${chairmanApproved ? "" : "회장 최종 확정 후 활성화됩니다."}" style="background:${chairmanApproved ? "linear-gradient(135deg,#6366f1,#8b5cf6)" : "var(--line)"};border-color:${chairmanApproved ? "#6366f1" : "var(--line)"};color:${chairmanApproved ? "#fff" : "var(--muted)"};display:flex;align-items:center;gap:6px;cursor:${chairmanApproved ? "pointer" : "not-allowed"};">🤖 AI 피드백 일괄 생성</button>
+          <button class="button" ${allDivisionsSubmitted ? "" : "disabled"} onclick="${allDivisionsSubmitted ? "App.openAIEvaluatorTendency()" : ""}" title="${allDivisionsSubmitted ? "" : "모든 종합평가 완료 후 활성화됩니다."}" style="background:${allDivisionsSubmitted ? "linear-gradient(135deg,#0ea5e9,#6366f1)" : "var(--line)"};border-color:${allDivisionsSubmitted ? "#0ea5e9" : "var(--line)"};color:${allDivisionsSubmitted ? "#fff" : "var(--muted)"};display:flex;align-items:center;gap:6px;cursor:${allDivisionsSubmitted ? "pointer" : "not-allowed"};">🔍 AI 평가자 성향 분석${tendency?.analysedAt ? ` <span style="font-size:10px;opacity:.8;">(완료)</span>` : ""}</button>
+          <button class="button secondary" onclick="App.exportFinalAdjust()">📥 엑셀 다운로드</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${approvalStatusBar}
+        ${canPublishFeedback() ? "" : `<div class="notice warn">피드백 공개 가능 기간은 ${esc(activeCycle().feedbackStart)} ~ ${esc(activeCycle().feedbackEnd)}입니다. 공개 여부 변경은 해당 기간에만 적용됩니다.</div>`}
+        ${readiness.ready ? "" : renderFinalAdjustmentReadiness(readiness)}
+        ${
+          readiness.ready
+            ? `${renderOverallGradeDistribution(evaluatees, "전체 결과 등급 분포도")}
+              ${renderAdjustmentDeptDistribution(evaluatees)}
+              ${renderAdjustmentResultPanel(evaluatees)}`
+            : `<div class="notice warn">모든 구성원의 평가와 본부장 제출이 완료되면 최종 조정 대상 결과가 표시됩니다.</div>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+// 최종 조정 — 최종 승인 형식의 필터·정렬 가능한 구성원 상세 결과 테이블
+function renderAdjustmentResultPanel(evaluatees) {
+  const resultCache = new Map();
+  const getR = (id) => { if (!resultCache.has(id)) resultCache.set(id, calculateFinal(id)); return resultCache.get(id); };
+
+  // 정렬
+  const sortField = state.ui.adjSortField || "score";
+  const sortDir   = state.ui.adjSortDir   || "desc";
+  const GRADE_ORDER = { S:0, A:1, B:2, C:3, D:4, "":5 };
+  const sorted = [...evaluatees].sort((a, b) => {
+    let diff = 0;
+    if (sortField === "score") diff = (getR(a.id).rawScore ?? -1) - (getR(b.id).rawScore ?? -1);
+    else if (sortField === "grade") diff = (GRADE_ORDER[getR(b.id).finalGrade] ?? 5) - (GRADE_ORDER[getR(a.id).finalGrade] ?? 5);
+    return sortDir === "asc" ? diff : -diff;
+  });
+
+  const divOptions   = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const teamOptions  = [...new Set(evaluatees.map(e => e.team || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const gradeOptions = [...new Set(evaluatees.map(e => e.grade || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const canPub = canPublishFeedback();
+  // 회장 최종 확정 후에만 어드민이 조정 가능 + 평가 완료(잠금) 사이클은 수정 불가
+  const locked = isCycleLocked() || !isChairmanApprovalDone();
+  const sortIcon = (f) => sortField === f ? (sortDir === "desc" ? "▼" : "▲") : "↕";
+
+  return `
+    <div class="panel" style="box-shadow:none;border:1px solid var(--line-soft);">
+      <div class="panel-head">
+        <h2>구성원 상세 결과 · 등급 조정</h2>
+        <div class="toolbar">
+          <span id="adj-result-count" class="pill" style="background:var(--primary-lt);color:var(--primary);font-size:12px;">${evaluatees.length}명</span>
+          ${isCycleLocked()
+            ? `<span class="pill green">✅ 평가 완료 · 결과 공개 설정만 가능</span>`
+            : (!isChairmanApprovalDone()
+              ? `<button class="button" disabled title="회장 최종 확정 후 등급 조정이 가능합니다.">조정 저장</button><span class="pill amber" style="font-size:11px;">회장 확정 대기</span>`
+              : `<button class="button" onclick="App.saveAdjustments()">조정 저장</button>`)}
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="approval-filter-bar">
+          <div class="approval-filter-search">
+            <span class="filter-icon">🔍</span>
+            <input id="adj_filter_name" placeholder="이름 검색…" oninput="App.filterAdjTable()"
+              style="border:none;background:transparent;outline:none;width:120px;font-size:13px;" />
+          </div>
+          <div class="approval-filter-selects">
+            <div class="af-select-wrap"><label>부서</label>
+              <select id="adj_filter_div" onchange="App.filterAdjTable()"><option value="">전체</option>${divOptions.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap"><label>팀</label>
+              <select id="adj_filter_team" onchange="App.filterAdjTable()"><option value="">전체</option>${teamOptions.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap"><label>직급</label>
+              <select id="adj_filter_grade2" onchange="App.filterAdjTable()"><option value="">전체</option>${gradeOptions.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap"><label>등급</label>
+              <select id="adj_filter_grade" onchange="App.filterAdjTable()"><option value="">전체</option>${GRADES.map(g=>`<option value="${g}">${g}등급</option>`).join("")}</select>
+            </div>
+          </div>
+        </div>
+        <p class="muted" style="margin:8px 0 10px;font-size:12px;">이름을 클릭하면 평가 상세를 확인할 수 있습니다. 등급을 조정하면 사유를 입력해야 하며, 상단 <strong>조정 저장</strong>으로 저장합니다. ${canPub ? "" : "<span style='color:var(--amber);'>(리포트 공개 변경은 피드백 공개 기간에만 적용)</span>"}</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>순위</th><th>구성원</th><th>역할 / 부서</th>
+              <th><button onclick="App.setAdjSort('score')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">종합 점수 ${sortIcon("score")}</button></th>
+              <th><button onclick="App.setAdjSort('grade')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">최종 등급 ${sortIcon("grade")}</button></th>
+              <th>조정 등급</th><th>조정 사유</th><th style="min-width:380px;">공개 피드백</th><th style="width:60px;text-align:center;">공개</th>
+            </tr></thead>
+            <tbody id="adj-result-tbody">
+              ${sorted.map((employee, idx) => {
+                const result = getR(employee.id);
+                const evaluation = evaluations()[employee.id];
+                const adjGrade = getAdjustmentGrade(evaluation, result);
+                const adjReason = evaluation?.adjustment?.reason || "";
+                const adjFeedback = getAdjustmentFeedback(evaluation, employee);
+                return `<tr data-name="${esc((employee.name||"").toLowerCase())}" data-div="${esc(employee.division||"미지정")}" data-team="${esc(employee.team||"")}" data-grade2="${esc(employee.grade||"")}" data-grade="${esc(result.finalGrade||"")}">
+                  <td><strong class="adj-rank" style="color:var(--primary);">${idx + 1}</strong></td>
+                  <td>
+                    <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                      <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                    </button>
+                    <br/><span class="muted">${esc(employee.employeeNo || "")}</span>
+                  </td>
+                  <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.division || "")} · ${esc(employee.team || "")}</span></td>
+                  <td class="score" style="font-size:16px;">${result.scoreText}</td>
+                  <td>${gradeBadge(result.finalGrade)}</td>
+                  <td>${locked ? gradeBadge(adjGrade) : adjGradeSelectPlain(`adj_grade_${employee.id}`, adjGrade, { onchange: `App.promptAdjReason('${employee.id}', this)` })}</td>
+                  <td>${adjustmentStageRecordsHtml(evaluation, ["president", "chairman"])}${locked
+                    ? (adjReason ? `<span class="muted" style="font-size:12px;">${esc(adjReason)}</span>` : "")
+                    : `<textarea class="compact-textarea" id="adj_reason_${employee.id}" placeholder="등급 조정 시 사유 입력">${esc(adjReason)}</textarea>`}</td>
+                  <td>
+                    ${locked
+                      ? `<div class="notice report-feedback" style="min-width:380px;font-size:12px;white-space:pre-wrap;word-break:break-word;">${esc(adjFeedback)}</div>`
+                      : `<textarea id="adj_feedback_${employee.id}" class="adj-feedback-area" style="min-width:380px;min-height:130px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">${esc(adjFeedback)}</textarea>`}
+                    <button onclick="App.openAIFeedbackModal('${employee.id}')"
+                      style="margin-top:6px;display:flex;align-items:center;gap:5px;font-size:12px;padding:4px 10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">
+                      🤖 AI 피드백 ${(evaluation.aiFeedback?.generatedAt) ? "✔" : "생성"}
+                    </button>
+                  </td>
+                  <td style="text-align:center;"><label class="adj-pub-check" title="리포트 공개"><input type="checkbox" id="adj_pub_${employee.id}" ${evaluation.published ? "checked" : ""} ${canPub ? "" : "disabled"} /><span></span></label></td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderAdjustmentDeptDistribution(evaluatees) {
+  // 최종 승인 탭과 동일한 부서별 등급 분포 (팀원 기준 ⚠ 표시)
+  return renderDeptGradeDistributionTable(evaluatees, cycleUsers());
+}
+
+// 최종 승인 / 최종 조정 공용 부서별 등급 분포 테이블
+function renderDeptGradeDistributionTable(evaluatees, allUsers) {
+  const depts = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a, b) => a.localeCompare(b, "ko"));
+  const rows = depts.map(dept => {
+    const members = evaluatees.filter(e => (e.division || "미지정") === dept);
+    if (!members.length) return null;
+    const counts = Object.fromEntries(GRADES.map(g => [g, 0]));        // 전체(표시용)
+    const memberCounts = Object.fromEntries(GRADES.map(g => [g, 0]));  // 팀원만(검증용)
+    let memberTotal = 0;
+    const scores = [];
+    members.forEach(emp => {
+      const r = calculateFinal(emp.id);
+      const g = r.finalGrade;
+      if (GRADES.includes(g)) {
+        counts[g]++;
+        if (emp.role === "member") { memberCounts[g]++; memberTotal++; }
+      }
+      if (r.rawScore !== null && r.rawScore !== undefined) scores.push(r.rawScore);
+    });
+    const avg = scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : "-";
+    const head = allUsers.find(u => u.role === "divisionHead" && (u.division || "미지정") === dept);
+    const headGrade = head ? (calculateFinal(head.id).finalGrade || null) : null;
+    const dist = headGrade ? (state.distributionMatrix[headGrade] || {}) : {};
+    const submission = divisionSubmissionForDivision(dept);
+    const reason = submission?.distributionReason || "";
+    const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(dept)];
+    const hasHistory = Boolean(rec && Array.isArray(rec.history) && rec.history.length);
+    return { dept, total: members.length, counts, memberCounts, memberTotal, avg, headGrade, dist, reason, hasHistory };
+  }).filter(Boolean);
+
+  const gradeCells = (row) => GRADES.map(g => {
+    const cnt = row.counts[g] || 0;
+    const mCnt = row.memberCounts[g] || 0;
+    if (!row.headGrade || row.memberTotal === 0) return `<td style="text-align:center;">${cnt || "-"}</td>`;
+    const guidePct = Number(row.dist[g] ?? 0);
+    // 종합평가와 동일하게 ceil 기준으로 초과 판정 (반올림 오차 수용)
+    const guideCt = guidePct > 0 ? Math.ceil(row.memberTotal * guidePct / 100) : 0;
+    const over = (guidePct === 0 && mCnt > 0) || (guideCt > 0 && mCnt > guideCt);
+    const cellStyle = over ? `background:#fef2f2;color:#dc2626;font-weight:800;border:1px solid #fca5a5;border-radius:4px;` : "";
+    const tooltip = over
+      ? `title="[팀원 기준] 가이드: ${guideCt}명(${guidePct}%) / 실제 팀원: ${mCnt}명 ⚠ 초과"`
+      : (guidePct > 0 ? `title="[팀원 기준] 가이드: ${guideCt}명(${guidePct}%) / 실제 팀원: ${mCnt}명"` : "");
+    return `<td style="text-align:center;" ${tooltip}><span style="${cellStyle}padding:2px 6px;border-radius:4px;">${cnt || "-"}${over ? " ⚠" : ""}</span></td>`;
+  }).join("");
+
+  return `
+    <div class="component-card">
+      <h3>부서별 등급 분포</h3>
+      <div class="table-wrap" style="border:none;">
+        <table style="min-width:660px;">
+          <thead><tr>
+            <th>부서</th><th style="text-align:center;">본부장 등급</th><th>인원</th>
+            ${GRADES.map(g => `<th style="text-align:center;"><span class="grade ${g}">${g}</span></th>`).join("")}
+            <th>평균점수</th><th>조정 이력</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(row => `<tr>
+              <td><strong>${esc(row.dept)}</strong></td>
+              <td style="text-align:center;">${row.headGrade ? gradeBadge(row.headGrade) : '<span class="muted">-</span>'}</td>
+              <td>${row.total}명</td>
+              ${gradeCells(row)}
+              <td class="score">${row.avg}</td>
+              <td style="text-align:center;">
+                ${row.hasHistory
+                  ? `<button class="button sm ghost" onclick="App.openDivisionHistory(${jsLiteral(row.dept)})" style="font-size:11px;">조정 이력 보기</button>`
+                  : '<span class="muted" style="font-size:11px;">-</span>'}
+              </td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderFinalAdjustmentReadiness(readiness) {
+  const notSubmitted = readiness.divisionStatuses.filter((status) => !status.submitted);
+  const missingCount = readiness.missingEvaluationItems.length;
+  const executiveIncomplete = readiness.executiveStatuses.filter((status) => !status.completed);
+  const previewMissing = (items) => {
+    if (!items.length) return `<span class="muted">없음</span>`;
+    const shown = items.slice(0, 4).map((item) => `<span class="pill amber">${esc(item)}</span>`).join("");
+    const more = items.length > 4 ? `<span class="muted">외 ${items.length - 4}건</span>` : "";
+    return `<div class="template-items">${shown}${more}</div>`;
+  };
+  return `
+    <div class="component-card">
+      <h3>최종조정 준비 현황</h3>
+      <div class="grid three">
+        <div class="notice ${notSubmitted.length ? "warn" : "ok"}">본부 제출 ${readiness.divisionStatuses.length - notSubmitted.length}/${readiness.divisionStatuses.length}</div>
+        <div class="notice ${missingCount ? "warn" : "ok"}">미완료 평가 ${missingCount}건</div>
+        <div class="notice ${executiveIncomplete.length ? "warn" : "ok"}">사장/회장 평가 완료 ${readiness.executiveStatuses.length - executiveIncomplete.length}/${readiness.executiveStatuses.length}</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>본부</th><th>본부장</th><th>본부 제출</th><th>미완료 평가</th></tr></thead>
+          <tbody>
+            ${readiness.divisionStatuses.map((status) => `
+              <tr>
+                <td><strong>${esc(status.division)}</strong><br /><span class="muted">${status.employees.length}명</span></td>
+                <td>${esc(status.head?.name || "-")}</td>
+                <td>${
+                  status.submitted
+                    ? `<span class="pill green">${status.autoSubmitted || status.submission?.autoSubmitted ? "자동 제출완료" : "제출완료"}</span>${status.submission?.submittedAt ? `<br /><span class="muted">${esc(formatDateTime(status.submission.submittedAt))}</span>` : ""}`
+                    : `<span class="pill amber">미제출</span>`
+                }</td>
+                <td>${previewMissing(status.missingEvaluationItems)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>권한</th><th>계정</th><th>평가 완료 여부</th><th>미완료 평가</th></tr></thead>
+          <tbody>
+            ${readiness.executiveStatuses.map((status) => `
+              <tr>
+                <td>${esc(ROLE_LABELS[status.role] || status.role)}</td>
+                <td>${esc(status.user?.name || "-")}</td>
+                <td>${status.completed ? `<span class="pill green">완료</span>` : `<span class="pill amber">미완료</span>`}</td>
+                <td>${previewMissing(status.incompleteTasks)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function refreshAdminAdjustmentsPanel(message = "") {
+  const panel = document.getElementById("admin-adjustments-panel");
+  if (!panel) return render();
+  const pageScrollY = window.scrollY;
+  const openKeys = new Set([...panel.querySelectorAll("details[data-detail-key][open]")].map((detail) => detail.dataset.detailKey));
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderAdminAdjustments().trim();
+  const nextPanel = wrapper.firstElementChild;
+  nextPanel.querySelectorAll("details[data-detail-key]").forEach((detail) => {
+    if (openKeys.has(detail.dataset.detailKey)) detail.open = true;
+  });
+  if (message) {
+    nextPanel.querySelector(".panel-body")?.insertAdjacentHTML("afterbegin", `<div class="notice ok">${esc(message)}</div>`);
+  }
+  panel.replaceWith(nextPanel);
+  window.scrollTo({ top: pageScrollY, behavior: "auto" });
+}
+
+function refreshOrganizationPanel(message = "") {
+  const panel = document.getElementById("admin-organization-panel");
+  if (!panel) return render();
+  const pageScrollY = window.scrollY;
+  const treeScrollTop = panel.querySelector(".org-tree-box")?.scrollTop || 0;
+  const openNodeIds = new Set(
+    [...panel.querySelectorAll(".org-tree-node[open][data-org-node-id]")]
+      .map((detail) => detail.dataset.orgNodeId)
+      .filter(Boolean),
+  );
+  const openDetailKeys = new Set(
+    [...panel.querySelectorAll("details[data-detail-key][open]")]
+      .map((detail) => detail.dataset.detailKey)
+      .filter(Boolean),
+  );
+  const filterQuery = valueOf("org_tree_filter");
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderAdminOrganization().trim();
+  const nextPanel = wrapper.querySelector("#admin-organization-panel");
+  if (!nextPanel) return render();
+  nextPanel.querySelectorAll(".org-tree-node[data-org-node-id]").forEach((detail) => {
+    detail.open = openNodeIds.has(detail.dataset.orgNodeId);
+  });
+  nextPanel.querySelectorAll("details[data-detail-key]").forEach((detail) => {
+    if (openDetailKeys.has(detail.dataset.detailKey)) detail.open = true;
+  });
+  panel.replaceWith(nextPanel);
+  const nextTreeBox = nextPanel.querySelector(".org-tree-box");
+  if (nextTreeBox) nextTreeBox.scrollTop = treeScrollTop;
+  window.scrollTo({ top: pageScrollY, behavior: "auto" });
+  if (filterQuery) {
+    const input = document.getElementById("org_tree_filter");
+    if (input) input.value = filterQuery;
+    App.filterOrgTree(filterQuery);
+  }
+  if (message) {
+    const body = nextPanel.querySelector(".panel-body");
+    if (body) body.insertAdjacentHTML("afterbegin", `<div class="notice ok">${esc(message)}</div>`);
+  }
+}
+
+function collectResultVisibilityFromDom() {
+  const toggle = document.getElementById("cycle_resultsVisible");
+  if (toggle) activeCycle().resultsVisible = toggle.checked;
+}
+
+function syncAdjustmentDraftsFromDom() {
+  cycleUsers()
+    .filter((user) => isEvaluatee(user) && isSubmittedForAdminAdjustment(user))
+    .forEach((employee) => syncAdjustmentDraftFromDom(employee));
+}
+
+function syncAdjustmentDraftFromDom(employee) {
+  const select = document.getElementById(`adj_grade_${employee.id}`);
+  if (!select) return;
+  const evaluation = evaluations()[employee.id];
+  if (!evaluation) return;
+  const result = calculateFinal(employee.id);
+  const baseGrade = select.dataset.autoGrade || result.orgGrade || result.autoGrade;
+  const selectedGrade = select.value;
+  const typedFeedback = valueOf(`adj_feedback_${employee.id}`).trim();
+  const reason = valueOf(`adj_reason_${employee.id}`).trim();
+  const hasManualGrade = GRADES.includes(selectedGrade) && selectedGrade !== baseGrade;
+  evaluation.adjustment.gradeManual = hasManualGrade;
+  evaluation.adjustment.grade = hasManualGrade ? selectedGrade : "";
+  evaluation.adjustment.reason = hasManualGrade ? reason : "";
+  evaluation.adjustment.feedback = typedFeedback || getEvaluatorOverallFeedback(evaluation, employee);
+  const publishedSelect = document.getElementById(`adj_pub_${employee.id}`);
+  if (canPublishFeedback() && publishedSelect) evaluation.published = publishedSelect.checked;
+}
+
+function showAdminAdjustmentMessage(message) {
+  const panel = document.getElementById("admin-adjustments-panel");
+  if (!panel) return;
+  let notice = panel.querySelector("#adjustment_save_notice");
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.id = "adjustment_save_notice";
+    notice.className = "notice ok";
+    panel.querySelector(".panel-body")?.prepend(notice);
+  }
+  notice.textContent = message;
+}
+
+function renderAdjustmentTree(evaluatees) {
+  const grouped = groupByDivisionTeam(evaluatees);
+  return Object.entries(grouped)
+    .map(([division, teams]) => {
+      const divisionEmployees = Object.values(teams).flat();
+      const divisionMembers = divisionEmployees.filter((employee) => employee.role === "member");
+      return `
+        <details class="org-group" data-detail-key="adjustments:division:${esc(division)}">
+          <summary>${esc(division)} 배분 및 조정 <span>${divisionEmployees.length}명</span></summary>
+          ${divisionMembers.length ? renderDivisionQuotaForEmployees(divisionMembers, division) : ""}
+          ${Object.entries(teams)
+            .map(
+              ([team, employees]) => {
+                const teamMembers = employees.filter((employee) => employee.role === "member");
+                return `
+                  <details class="team-group" data-detail-key="adjustments:division:${esc(division)}:team:${esc(team)}">
+                    <summary>${esc(team)} <span>${employees.length}명</span></summary>
+                    ${teamMembers.length ? renderTeamQuotaForEmployees(teamMembers, division, team) : ""}
+                    ${renderAdjustmentTable(employees)}
+                  </details>
+                `;
+              },
+            )
+            .join("")}
+        </details>
+      `;
+    })
+    .join("");
+}
+
+function renderTeamQuotaForEmployees(employees, division, team) {
+  const parentGrade = divisionHeadGradeForDivision(division);
+  return renderDistributionChart(`${team} 등급 분포도`, employees, parentGrade, { subtitle: "팀원의 등급 분포도" });
+}
+
+function getGradeCounts(users) {
+  const counts = Object.fromEntries(GRADES.map((grade) => [grade, 0]));
+  users.forEach((employee) => {
+    const grade = calculateFinal(employee.id).finalGrade;
+    if (counts[grade] !== undefined) counts[grade] += 1;
+  });
+  return counts;
+}
+
+function formatTargetCount(total, percent) {
+  const value = (total * Number(percent || 0)) / 100;
+  if (!value) return "-";
+  return Number.isInteger(value) ? `${value}명` : `${value.toFixed(1)}명`;
+}
+
+function formatPercent(value) {
+  const rounded = Math.round(Number(value || 0) * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
+}
+
+function renderDistributionSegments(items) {
+  const visibleItems = items.filter((item) => item.percent > 0);
+  if (!visibleItems.length) return `<span class="dist-segment empty" style="width: 100%;"></span>`;
+  return visibleItems
+    .map(
+      (item) =>
+        `<span class="dist-segment" title="${esc(item.grade)} ${formatPercent(item.percent)}" style="width: ${Math.max(0, Math.min(100, item.percent))}%; background: ${GRADE_COLORS[item.grade] || "#cfd5df"};"></span>`,
+    )
+    .join("");
+}
+
+function renderDistributionChart(title, employees, parentGrade = "B", options = {}) {
+  const total = employees.length;
+  const distribution = state.distributionMatrix[parentGrade] || state.distributionMatrix.B;
+  const counts = getGradeCounts(employees);
+  const showReference = options.showReference !== false;
+  const showParent = options.showParent !== false;
+  const referenceItems = GRADES.map((grade) => ({ grade, percent: Number(distribution[grade] || 0), count: formatTargetCount(total, distribution[grade]) }));
+  const currentItems = GRADES.map((grade) => {
+    const count = counts[grade] || 0;
+    return { grade, count, percent: total ? (count / total) * 100 : 0 };
+  });
+  return `
+    <div class="distribution-card">
+      <div class="distribution-head">
+        <strong>${esc(title)}</strong>
+        <span>${showParent ? `기준 ${gradeBadge(parentGrade)} · ` : ""}대상 ${total}명</span>
+      </div>
+      ${options.subtitle ? `<p class="muted">${esc(options.subtitle)}</p>` : ""}
+      <div class="distribution-layout">
+        <div class="distribution-bars">
+          ${
+            showReference
+              ? `<div class="distribution-row">
+                  <span>참고 분포도</span>
+                  <div class="stacked-bar">${renderDistributionSegments(referenceItems)}</div>
+                </div>`
+              : ""
+          }
+          <div class="distribution-row">
+            <span>등급 분포도</span>
+            <div class="stacked-bar current">${renderDistributionSegments(currentItems)}</div>
+          </div>
+          <div class="distribution-legend">
+            ${GRADES.map((grade) => `<span><i style="background: ${GRADE_COLORS[grade]}"></i>${grade}</span>`).join("")}
+          </div>
+        </div>
+        <div class="distribution-table-wrap">
+          <table class="distribution-table">
+            <thead><tr><th>평가 등급</th>${showReference ? "<th>참고 분포 비율</th>" : ""}<th>등급 분포 비율</th></tr></thead>
+            <tbody>
+              ${GRADES.map((grade) => {
+                const referencePercent = Number(distribution[grade] || 0);
+                const current = currentItems.find((item) => item.grade === grade);
+                return `
+                  <tr>
+                    <td><span class="dist-grade"><i style="background: ${GRADE_COLORS[grade]}"></i>${grade}</span></td>
+                    ${showReference ? `<td>${referencePercent ? `${formatPercent(referencePercent)} (${formatTargetCount(total, referencePercent)})` : "-"}</td>` : ""}
+                    <td>${current.count ? `${formatPercent(current.percent)} (${current.count}명)` : "-"}</td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderOverallGradeDistribution(employees, title = "전체 결과 등급 분포도") {
+  return renderDistributionChart(title, employees, "B", { showReference: false, showParent: false });
+}
+
+function renderAdjustmentTable(employees) {
+  const sortedEmployees = sortEmployeesForAdjustment(employees);
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>차수별 평가 점수</th><th>점수</th><th>자동 등급</th><th>조직 제출</th><th>조정 등급</th><th>조정 사유</th><th>공개 피드백</th><th>리포트 공개</th></tr></thead>
+        <tbody>
+          ${sortedEmployees.map((employee) => {
+            const evaluation = evaluations()[employee.id];
+            const result = calculateFinal(employee.id);
+            const adjustmentGrade = getAdjustmentGrade(evaluation, result);
+            const adjustmentFeedback = getAdjustmentFeedback(evaluation, employee);
+            const orgSummary = orgAdjustmentSummary(employee, evaluation, result);
+            return `
+              <tr>
+                <td>
+                  <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                    <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                  </button>
+                  <br /><span class="muted">${esc(employee.employeeNo || employee.team)}</span>
+                </td>
+                <td>${ROLE_LABELS[employee.role]}</td>
+                <td>${renderStageComponentScores(employee, evaluation)}</td>
+                <td class="score">${result.scoreText}</td>
+                <td>${gradeBadge(result.autoGrade)}</td>
+                <td>${orgSummary}</td>
+                <td>${gradeSelect(`adj_grade_${employee.id}`, adjustmentGrade, employee.id, result.orgGrade || result.autoGrade)}</td>
+                <td><textarea class="compact-textarea" id="adj_reason_${employee.id}" placeholder="조정 사유">${esc(evaluation.adjustment.reason || "")}</textarea></td>
+                <td><textarea id="adj_feedback_${employee.id}" style="white-space:pre-wrap;word-break:break-word;min-width:240px;">${esc(adjustmentFeedback)}</textarea></td>
+                <td><select id="adj_pub_${employee.id}"><option value="false" ${!evaluation.published ? "selected" : ""}>미공개</option><option value="true" ${evaluation.published ? "selected" : ""}>공개</option></select></td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function orgAdjustmentSummary(employee, evaluation, result) {
+  const submission = resultSubmissionForEmployee(employee);
+  const submittedBy = submission ? userById(submission.submittedBy) : null;
+  const orgAdjustment = evaluation.orgAdjustment || {};
+  const reason = orgAdjustment.gradeManual && orgAdjustment.reason ? `<br /><span class="muted">${esc(orgAdjustment.reason)}</span>` : "";
+  const history = Array.isArray(orgAdjustment.history) && orgAdjustment.history.length
+    ? `<div class="stage-score-list">${orgAdjustment.history.map((item) => {
+        const actor = userById(item.submittedBy);
+        return `<div class="stage-score-row"><strong>${esc(ROLE_LABELS[item.scopeType] || "조정")}</strong><span>${gradeBadge(item.grade)} ${esc(item.reason || "")}</span><span>${esc(actor?.name || "")}</span></div>`;
+      }).join("")}</div>`
+    : "";
+  const submitted = submission
+    ? `<br /><span class="muted">${submission.autoSubmitted ? "자동 제출" : esc(submittedBy?.name || "제출자")} · ${esc(formatDateTime(submission.submittedAt))}</span>`
+    : "";
+  return `${gradeBadge(result.orgGrade || result.autoGrade)}${reason}${submitted}${history}`;
+}
+
+function sortEmployeesForAdjustment(employees) {
+  return [...employees].sort(compareEmployeesForDisplay);
+}
+
+function ensureAdjustmentDefaults(employee) {
+  const evaluation = evaluations()[employee.id];
+  if (!evaluation) return;
+  if (!evaluation.adjustment.gradeManual) evaluation.adjustment.grade = "";
+  evaluation.adjustment.feedback = getAdjustmentFeedback(evaluation, employee);
+}
+
+function getAdjustmentGrade(evaluation, result) {
+  return evaluation.adjustment.gradeManual && GRADES.includes(evaluation.adjustment.grade) ? evaluation.adjustment.grade : result.orgGrade || result.autoGrade;
+}
+
+function getAdjustmentFeedback(evaluation, employee) {
+  const evaluatorFeedback = getEvaluatorOverallFeedback(evaluation, employee);
+  const current = String(evaluation.adjustment.feedback || "").trim();
+  if (!current) return evaluatorFeedback;
+  if (current === "최종 평가 피드백이 아직 입력되지 않았습니다." && evaluatorFeedback !== current) return evaluatorFeedback;
+  return evaluation.adjustment.feedback;
+}
+
+function renderStageComponentScores(employee, evaluation, options = {}) {
+  const hiddenStages = new Set(options.hiddenStages || []);
+  const rows = ["self", "first", "second", "final"]
+    .filter((stage) => !hiddenStages.has(stage) && shouldShowStage(employee, stage) && isSubmittedStage(evaluation.status[stage], stage))
+    .map((stage) => {
+      const sum = stageComponentScore(employee, evaluation[stage]);
+      return `
+        <div class="stage-score-row">
+          <strong>${STAGE_LABELS[stage]}</strong>
+          ${COMPONENTS.map((component) => `<span>${COMPONENT_LABELS[component]} ${componentScoreText(evaluation[stage][component])}</span>`).join("")}
+          <span class="stage-sum">합계 ${sum === null ? "-" : sum.toFixed(1)}</span>
+        </div>`;
+    })
+    .join("");
+  // 동료평가(및 상향평가) 점수를 별도 행으로 표시 (hideExtras 옵션 시 생략 — 별도 열에서 표시)
+  let extraRow = "";
+  if (!options.hideExtras) {
+    const extras = [];
+    if (["teamLead", "divisionHead"].includes(employee.role)) {
+      const up = calculateUpwardScoreForTarget(employee.id);
+      if (up.value !== null) extras.push(`<span class="stage-extra up">상향평가 ${up.text}</span>`);
+    }
+    const peer = calculatePeerScoreForTarget(employee.id);
+    if (peer.value !== null) extras.push(`<span class="stage-extra peer">동료평가 ${peer.text}</span>`);
+    extraRow = extras.length ? `<div class="stage-score-row stage-extra-row">${extras.join("")}</div>` : "";
+  }
+  return (rows || extraRow) ? `<div class="stage-score-list">${rows}${extraRow}</div>` : `<span class="muted">평가 점수 없음</span>`;
+}
+
+// 동료평가 점수 셀 (점수 + 작은 뱃지)
+function peerScoreCellHtml(employee) {
+  const peer = calculatePeerScoreForTarget(employee.id);
+  if (peer.value === null) return `<span class="muted">-</span>`;
+  return `<span class="stage-extra peer" style="font-size:13px;">${peer.text}</span>`;
+}
+
+function isSubmittedStage(status, stage) {
+  return stage === "self" ? status === "submitted" : status === "completed";
+}
+
+// ───────────────────────── 엑셀 다운로드 공통 ─────────────────────────
+function downloadXlsxRows(rows, filename) {
+  try {
+    const data = buildXlsx(rows);
+    const blob = new Blob([data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error(e); window.alert("엑셀 생성 중 오류가 발생했습니다.");
+  }
+}
+
+// 한 구성원의 평가 점수 블록(자기/1차/2차 + 상향/동료 + 종합)을 셀 배열로 반환
+function memberScoreCells(employee, opts = {}) {
+  const ev = evaluations()[employee.id] || {};
+  const r = calculateFinal(employee.id);
+  const sc = (stage, comp) => { const d = ev[stage]; if (!d) return ""; const v = deriveComponentScore(d[comp]); return v == null ? "" : v; };
+  const sum = (stage) => { const d = ev[stage]; if (!d) return ""; const v = stageComponentScore(employee, d); return v == null ? "" : v; };
+  const peer = calculatePeerScoreForTarget(employee.id);
+  const up = ["teamLead", "divisionHead"].includes(employee.role) ? calculateUpwardScoreForTarget(employee.id) : { value: null };
+  const aiEval = ev.aiEval;
+  return {
+    self: [sc("self", "performance"), sc("self", "competency"), sc("self", "attitude"), sum("self")],
+    first: [sc("first", "performance"), sc("first", "competency"), sc("first", "attitude"), sum("first")],
+    second: [sc("second", "performance"), sc("second", "competency"), sc("second", "attitude"), sum("second")],
+    upward: up.value == null ? "" : up.value,
+    peer: peer.value == null ? "" : peer.value,
+    aiScore: aiEval?.status === "done" ? (aiEval.score ?? "") : "",
+    aiRationale: aiEval?.status === "done" ? (aiEval.rationale || "") : "",
+    score: r.rawScore == null ? "" : r.rawScore,
+    autoGrade: r.autoGrade || "",
+    orgGrade: (ev.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade)) ? ev.orgAdjustment.grade : "",
+    finalGrade: r.finalGrade || "",
+    published: ev.published ? "공개" : "미공개",
+    reason: (ev.adjustment?.reason || ev.orgAdjustment?.reason || ""),
+    distReason: (activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)]?.distributionReason || ""),
+    presidentReason: stageAdjustText(ev, "president"),
+    chairmanReason: stageAdjustText(ev, "chairman"),
+    adminReason: stageAdjustText(ev, "admin"),
+    feedback: (() => { try { return getPublishedFeedback(ev, employee); } catch (e) { return ""; } })(),
+  };
+}
+
+// 단계(사장/회장/어드민) 조정 기록을 "B→A : 사유" 형식 텍스트로
+function stageAdjustText(evaluation, stage) {
+  const a = evaluation?.adjustment || {};
+  const reason = a[`${stage}Reason`];
+  if (!reason) return "";
+  const from = a[`${stage}From`] || "";
+  const to = a[`${stage}To`] || "";
+  return (from || to) ? `${from}→${to} : ${reason}` : reason;
+}
+
+const ADJ_STAGE_LABELS = { president: "사장", chairman: "회장", admin: "최종조정" };
+
+// 화면 표시용: 단계별 조정 기록 칩 HTML (지정한 단계들 중 기록이 있는 것만)
+function adjustmentStageRecordsHtml(evaluation, stages) {
+  const a = evaluation?.adjustment || {};
+  const items = (stages || ["president", "chairman", "admin"])
+    .filter((s) => a[`${s}Reason`])
+    .map((s) => {
+      const from = a[`${s}From`] || "", to = a[`${s}To`] || "";
+      const move = (from || to) ? `<strong>${esc(from)}→${esc(to)}</strong> ` : "";
+      return `<div style="font-size:11px;color:var(--muted);margin-top:2px;"><span class="pill blue" style="font-size:10px;">${ADJ_STAGE_LABELS[s]}</span> ${move}${esc(a[`${s}Reason`])}</div>`;
+    });
+  return items.join("");
+}
+
+// 부서별 등급 분포 데이터를 엑셀 행 배열로 (export용)
+function deptDistributionExportRows(evaluatees, allUsers) {
+  const depts = [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a, b) => a.localeCompare(b, "ko"));
+  // 등급별로 인원수 컬럼과 비율 컬럼을 분리
+  const gradeHeaders = GRADES.flatMap(g => [`${g}등급(명)`, `${g}등급(%)`]);
+  const out = [["부서", "본부장 등급", "인원", ...gradeHeaders, "평균점수"]];
+  depts.forEach((dept) => {
+    const members = evaluatees.filter(e => (e.division || "미지정") === dept);
+    if (!members.length) return;
+    const counts = Object.fromEntries(GRADES.map(g => [g, 0]));
+    const scores = [];
+    members.forEach(emp => { const r = calculateFinal(emp.id); if (GRADES.includes(r.finalGrade)) counts[r.finalGrade]++; if (r.rawScore != null) scores.push(r.rawScore); });
+    const avg = scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : "-";
+    const head = allUsers.find(u => u.role === "divisionHead" && (u.division || "미지정") === dept);
+    const headGrade = head ? (calculateFinal(head.id).finalGrade || "") : "";
+    const total = members.length;
+    const gradeCells = GRADES.flatMap(g => {
+      const cnt = counts[g];
+      const pct = total > 0 ? Math.round(cnt / total * 1000) / 10 : 0; // 소수점 1자리
+      return [cnt, `${pct}%`];
+    });
+    out.push([dept, headGrade, total, ...gradeCells, avg]);
+  });
+  return out;
+}
+
+// 특정 구성원의 종합평가 단계(본부장 원안/조정 세션) 등급을 이력 스냅샷에서 조회
+function orgStageGradeFor(employee, stage) {
+  const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)];
+  if (!rec || !Array.isArray(rec.history)) return "";
+  const entry = [...rec.history].reverse().find((h) => h.stage === stage);
+  if (!entry) return "";
+  const empno = String(employee.employeeNo || "");
+  const m = (entry.grades || []).find((g) => (empno && String(g.employeeNo || "") === empno) || (g.name || "") === (employee.name || ""));
+  return m ? (m.grade || "") : "";
+}
+
+// 종합평가 단계 셀: "이전등급→해당등급 : 사유" 형식 (해당 단계 이력이 없으면 빈 문자열)
+function orgStageCellFor(employee, stage) {
+  const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)];
+  if (!rec || !Array.isArray(rec.history)) return "";
+  const entry = [...rec.history].reverse().find((h) => h.stage === stage);
+  if (!entry) return "";
+  const to = orgStageGradeFor(employee, stage);
+  if (!to) return "";
+  // 본부장 원안: 추천(자동)등급 → 원안등급 / 조정 세션: 원안등급 → 세션등급
+  const from = stage === "divisionHead"
+    ? (calculateFinal(employee.id).autoGrade || "")
+    : (orgStageGradeFor(employee, "divisionHead") || calculateFinal(employee.id).autoGrade || "");
+  const reason = entry.reason || "";
+  return `${from}→${to}${reason ? " : " + reason : ""}`;
+}
+
+// 종합평가 등급 조정 이력(본부장 원안 + 조정 세션 사유) 엑셀 섹션 행
+function orgAdjustmentHistoryExportRows(evaluatees) {
+  const cyc = activeCycle();
+  const rows = [];
+  [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a, b) => String(a).localeCompare(String(b), "ko")).forEach((div) => {
+    const rec = cyc.resultSubmissions?.[divisionSubmissionKey(div)];
+    (rec?.history || []).forEach((h) => {
+      const who = userById(h.by);
+      rows.push([div, ORG_HISTORY_STAGE_LABELS[h.stage] || h.stage, who?.name || "", h.at ? formatDateTime(h.at) : "",
+        GRADES.map(g => `${g}${h.counts?.[g] || 0}`).join(" "), h.reason || ""]);
+    });
+  });
+  if (!rows.length) return [];
+  return [[""], ["[종합평가 등급 조정 이력]"], ["본부", "단계", "처리자", "일시", "등급분배", "사유"], ...rows];
+}
+
+// 점수 블록 공통 헤더(자기/1차/2차 + 상향/동료 + AI)
+const SCORE_BLOCK_HEADER = [
+  "자기평가 업적", "자기평가 역량", "자기평가 자세태도", "자기평가 합계",
+  "1차 업적", "1차 역량", "1차 자세태도", "1차 합계",
+  "2차 업적", "2차 역량", "2차 자세태도", "2차 합계",
+  "상향평가", "동료평가", "AI 업적평가 점수", "AI 평가 근거",
+];
+function scoreBlockCells(m) {
+  return [...m.self, ...m.first, ...m.second, m.upward, m.peer, m.aiScore, m.aiRationale];
+}
+function todayStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+}
+
+// 한 구성원의 정보(인적사항 + 목표 + 사이클별 평가 결과)를 하나의 엑셀로 다운로드
+// requirePublished=true: 공개된 평가만(나의 대시보드), false: 전체(멤버 대시보드)
+function downloadMemberDashboardXlsx(target, requirePublished) {
+  const out = [];
+  out.push(["[구성원 정보]"]);
+  out.push(["이름", "사번", "역할", "소속", "이메일"]);
+  out.push([target.name, target.employeeNo || "", ROLE_LABELS[target.role] || target.role,
+    [target.orgRoot, target.division, target.team].filter(v => v && v !== "미지정").join(" / ") || "조직 없음", target.email || ""]);
+  out.push([""]);
+  out.push(["[목표]"]);
+  out.push(["목표", "레벨", "진행률(%)", "상태", "체크인 수", "기간"]);
+  const goals = state.goals.filter(g => g.ownerId === target.id);
+  if (goals.length) {
+    goals.forEach(g => out.push([g.title, GOAL_LEVEL_LABELS[g.level] || g.level, goalDisplayProgress(g, state.goals),
+      GOAL_STATUS_LABELS[g.status] || g.status, (g.checkins || []).length, `${g.start || ""}~${g.end || ""}`]));
+  } else {
+    out.push(["담당 목표가 없습니다."]);
+  }
+  out.push([""]);
+  out.push(["[평가 결과]"]);
+  out.push(["평가 사이클", "공개여부", ...SCORE_BLOCK_HEADER, "종합점수", "최종등급", "공개피드백"]);
+  let any = false;
+  [...(state.cycles || [])].sort((a, b) => String(b.createdAt || b.id).localeCompare(String(a.createdAt || a.id))).forEach((c) => {
+    const ev = c.evaluations?.[target.id];
+    if (!ev) return;
+    const tgt = (c.usersSnapshot || []).find(u => u.id === target.id) || target;
+    if (!isEvaluatee(tgt)) return;
+    const published = Boolean(c.resultsVisible && ev.published);
+    if (requirePublished && !published) return;
+    const row = withCycle(c.id, () => {
+      const m = memberScoreCells(tgt);
+      return [c.name, published ? "공개" : "미공개", ...scoreBlockCells(m), m.score, m.finalGrade, m.feedback];
+    });
+    out.push(row); any = true;
+  });
+  if (!any) out.push([requirePublished ? "공개된 평가 결과가 없습니다." : "평가 결과 데이터가 없습니다."]);
+  downloadXlsxRows(out, `${target.name}_대시보드_${todayStamp()}.xlsx`);
+}
+
+function renderAdjustmentGroup(employees, division) {
+  const sortedEmployees = sortEmployeesForAdjustment(employees);
+  return `
+    ${renderDivisionQuotaForEmployees(employees, division)}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>구성원</th><th>역할</th><th>점수</th><th>자동 등급</th><th>조정 등급</th><th>조정 사유</th><th>공개 피드백</th><th>리포트 공개</th></tr></thead>
+        <tbody>
+          ${sortedEmployees.map((employee) => {
+            const evaluation = evaluations()[employee.id];
+            const result = calculateFinal(employee.id);
+            const adjustmentGrade = getAdjustmentGrade(evaluation, result);
+            const adjustmentFeedback = getAdjustmentFeedback(evaluation, employee);
+            return `
+              <tr>
+                <td>
+                  <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                    <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                  </button>
+                  <br /><span class="muted">${esc(employee.team)}</span>
+                </td>
+                <td>${ROLE_LABELS[employee.role]}</td>
+                <td class="score">${result.scoreText}</td>
+                <td>${gradeBadge(result.autoGrade)}</td>
+                <td>${gradeSelect(`adj_grade_${employee.id}`, adjustmentGrade, employee.id, result.orgGrade || result.autoGrade)}</td>
+                <td><textarea class="compact-textarea" id="adj_reason_${employee.id}" placeholder="조정 사유">${esc(evaluation.adjustment.reason || "")}</textarea></td>
+                <td><textarea id="adj_feedback_${employee.id}">${esc(adjustmentFeedback)}</textarea></td>
+                <td><select id="adj_pub_${employee.id}"><option value="false" ${!evaluation.published ? "selected" : ""}>미공개</option><option value="true" ${evaluation.published ? "selected" : ""}>공개</option></select></td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderGroupedPeople(users, renderer, options = {}) {
+  const normalizedOptions = typeof options === "boolean" ? { includeDivisionQuota: options } : options;
+  const includeDivisionQuota = Boolean(normalizedOptions.includeDivisionQuota);
+  const openAttr = normalizedOptions.open === false ? "" : " open";
+  const grouped = groupByDivisionTeam(users);
+  return Object.entries(grouped)
+    .map(([division, teams]) => `
+      <details class="org-group"${openAttr}>
+        <summary>${esc(division)} <span>${Object.values(teams).flat().length}명</span></summary>
+        ${Object.entries(teams).map(([team, employees]) => `
+          <details class="team-group"${openAttr}>
+            <summary>${esc(team)} <span>${employees.length}명</span></summary>
+            ${renderer(employees, includeDivisionQuota ? division : undefined)}
+          </details>
+        `).join("")}
+      </details>
+    `)
+    .join("");
+}
+
+function groupByDivisionTeam(users) {
+  return users.reduce((acc, user) => {
+    const division = user.division || "미지정";
+    const team = user.team || "미지정";
+    acc[division] = acc[division] || {};
+    acc[division][team] = acc[division][team] || [];
+    acc[division][team].push(user);
+    return acc;
+  }, {});
+}
+
+function renderQuotaSection(user, compact = false) {
+  const groups = buildQuotaGroups(user);
+  if (!groups.length) return "";
+  return `
+    <div class="${compact ? "grid" : ""}">
+      ${groups.map(renderQuotaGroup).join("")}
+    </div>
+  `;
+}
+
+function renderQuotaGroup(group) {
+  const distribution = state.distributionMatrix[group.parentGrade] || state.distributionMatrix.B;
+  const total = group.members.length || 1;
+  const counts = Object.fromEntries(GRADES.map((grade) => [grade, 0]));
+  group.members.forEach((member) => {
+    const result = calculateFinal(member.id);
+    counts[result.finalGrade] = (counts[result.finalGrade] || 0) + 1;
+  });
+  return `
+    <div class="component-card">
+      <h3>${esc(group.title)}</h3>
+      <p class="muted">상위 평가 등급 ${gradeBadge(group.parentGrade)} 기준 · 대상 ${group.members.length}명</p>
+      <div class="quota-grid">
+        ${GRADES.map((grade) => {
+          const percent = Number(distribution[grade] || 0);
+          const target = Math.round((total * percent) / 100);
+          return `<div class="quota-cell"><strong>${grade}</strong><span>가이드 ${percent}% · ${target}명</span><span class="pill ${counts[grade] > target && target > 0 ? "red" : "blue"}">현재 ${counts[grade] || 0}명</span></div>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderDivisionQuotaForEmployees(employees, division) {
+  const headGrade = divisionHeadGradeForDivision(division);
+  return renderDistributionChart(`${division || "미지정"} 등급 분포도`, employees, headGrade, { subtitle: "팀원의 등급 분포도" });
+}
+
+function divisionHeadGradeForDivision(division) {
+  const head = cycleUsers().find((user) => user.role === "divisionHead" && user.division === division);
+  return head ? calculateFinal(head.id).finalGrade || "B" : "B";
+}
+
+function buildQuotaGroups(user) {
+  const groups = [];
+  const canSeeAll = user.role === "admin" || user.role === "chairman";
+  const users = cycleUsers();
+  const divisionHeads = users.filter((employee) => employee.role === "divisionHead" && (canSeeAll || employee.id === user.id));
+  const teamLeads = users.filter((employee) => employee.role === "teamLead" && (canSeeAll || employee.id === user.id || (user.role === "divisionHead" && employee.division === user.division)));
+
+  divisionHeads.forEach((head) => {
+    const members = users.filter((employee) => employee.role === "teamLead" && employee.division === head.division);
+    if (members.length) groups.push({ title: `${head.division} 팀장 배분`, parentGrade: calculateFinal(head.id).finalGrade || "B", members });
+  });
+  teamLeads.forEach((lead) => {
+    const members = users.filter((employee) => employee.role === "member" && employee.division === lead.division && employee.team === lead.team);
+    if (members.length) groups.push({ title: `${lead.team} 팀원 배분`, parentGrade: calculateFinal(lead.id).finalGrade || "B", members });
+  });
+  return groups;
+}
+
+function getTasksForUser(user) {
+  if (!user) return [];
+  const tasks = [];
+  cycleUsers().filter(isEvaluatee).forEach((employee) => {
+    const evaluation = evaluations()[employee.id];
+    if (!evaluation || employee.id === user.id) return;
+    if (employee.evaluator1Id === user.id) tasks.push(makeTask(employee, "first", "1차 평가", evaluation));
+    if (employee.evaluator2Id === user.id) tasks.push(makeTask(employee, "second", "2차 평가", evaluation));
+  });
+  getUpwardAssignments().forEach((assignment) => {
+    if (assignment.evaluatorId !== user.id) return;
+    const target = cycleUserById(assignment.targetId);
+    if (!target) return;
+    tasks.push(makeUpwardTask(target, assignment));
+  });
+  getPeerAssignments().forEach((assignment) => {
+    if (assignment.evaluatorId !== user.id) return;
+    const target = cycleUserById(assignment.targetId);
+    if (!target) return;
+    tasks.push(makePeerTask(target, assignment));
+  });
+  return tasks.sort(compareTasks);
+}
+
+function makeTask(employee, stage, label, evaluation) {
+  return { key: `${employee.id}:${stage}`, employee, stage, label, status: evaluation.status[stage], ready: isStageReady(employee, evaluation, stage) };
+}
+
+function makeUpwardTask(target, assignment) {
+  return {
+    key: `upward:${assignment.id}`,
+    type: "upward",
+    employee: target,
+    stage: "upward",
+    label: `${ROLE_LABELS[target.role]} 상향평가`,
+    status: assignment.status || "pending",
+    ready: true,
+    assignment,
+  };
+}
+
+function makePeerTask(target, assignment) {
+  return {
+    key: `peer:${assignment.id}`,
+    type: "peer",
+    employee: target,
+    stage: "peer",
+    label: "동료평가",
+    status: assignment.status || "pending",
+    ready: true,
+    assignment,
+  };
+}
+
+function compareTasks(a, b) {
+  return (
+    Number(isCompletedStatus(a.status)) - Number(isCompletedStatus(b.status)) ||
+    String(a.employee.team || "").localeCompare(String(b.employee.team || ""), "ko") ||
+    compareTasksWithinTeam(a, b)
+  );
+}
+
+function compareTasksWithinTeam(a, b) {
+  return compareEmployeesForDisplay(a.employee, b.employee);
+}
+
+function compareEmployeesByTitleDesc(a, b) {
+  return sortableTitleRank(b.title) - sortableTitleRank(a.title);
+}
+
+function compareEmployeesForDisplay(a, b) {
+  return (
+    rolePriority(b.role) - rolePriority(a.role) ||
+    compareEmployeesByTitleDesc(a, b) ||
+    String(a.title || "").localeCompare(String(b.title || ""), "ko") ||
+    a.name.localeCompare(b.name, "ko")
+  );
+}
+
+function rolePriority(role) {
+  if (role === "divisionHead") return 3;
+  if (role === "teamLead") return 2;
+  if (role === "member") return 1;
+  return 0;
+}
+
+function titleRank(title = "") {
+  const normalized = String(title || "");
+  const index = TITLE_ORDER.findIndex((aliases) => aliases.some((alias) => normalized.includes(alias)));
+  return index === -1 ? TITLE_ORDER.length : index;
+}
+
+function sortableTitleRank(title = "") {
+  const rank = titleRank(title);
+  return rank === TITLE_ORDER.length ? -1 : rank;
+}
+
+function alignPerformanceAchievements(targetReview, selfReview, stage, firstReview) {
+  if (!targetReview?.performance || !selfReview?.performance) return;
+  const source = selfReview.performance.achievements || [];
+  if (!source.length) return;
+  const existing = targetReview.performance.achievements || [];
+  // 1차 평가자가 명시적으로 저장한 가중치 오버라이드 배열
+  const firstOverrides = firstReview?.performance?.achievementWeightOverrides;
+  const myOverrides = targetReview.performance.achievementWeightOverrides;
+  targetReview.performance.achievements = source.map((item, index) => {
+    const previous = existing[index] || {};
+    // 가중치 결정:
+    // - 2차: 1차 평가자가 저장한 오버라이드 값 → 없으면 self 값
+    // - 1차: 본인이 저장한 오버라이드 값 → 없으면 self 값
+    // - self: self 값
+    let weight;
+    if (stage === "second") {
+      weight = (firstOverrides && firstOverrides[index] != null)
+        ? firstOverrides[index]
+        : (item.weight ?? 0);
+    } else if (stage === "first") {
+      weight = (myOverrides && myOverrides[index] != null)
+        ? myOverrides[index]
+        : (item.weight ?? 0);
+    } else {
+      weight = item.weight ?? 0;
+    }
+    return {
+      name: item.name || "",
+      goal: item.goal || "",
+      detail: item.detail || "",
+      achievementLevel: item.achievementLevel || "",
+      weight,
+      score: previous.score ?? "",
+      grade: previous.grade ?? "",
+      linkedGoalId: item.linkedGoalId || "",
+      linkedTeamGoalId: item.linkedTeamGoalId || "",
+    };
+  });
+}
+
+function isStageReady(employee, evaluation, stage) {
+  if (stage === "first") return evaluation.status.self === "submitted";
+  if (stage === "second") return evaluation.status.self === "submitted" && (!employee.evaluator1Id || evaluation.status.first === "completed");
+  return false;
+}
+
+function canEditStage(stage) {
+  const cycle = selectedCycle();
+  if (cycle.status !== "active") return false;
+  if (stage === "self") return isDateInRange(cycle.selfStart, cycle.selfEnd);
+  if (stage === "first") return isDateInRange(cycle.firstStart, cycle.firstEnd);
+  if (stage === "second") return isDateInRange(cycle.secondStart, cycle.secondEnd);
+  if (stage === "final") return isDateInRange(cycle.gradeStart, cycle.gradeEnd);
+  return false;
+}
+
+function canEditUpward() {
+  const cycle = selectedCycle();
+  return cycle.status === "active" && isDateInRange(cycle.upwardStart, cycle.upwardEnd);
+}
+
+function canEditPeer() {
+  const cycle = selectedCycle();
+  return cycle.status === "active" && isDateInRange(cycle.peerStart, cycle.peerEnd);
+}
+
+function canPublishFeedback() {
+  const cycle = selectedCycle();
+  if (cycle.status === "done") return true;   // 평가 완료 사이클은 결과 공개 설정 가능
+  return cycle.status === "active" && isDateInRange(cycle.feedbackStart, cycle.feedbackEnd);
+}
+
+function periodMessage(stage, cycle) {
+  if (cycle.status !== "active") return "현재 평가는 중지 상태입니다. 어드민이 상태를 진행으로 변경해야 제출할 수 있습니다.";
+  const map = {
+    self: ["자기평가", cycle.selfStart, cycle.selfEnd],
+    first: ["1차 평가", cycle.firstStart, cycle.firstEnd],
+    second: ["2차 평가", cycle.secondStart, cycle.secondEnd],
+    final: ["등급 확정", cycle.gradeStart, cycle.gradeEnd],
+    upward: ["상향평가", cycle.upwardStart, cycle.upwardEnd],
+    peer: ["동료평가", cycle.peerStart, cycle.peerEnd],
+    feedback: ["피드백 공개", cycle.feedbackStart, cycle.feedbackEnd],
+  };
+  const [label, start, end] = map[stage] || ["평가", "", ""];
+  return `${label} 가능 기간은 ${start} ~ ${end}입니다.`;
+}
+
+function isDateInRange(start, end) {
+  const today = new Date();
+  const todayText = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  return (!start || todayText >= start) && (!end || todayText <= end);
+}
+
+function getVisibleResultUsers(user) {
+  const users = cycleUsers();
+  if (user.role === "chairman") return users.filter(isEvaluatee);
+  if (user.role === "president") {
+    const anchors = users.filter((employee) => isEvaluatee(employee) && (employee.evaluator1Id === user.id || employee.evaluator2Id === user.id));
+    const divisions = new Set(anchors.map((employee) => employee.division).filter(Boolean));
+    const orgRoots = new Set(anchors.map((employee) => employee.orgRoot).filter(Boolean));
+    const scoped = users.filter((employee) => isEvaluatee(employee) && (divisions.has(employee.division) || orgRoots.has(employee.orgRoot)));
+    return scoped.length ? scoped : users.filter((employee) => isEvaluatee(employee) && employee.orgRoot === "COO");
+  }
+  if (user.role === "divisionHead") return users.filter((employee) => isEvaluatee(employee) && employee.division === user.division && employee.id !== user.id);
+  if (user.role === "teamLead") return users.filter((employee) => employee.role === "member" && employee.division === user.division && employee.team === user.team);
+  return [];
+}
+
+function calculateFinal(userId) {
+  const employee = cycleUserById(userId);
+  const evaluation = evaluations()[userId];
+  if (!employee || !evaluation) return { rawScore: null, scoreText: "-", autoGrade: "D", finalGrade: "D", componentScores: emptyComponentScores() };
+
+  const result = calculateScoreResult(employee, evaluation);
+  const autoGrade = employee.role === "member" ? relativeGradeForMember(employee, result.rawScore) : gradeByScore(result.rawScore);
+  const orgAdjustment = evaluation.orgAdjustment || {};
+  const orgGrade = orgAdjustment.gradeManual && GRADES.includes(orgAdjustment.grade) ? orgAdjustment.grade : autoGrade;
+  const finalGrade = evaluation.adjustment.gradeManual && GRADES.includes(evaluation.adjustment.grade) ? evaluation.adjustment.grade : orgGrade;
+  return {
+    ...result,
+    autoGrade,
+    orgGrade,
+    finalGrade,
+  };
+}
+
+function calculateScoreResult(employee, evaluation) {
+  const cached = _scoreResultCache.get(employee.id);
+  if (cached) return cached;
+  const result = computeScoreResult(employee, evaluation);
+  _scoreResultCache.set(employee.id, result);
+  return result;
+}
+
+function computeScoreResult(employee, evaluation) {
+  const componentScores = {};
+  COMPONENTS.forEach((component) => {
+    componentScores[component] = calculateComponentScore(employee, evaluation, component);
+  });
+  if (["teamLead", "divisionHead"].includes(employee.role)) {
+    componentScores.upward = calculateUpwardScoreForTarget(employee.id);
+  }
+  componentScores.peer = calculatePeerScoreForTarget(employee.id);
+  const roleWeights = state.roleWeights[employee.role] || state.roleWeights.member;
+  const primaryScores = COMPONENTS
+    .map((component) => ({ value: componentScores[component]?.value ?? null, weight: Number(roleWeights[component] || 0) }))
+    .filter((item) => item.value !== null && item.weight > 0);
+  const weightedScores = WEIGHT_COMPONENTS
+    .map((component) => ({ value: componentScores[component]?.value ?? null, weight: Number(roleWeights[component] || 0) }))
+    .filter((item) => item.value !== null && item.weight > 0);
+  const totalWeight = weightedScores.reduce((total, item) => total + item.weight, 0);
+  const rawScore = totalWeight ? weightedScores.reduce((total, item) => total + item.value * item.weight, 0) / totalWeight : 0;
+  const score = primaryScores.length ? Math.round(rawScore * 10) / 10 : null;
+  return {
+    rawScore: score,
+    scoreText: score === null ? "-" : score.toFixed(1),
+    componentScores,
+  };
+}
+
+function relativeGradeForMember(employee, score) {
+  if (score === null || Number.isNaN(score)) return "D";
+  const users = cycleUsers();
+  const parentGrade = divisionHeadGradeForDivision(employee.division);
+  const distribution = state.distributionMatrix[parentGrade] || state.distributionMatrix.B;
+  const members = users.filter((user) => user.role === "member" && user.division === employee.division && isEvaluatee(user));
+  if (!members.length) return gradeByScore(score);
+  const slots = buildDistributionSlots(members.length, distribution);
+  if (!slots.length) return gradeByScore(score);
+  const ranked = members
+    .map((member) => {
+      const memberEvaluation = evaluations()[member.id];
+      const memberResult = memberEvaluation ? calculateScoreResult(member, memberEvaluation) : { rawScore: null };
+      return { member, score: memberResult.rawScore ?? -1 };
+    })
+    .sort((a, b) => b.score - a.score || compareEmployeesForDisplay(a.member, b.member));
+  const index = ranked.findIndex((item) => item.member.id === employee.id);
+  return slots[Math.max(0, index)] || slots[slots.length - 1] || "D";
+}
+
+function buildDistributionSlots(total, distribution) {
+  const percentSum = GRADES.reduce((sum, grade) => sum + Number(distribution?.[grade] || 0), 0);
+  if (!total || percentSum <= 0) return [];
+  const base = GRADES.map((grade) => {
+    const exact = (total * Number(distribution?.[grade] || 0)) / 100;
+    return { grade, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
+  });
+  let assigned = base.reduce((sum, item) => sum + item.count, 0);
+  const byRemainder = [...base].sort((a, b) => b.remainder - a.remainder || GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade));
+  let remainderIndex = 0;
+  while (assigned < total && byRemainder.length) {
+    byRemainder[remainderIndex % byRemainder.length].count += 1;
+    remainderIndex += 1;
+    assigned += 1;
+  }
+  while (assigned > total) {
+    const target = [...base].reverse().find((item) => item.count > 0);
+    if (!target) break;
+    target.count -= 1;
+    assigned -= 1;
+  }
+  return base.flatMap((item) => Array.from({ length: item.count }, () => item.grade)).slice(0, total);
+}
+
+function emptyComponentScores() {
+  return Object.fromEntries(COMPONENTS.map((component) => [component, { value: null, text: "-" }]));
+}
+
+function calculateUpwardScoreForTarget(targetId) {
+  const scores = getUpwardAssignments()
+    .filter((assignment) => assignment.targetId === targetId && isCompletedStatus(assignment.status))
+    .map((assignment) => toNumberOrNull(assignment.answer?.score))
+    .filter((score) => score !== null);
+  if (!scores.length) return { value: null, text: "-" };
+  const value = Math.round(average(scores) * 10) / 10;
+  return { value, text: value.toFixed(1) };
+}
+
+function calculatePeerScoreForTarget(targetId) {
+  const scores = getPeerAssignments()
+    .filter((assignment) => assignment.targetId === targetId && isCompletedStatus(assignment.status))
+    .map((assignment) => toNumberOrNull(assignment.answer?.score))
+    .filter((score) => score !== null);
+  if (!scores.length) return { value: null, text: "-" };
+  const value = Math.round(average(scores) * 10) / 10;
+  return { value, text: value.toFixed(1) };
+}
+
+function calculateComponentScore(employee, evaluation, component) {
+  const cycle = activeCycle();
+  const stageWeights = state.evaluatorWeights[employee.role] || state.evaluatorWeights.member;
+  const candidates = [];
+  ["first", "second", "final"].forEach((stage) => {
+    const weight = Number(stageWeights[stage] || 0);
+    const value = deriveComponentScore(evaluation[stage]?.[component]);
+    if (weight > 0 && value !== null && evaluation.status[stage] === "completed") candidates.push({ value, weight });
+  });
+  // AI 평가자: 업적평가(performance) 컴포넌트에만 반영
+  if (component === "performance" && cycle?.useAIEval && evaluation.aiEval?.status === "done") {
+    const aiWeight = Number(stageWeights.ai || 0);
+    const aiScore = toNumberOrNull(evaluation.aiEval.score);
+    if (aiWeight > 0 && aiScore !== null) candidates.push({ value: aiScore, weight: aiWeight });
+  }
+  if (!candidates.length) {
+    const selfValue = deriveComponentScore(evaluation.self?.[component]);
+    return { value: selfValue, text: selfValue === null ? "-" : selfValue.toFixed(1) };
+  }
+  const weighted = candidates.reduce((total, item) => total + item.value * item.weight, 0) / candidates.reduce((total, item) => total + item.weight, 0);
+  const rounded = Math.round(weighted * 10) / 10;
+  return { value: rounded, text: rounded.toFixed(1) };
+}
+
+// 특정 단계(자기평가/1차)의 업적·역량·자세태도 점수만으로 산출한 점수
+function stageComponentScore(employee, stageEv) {
+  if (!stageEv) return null;
+  const roleWeights = state.roleWeights[employee.role] || state.roleWeights.member;
+  const parts = COMPONENTS
+    .map((comp) => ({ value: deriveComponentScore(stageEv[comp]), weight: Number(roleWeights[comp] || 0) }))
+    .filter((p) => p.value !== null && p.weight > 0);
+  if (!parts.length) return null;
+  const totalWeight = parts.reduce((s, p) => s + p.weight, 0);
+  const v = parts.reduce((s, p) => s + p.value * p.weight, 0) / totalWeight;
+  return Math.round(v * 10) / 10;
+}
+
+function deriveComponentScore(componentData) {
+  if (!componentData) return null;
+  if (componentData.achievements?.length) {
+    const weighted = componentData.achievements
+      .map((item) => ({ score: toNumberOrNull(item.score), weight: Number(item.weight || 0) }))
+      .filter((item) => item.score !== null);
+    if (weighted.length) {
+      const totalWeight = weighted.reduce((total, item) => total + (item.weight || 0), 0) || weighted.length;
+      const value = weighted.reduce((total, item) => total + item.score * (item.weight || 1), 0) / totalWeight;
+      return Math.round(value * 10) / 10;
+    }
+  }
+  const itemScores = Object.values(componentData.itemScores || {}).map(toNumberOrNull).filter((value) => value !== null);
+  if (itemScores.length) return Math.round(average(itemScores) * 10) / 10;
+  return toNumberOrNull(componentData.score);
+}
+
+function gradeByScore(score) {
+  if (score === null || Number.isNaN(score)) return "D";
+  for (const grade of GRADES) {
+    if (score >= Number(state.gradeThresholds[grade] || 0)) return grade;
+  }
+  return "D";
+}
+
+function getProgressStats(scopeUsers = cycleUsers().filter(isEvaluatee)) {
+  const evaluatees = scopeUsers.filter(isEvaluatee);
+  const resultsReleased = canShowReleasedResults();
+  return evaluatees.reduce(
+    (stats, employee) => {
+      const evaluation = evaluations()[employee.id];
+      if (evaluation.status.self === "submitted") stats.selfSubmitted += 1;
+      if (employee.evaluator1Id) {
+        stats.requiredStages += 1;
+        if (evaluation.status.first === "completed") stats.completedStages += 1;
+      }
+      if (employee.evaluator2Id) {
+        stats.requiredStages += 1;
+        if (evaluation.status.second === "completed") stats.completedStages += 1;
+      }
+      if (resultsReleased && evaluation.published) stats.published += 1;
+      return stats;
+    },
+    {
+      evaluatees: evaluatees.length,
+      selfSubmitted: 0,
+      requiredStages: 0,
+      completedStages: 0,
+      upwardTotal: getUpwardAssignments().filter((assignment) => evaluatees.some((employee) => employee.id === assignment.evaluatorId)).length,
+      upwardCompleted: getUpwardAssignments().filter((assignment) => isCompletedStatus(assignment.status) && evaluatees.some((employee) => employee.id === assignment.evaluatorId)).length,
+      peerTotal: getPeerAssignments().filter((assignment) => evaluatees.some((employee) => employee.id === assignment.evaluatorId)).length,
+      peerCompleted: getPeerAssignments().filter((assignment) => isCompletedStatus(assignment.status) && evaluatees.some((employee) => employee.id === assignment.evaluatorId)).length,
+      published: 0,
+    },
+  );
+}
+
+function getPublishedFeedback(evaluation, employee, visibility) {
+  const vis = visibility || state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const includeUpward = vis.feedbackUpward !== false;
+  const includePeer = vis.feedbackPeer !== false;
+  let feedback = evaluation.adjustment.feedback || getEvaluatorOverallFeedback(evaluation, employee, includeUpward, includePeer);
+  feedback = filterSupplementalFeedbackBlocks(feedback, includeUpward, includePeer);
+  return formatPublishedFeedbackText(feedback);
+}
+
+// ── AI 업적평가 자동 채점 ─────────────────────────────────────────────────────
+
+async function callAIPerformanceEval(employeeId, silent = false, cycleId = null) {
+  const cycle = cycleId ? (state.cycles.find(c => c.id === cycleId) || activeCycle()) : activeCycle();
+  const employee = (cycle.usersSnapshot || state.users).find(u => u.id === employeeId);
+  const evaluation = (cycle.evaluations || {})[employeeId];
+  if (!employee || !evaluation) return;
+
+  // 이미 완료 상태면 재실행 안 함
+  if (evaluation.aiEval?.status === "done") return;
+
+  // pending 표시
+  evaluation.aiEval = { status: "pending" };
+  saveState();
+  if (!silent) render();
+
+  try {
+    const selfPerf = evaluation.self?.performance;
+    if (!selfPerf) { evaluation.aiEval = { status: "failed" }; saveState(); if (!silent) render(); return; }
+
+    const achievements = selfPerf.achievements?.length ? selfPerf.achievements : [{ name: "", goal: selfPerf.goal || "", achievementLevel: "", detail: selfPerf.detail || "", weight: 100 }];
+    const leaderEval = isLeaderRole(employee);
+
+    // 목표 데이터를 평가용 텍스트로 직렬화하는 헬퍼
+    const goalDataText = (goal, label) => {
+      if (!goal) return "";
+      const lines = [`\n  [${label}]`];
+      lines.push(`    제목: "${goal.title}"`);
+      if (goal.description) lines.push(`    설명: "${goal.description}"`);
+      // 지표(정량 데이터)
+      if (goal.metric && goal.metric.targetValue !== undefined) {
+        const m = goal.metric;
+        const progress = computeGoalProgress(goal);
+        lines.push(`    지표: ${m.name || "수치 지표"} | 시작값: ${m.startValue} | 목표값: ${m.targetValue} | 현재값: ${m.currentValue} | 달성률: ${progress}%`);
+      } else if (typeof goal.progress === "number") {
+        lines.push(`    진행률: ${goal.progress}%`);
+      }
+      // 체크인 기록 (최근 3개, 날짜·내용·진행률)
+      const checkins = (goal.checkins || []).slice().sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3);
+      if (checkins.length) {
+        lines.push(`    최근 체크인 (최대 3건):`);
+        checkins.forEach(c => {
+          const datePart = c.date ? `[${c.date}]` : "";
+          const progPart = c.progress !== undefined ? ` 진행률: ${c.progress}%` : "";
+          const notePart = c.note ? ` 내용: "${c.note}"` : "";
+          lines.push(`      ${datePart}${progPart}${notePart}`);
+        });
+      }
+      // 목표 상태
+      const statusMap = { onTrack: "순조로움", offTrack: "지연", done: "완료", notStarted: "미시작" };
+      if (goal.status) lines.push(`    목표 상태: ${statusMap[goal.status] || goal.status}`);
+      return lines.join("\n");
+    };
+
+    const achievementTexts = achievements.map((ach, i) => {
+      const linkedGoal = ach.linkedGoalId ? state.goals.find(g => g.id === ach.linkedGoalId) : null;
+      const linkedTeamGoal = ach.linkedTeamGoalId ? state.goals.find(g => g.id === ach.linkedTeamGoalId) : null;
+      const personalGoalData = goalDataText(linkedGoal, "연결된 개인 목표 (시스템 데이터)");
+      const teamGoalData = goalDataText(linkedTeamGoal, "연결된 팀 목표 (시스템 데이터)");
+      if (leaderEval) {
+        return `업적 ${i+1} (가중치: ${ach.weight || 0}%):\n  사업목표: ${ach.name || "-"}\n  목표수준: ${ach.goal || "-"}\n  달성수준: ${ach.achievementLevel || "-"}\n  달성내용: ${ach.detail || "-"}${personalGoalData}`;
+      }
+      return `업적 ${i+1} (가중치: ${ach.weight || 0}%):\n  업적명: ${ach.name || "-"}\n  기여한 목표: ${ach.goal || "-"}\n  상세 내용: ${ach.detail || "-"}${personalGoalData}${teamGoalData}`;
+    }).join("\n\n");
+
+    // 업적별 JSON 스키마 예시 생성
+    const achSchemaExamples = achievements.map((_, i) =>
+      `    { "index": ${i+1}, "score": 점수(0~100), "rationale": "업적 ${i+1} 채점 근거 (한국어 200자 내외, 데이터 근거 명시)" }`
+    ).join(",\n");
+
+    const systemInstruction = `당신은 객관적이고 냉철한 인사평가 AI입니다.
+평가는 반드시 시스템에 기록된 정량 데이터(목표 지표, 달성률, 체크인 기록)를 최우선 근거로 삼으세요.
+자기평가 서술 내용은 참고하되, 데이터와 서술이 불일치할 경우 데이터를 우선합니다.
+데이터가 없는 항목은 자기평가 서술만으로 평가하되, 이 경우 점수의 신뢰도가 낮음을 감안해 보수적으로 채점하세요.
+과장되거나 근거 없는 서술에는 낮은 점수를 부여하세요.`;
+
+    const prompt = leaderEval
+      ? `${systemInstruction}
+
+아래는 "${employee.name}(${employee.title || ""})"님의 자기평가 업적 데이터입니다.
+
+---
+${achievementTexts}
+---
+
+[채점 기준]
+- 각 업적별 0~100점 채점
+- 목표수준(정량 기준) 대비 달성수준의 수치적 격차를 핵심 기준으로 삼으세요
+- 달성내용은 과정의 구체성과 타당성을 검토하세요
+- 연결된 목표의 시스템 데이터(달성률, 체크인)와 자기 기술 내용이 일치하는지 교차 검증하세요
+- 총점 = 각 업적 점수 × 가중치 합산 (가중치 합이 100% 미만이면 비율 환산)
+
+반드시 아래 JSON 형식만 출력하세요:
+{
+  "achievements": [
+${achSchemaExamples}
+  ],
+  "totalScore": 가중합계점수(0~100),
+  "totalRationale": "전체 종합 평가 의견 (한국어 200자 내외, 데이터 기반 객관적 의견)"
+}`
+      : `${systemInstruction}
+
+아래는 "${employee.name}(${employee.title || ""})"님의 자기평가 업적 데이터입니다.
+
+---
+${achievementTexts}
+---
+
+[채점 기준]
+- 각 업적별 0~100점 채점
+- 연결된 팀 목표가 있으면: 팀 목표의 지표 달성률·체크인 기록을 기준으로 해당 업적이 팀 목표에 실질적으로 얼마나 기여했는지 평가하세요
+- 연결된 개인 목표가 있으면: 개인 목표의 달성률·체크인 데이터로 목표 달성 수준을 평가하세요
+- 연결된 목표가 없으면: 자기 기술 내용만으로 평가하되 보수적으로 채점하세요
+- 시스템 데이터와 자기평가 서술의 불일치가 있으면 반드시 채점 근거에 명시하세요
+- 총점 = 각 업적 점수 × 가중치 합산 (가중치 합이 100% 미만이면 비율 환산)
+
+반드시 아래 JSON 형식만 출력하세요:
+{
+  "achievements": [
+${achSchemaExamples}
+  ],
+  "totalScore": 가중합계점수(0~100),
+  "totalRationale": "전체 종합 평가 의견 (한국어 200자 내외, 데이터 기반 객관적 의견)"
+}`;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.4,
+        max_tokens: 1200,
+      }),
+    });
+    if (!response.ok) throw new Error("API 오류");
+    const data = await response.json();
+    const result = JSON.parse(data.choices[0].message.content);
+    // 업적별 점수 배열 처리
+    const achResults = Array.isArray(result.achievements) ? result.achievements : [];
+    const totalScore = Math.min(100, Math.max(0, Number(result.totalScore) || 0));
+    // 하위 호환: totalScore를 score로도 저장
+    evaluation.aiEval = {
+      status: "done",
+      score: totalScore,
+      rationale: result.totalRationale || "",
+      achievementScores: achResults.map(a => ({
+        index: a.index,
+        score: Math.min(100, Math.max(0, Number(a.score) || 0)),
+        rationale: a.rationale || "",
+      })),
+    };
+  } catch (e) {
+    evaluation.aiEval = { status: "failed", error: e.message };
+  }
+  saveState();
+  if (!silent) render();
+}
+
+// ── AI 피드백 생성 ──────────────────────────────────────────────────────────
+
+function buildRefUrls(ref1Keyword, ref2Keyword) {
+  // 검색 결과 페이지 URL (fallback으로 사용)
+  const r1 = ref1Keyword
+    ? { url: `https://m.multicampus.com/search/course/result?searchText=${encodeURIComponent(ref1Keyword)}`, source: "multicampus.com" }
+    : null;
+  const r2 = ref2Keyword
+    ? { url: `https://www.yes24.com/Product/Search?domain=BOOK&query=${encodeURIComponent(ref2Keyword)}`, source: "yes24.com" }
+    : null;
+  return { r1, r2 };
+}
+
+async function fetchFirstSearchResult(searchUrl, keyword, domainKeyword, detailPathValidator, signal) {
+  // GPT-4o-search-preview로 검색 결과 페이지 첫 번째 항목 URL 추출
+  try {
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+      ...(signal ? { signal } : {}),
+      body: JSON.stringify({
+        model: "gpt-4o-search-preview",
+        web_search_options: { search_context_size: "high" },
+        messages: [{
+          role: "user",
+          content: `다음 URL을 방문해서 검색 결과 첫 번째 항목의 링크 URL을 알려주세요:
+${searchUrl}
+
+조건:
+1. "${domainKeyword}" 도메인의 상세 페이지 URL이어야 합니다.
+2. 검색 결과 목록 페이지가 아닌, 개별 항목 상세 페이지여야 합니다.
+3. 첫 번째 항목의 URL 하나만 정확하게 알려주세요.`,
+        }],
+        max_tokens: 300,
+      }),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const annotations = data.choices?.[0]?.message?.annotations || [];
+    const text = data.choices?.[0]?.message?.content || "";
+
+    const tryUrl = (raw) => {
+      try {
+        const u = new URL(raw.trim().replace(/[.,;)>\]'"]+$/, ""));
+        if (!u.hostname.includes(domainKeyword)) return null;
+        if (!detailPathValidator(u)) return null;
+        return u.href;
+      } catch (_) { return null; }
+    };
+
+    for (const ann of annotations) {
+      if (ann.type !== "url_citation") continue;
+      const found = tryUrl(ann.url_citation?.url || "");
+      if (found) return found;
+    }
+    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\]]+/g)) {
+      const found = tryUrl(m[0]);
+      if (found) return found;
+    }
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+  }
+  return null;
+}
+
+async function resolveRefUrls(employeeId, ref1Keyword, ref2Keyword, signal) {
+  // 각 사이트 검색 결과 첫 번째 항목 URL 조회 (백그라운드)
+  const cycle = activeCycle();
+  const ev = (cycle?.evaluations || {})[employeeId];
+  if (!ev?.aiFeedback) return;
+
+  const wrap = (p) => Promise.race([p, new Promise(r => setTimeout(() => r(null), 25000))]).catch(e => { if (e.name === "AbortError") throw e; return null; });
+
+  const [r1Url, r2Url] = await Promise.all([
+    ref1Keyword ? wrap(fetchFirstSearchResult(
+      `https://m.multicampus.com/search/course/result?searchText=${encodeURIComponent(ref1Keyword)}`,
+      ref1Keyword,
+      "multicampus.com",
+      (u) => u.pathname.includes("courseDetaiInfo") || u.pathname.includes("course") || u.searchParams.has("corsCd"),
+      signal
+    )) : Promise.resolve(null),
+    ref2Keyword ? wrap(fetchFirstSearchResult(
+      `https://www.yes24.com/Product/Search?domain=BOOK&query=${encodeURIComponent(ref2Keyword)}`,
+      ref2Keyword,
+      "yes24.com",
+      (u) => u.pathname.includes("/Product/Goods/") || u.pathname.includes("/Product/"),
+      signal
+    )) : Promise.resolve(null),
+  ]);
+
+  let updated = false;
+  if (r1Url) { ev.aiFeedback.ref1Url = r1Url; ev.aiFeedback.ref1Source = "multicampus.com"; updated = true; }
+  if (r2Url) { ev.aiFeedback.ref2Url = r2Url; ev.aiFeedback.ref2Source = "yes24.com"; updated = true; }
+  if (updated) { saveState(); render(); }
+}
+
+async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
+  const cycle = activeCycle();
+  const employee = cycleUsers().find(u => u.id === employeeId);
+  const evaluation = (cycle.evaluations || {})[employeeId];
+  if (!employee || !evaluation) throw new Error("평가 데이터를 찾을 수 없습니다.");
+
+  const rawFeedback = getEvaluatorOverallFeedback(evaluation, employee, true, true);
+  const name = employee.name;
+  const title = employee.title || "";
+  const finalGrade = calculateFinal(employeeId).finalGrade || "";
+  const isDGrade = finalGrade === "D";
+
+  const prompt = isDGrade
+    ? `당신은 인사평가 전문가입니다. 아래는 최종 등급 D를 받은 "${name}(${title})" 님에 대한 인사평가 원문 피드백입니다.
+
+---
+${rawFeedback}
+---
+
+위 피드백을 분석하여 반드시 아래 JSON 형식만 출력하세요. 다른 텍스트는 포함하지 마세요.
+
+[작성 규칙 — D등급 특별 지침]
+- overall: 원문 피드백의 내용을 충실히 반영하여 냉철하고 직설적인 어조로 작성. 미화하거나 완곡하게 표현하지 말 것. 업적·역량·자세·태도 전반에서 조직 기대 수준에 미치지 못한 점을 구체적으로 명시하고, 현 조직이 본인에게 적합하지 않을 수 있으며 새로운 환경을 탐색하는 것이 본인의 성장에 도움이 될 수 있음을 솔직하게 전달. 반드시 한국어 500자 내외의 문단으로 작성.
+- upward: 상향평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 없으면 빈 문자열.
+- peer: 동료평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 없으면 빈 문자열.
+- strengths: 피드백에서 긍정적 키워드 2~3개 (각 10자 이내 단어). 없으면 빈 배열.
+- weaknesses: 피드백에서 개선 필요 키워드 3~4개 (각 10자 이내 단어).
+- suggestions: 현재의 역량 수준과 조직 기대치 간의 간극을 냉철하게 짚고, 이 조직보다 본인의 강점이 더 잘 발휘될 수 있는 다른 환경을 탐색하도록 권유하는 내용을 직설적으로 작성. 번호나 줄바꿈 없이 하나의 자연스러운 문단으로 작성. 한국어 500자 내외.
+- ref1Title: "실업급여"
+- ref1Desc: "고용보험 실업급여 신청 절차 안내"
+- ref2Title: "취업 준비"
+- ref2Desc: "새로운 직장을 탐색할 수 있는 구인구직 사이트"
+
+{
+  "overall": "...",
+  "upward": "...",
+  "peer": "...",
+  "strengths": ["키워드1", "키워드2"],
+  "weaknesses": ["키워드1", "키워드2", "키워드3"],
+  "suggestions": "...",
+  "ref1Title": "실업급여",
+  "ref1Desc": "고용보험 실업급여 신청 절차 안내",
+  "ref2Title": "취업 준비",
+  "ref2Desc": "새로운 직장을 탐색할 수 있는 구인구직 사이트"
+}`
+    : `당신은 인사평가 전문가입니다. 아래는 "${name}(${title})" 님에 대한 인사평가 원문 피드백입니다.
+
+---
+${rawFeedback}
+---
+
+위 피드백을 분석하여 반드시 아래 JSON 형식만 출력하세요. 다른 텍스트는 포함하지 마세요.
+
+[작성 규칙]
+- overall: 원문 피드백(1차·2차 평가)의 내용을 최대한 충실히 반영하되, 과장되거나 강한 표현은 절제하여 균형 있고 자연스럽게 다듬은 종합 피드백. 업적·역량·자세·태도 세 영역의 핵심 내용이 모두 포함되어야 하며, 피평가자가 자신의 평가 결과를 명확히 이해하고 성장 방향을 인식할 수 있도록 작성. 반드시 한국어 500자 내외의 자연스러운 문단으로 작성.
+- upward: 상향평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 상향평가 내용이 없으면 빈 문자열.
+- peer: 동료평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 동료평가 내용이 없으면 빈 문자열.
+- strengths: 피드백에서 반복되는 긍정적 키워드 3~4개 (각 10자 이내 단어).
+- weaknesses: 피드백에서 반복되는 개선 필요 키워드 2~3개 (각 10자 이내 단어).
+- suggestions: 역량 개선 가이드, 강점·단점의 향후 개선 방향, 사업목표 달성을 위한 개선 방향 세 가지 내용을 번호나 줄바꿈 없이 하나의 자연스러운 줄글 문단으로 연결하여 구체적으로 작성. 한국어 500자 내외.
+- ref1Title: 멀티캠퍼스 교육 사이트 검색창에 입력할 키워드. 피평가자의 개선 역량과 관련된 1~3단어 한국어 검색어 (예: "리더십", "커뮤니케이션", "데이터 분석", "프로젝트 관리"). 사이트 검색창에 바로 입력할 수 있는 짧고 구체적인 단어로 작성.
+- ref1Desc: 이 교육이 피평가자에게 도움이 되는 이유 한 문장 (50자 이내).
+- ref2Title: YES24 도서 사이트 검색창에 입력할 키워드. 피평가자의 개선 역량과 관련된 1~3단어 한국어 검색어 (예: "리더십", "커뮤니케이션 기술", "조직 관리"). 사이트 검색창에 바로 입력할 수 있는 짧고 구체적인 단어로 작성.
+- ref2Desc: 이 도서가 피평가자에게 도움이 되는 이유 한 문장 (50자 이내).
+
+{
+  "overall": "...",
+  "upward": "...",
+  "peer": "...",
+  "strengths": ["키워드1", "키워드2", "키워드3"],
+  "weaknesses": ["키워드1", "키워드2"],
+  "suggestions": "...",
+  "ref1Title": "...",
+  "ref1Desc": "...",
+  "ref2Title": "...",
+  "ref2Desc": "..."
+}`;
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    },
+    ...(signal ? { signal } : {}),
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.6,
+      max_tokens: 1600,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `API 오류 (${response.status})`);
+  }
+
+  const data = await response.json();
+  const result = JSON.parse(data.choices[0].message.content);
+
+  // 참고자료 URL 설정
+  if (isDGrade) {
+    // D등급: 실업급여 안내 + 사람인 구직 사이트 고정 링크
+    result.ref1Title  = "실업급여 신청 방법";
+    result.ref1Url    = "https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SD0000015536";
+    result.ref1Source = "gov.kr";
+    result.ref1Desc   = result.ref1Desc || "고용보험 실업급여 신청 절차 안내";
+    result.ref2Title  = "사람인 구인구직";
+    result.ref2Url    = "https://www.saramin.co.kr/zf_user/";
+    result.ref2Source = "saramin.co.kr";
+    result.ref2Desc   = result.ref2Desc || "새로운 직장을 탐색할 수 있는 구인구직 사이트";
+  } else {
+    // 일반 등급: 검색 결과 페이지를 fallback으로 먼저 설정
+    const { r1, r2 } = buildRefUrls(result.ref1Title, result.ref2Title);
+    result.ref1Url    = r1?.url    || "";
+    result.ref1Source = r1?.source || "multicampus.com";
+    result.ref2Url    = r2?.url    || "";
+    result.ref2Source = r2?.source || "yes24.com";
+    // 백그라운드에서 첫 번째 검색 결과 상세 페이지 URL로 업데이트
+    if (result.ref1Title || result.ref2Title) {
+      resolveRefUrls(employeeId, result.ref1Title, result.ref2Title, signal).catch(() => {});
+    }
+  }
+
+  return result;
+}
+
+function renderBulkAIProgressModal() {
+  const ui = state.ui.bulkAIModal;
+  if (!ui || !ui.open) return "";
+
+  const { total, completed, current, errors, startTime, done } = ui;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  // 예상 남은 시간 계산
+  let etaText = "";
+  if (completed > 0 && !done && startTime) {
+    const elapsed = (Date.now() - startTime) / 1000; // seconds
+    const avgPerItem = elapsed / completed;
+    const remaining = Math.ceil(avgPerItem * (total - completed));
+    if (remaining >= 60) {
+      etaText = `약 ${Math.ceil(remaining / 60)}분 ${remaining % 60}초 남음`;
+    } else {
+      etaText = `약 ${remaining}초 남음`;
+    }
+  }
+
+  return `
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3000;display:flex;align-items:center;justify-content:center;">
+      <div style="background:var(--surface);border-radius:16px;padding:36px 40px;width:480px;max-width:95vw;box-shadow:0 24px 60px rgba(0,0,0,.3);">
+        <h2 style="margin:0 0 6px;font-size:18px;display:flex;align-items:center;gap:8px;">
+          🤖 AI 피드백 일괄 생성
+        </h2>
+        <p class="muted" style="margin:0 0 24px;font-size:13px;">
+          ${done ? "생성이 완료되었습니다." : `${esc(current || "")} 처리 중...`}
+        </p>
+
+        <!-- 진행 바 -->
+        <div style="background:var(--line);border-radius:99px;height:10px;overflow:hidden;margin-bottom:10px;">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#6366f1,#8b5cf6);border-radius:99px;transition:width .3s;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <span style="font-size:14px;font-weight:700;color:var(--primary);">${completed} / ${total} 완료 (${pct}%)</span>
+          <span style="font-size:13px;color:var(--muted);">${done ? "" : etaText}</span>
+        </div>
+
+        <!-- 현재 처리 중 -->
+        ${!done && current ? `
+        <div style="background:var(--surface-2);border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;display:flex;align-items:center;gap:8px;">
+          <span class="spinner" style="display:inline-block;width:14px;height:14px;border:2px solid #6366f1;border-top-color:transparent;border-radius:50%;"></span>
+          <span>${esc(current)} AI 피드백 생성 중...</span>
+        </div>` : ""}
+
+        <!-- 오류 목록 -->
+        ${errors.length > 0 ? `
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:12px;color:#991b1b;max-height:100px;overflow-y:auto;">
+          <div style="font-weight:700;margin-bottom:4px;">⚠ 오류 발생 (${errors.length}건)</div>
+          ${errors.map(e => `<div>• ${esc(e)}</div>`).join("")}
+        </div>` : ""}
+
+        <!-- 완료/중지 시 닫기, 진행 중 중지 버튼 -->
+        ${done ? `
+        <div class="notice ${ui.cancelled ? "warn" : "ok"}" style="margin-bottom:16px;">
+          ${ui.cancelled
+            ? `⛔ 중지되었습니다. ${completed}명 완료${errors.length ? `, ${errors.length}명 오류` : ""}.`
+            : `✅ ${completed}명 완료${errors.length ? `, ${errors.length}명 오류` : ""}. 내용을 개별 확인 후 필요 시 수정하세요.`}
+        </div>
+        <button class="button" onclick="App.closeBulkAIModal()" style="width:100%;">닫기</button>
+        ` : `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--muted);">처리가 완료될 때까지 이 창을 닫지 마세요.</span>
+          <div style="display:flex;gap:8px;flex-shrink:0;">
+            <button class="button secondary" onclick="App.cancelBulkAIFeedback()" title="현재 항목 완료 후 중지">⏸ 중지</button>
+            <button class="button" onclick="App.forceStopBulkAIFeedback()" style="background:#dc2626;border-color:#dc2626;" title="현재 처리 중인 요청도 즉시 중단">⛔ 강제 중지</button>
+          </div>
+        </div>
+        `}
+      </div>
+    </div>`;
+}
+
+// ── AI 평가자 성향 분석 모달 ──────────────────────────────────────────────────
+
+function renderAIEvaluatorTendencyModal() {
+  const ui = state.ui.aiTendencyModal;
+  if (!ui || !ui.open) return "";
+
+  const cycle = activeCycle() || selectedCycle();
+  const tendency = cycle?.aiEvaluatorTendency;
+  const running = ui.running;
+  const evaluators = ui.evaluators || [];
+  const completed = ui.completed || 0;
+  const total = ui.total || 0;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  const leniencyBar = (score) => {
+    const clipped = Math.max(0, Math.min(100, score));
+    // 중립(50 근처)이 가장 좋음 → 중간=초록, 양 끝(엄격/관대)=주황→빨강
+    const distFromCenter = Math.abs(clipped - 50);
+    const color = distFromCenter <= 15 ? "#059669" : distFromCenter <= 30 ? "#d97706" : "#dc2626";
+    const label = clipped >= 65 ? "관대" : clipped >= 35 ? "중립" : "엄격";
+    return `
+      <div style="display:flex;align-items:center;gap:8px;flex:1;">
+        <span style="font-size:11px;color:var(--muted);width:28px;">엄격</span>
+        <div style="flex:1;background:var(--line);border-radius:99px;height:8px;position:relative;">
+          <div style="position:absolute;top:50%;transform:translate(-50%,-50%);left:${clipped}%;width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.2);"></div>
+        </div>
+        <span style="font-size:11px;color:var(--muted);width:28px;">관대</span>
+        <span style="font-size:12px;font-weight:700;color:${color};min-width:32px;text-align:right;">${label}</span>
+      </div>`;
+  };
+
+  const resultCards = tendency?.evaluators ? Object.entries(tendency.evaluators).map(([id, ev]) => `
+    <div style="padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <strong style="font-size:14px;">${esc(ev.name)}</strong>
+        <span class="pill" style="font-size:11px;background:var(--primary-lt);color:var(--primary);">${esc(ev.role || "")}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        ${leniencyBar(ev.leniencyScore)}
+      </div>
+      <div style="font-size:13px;color:var(--muted);line-height:1.7;background:var(--surface);padding:10px 14px;border-radius:8px;border:1px solid var(--line);">
+        ${esc(ev.coaching)}
+      </div>
+    </div>`).join("") : "";
+
+  return `
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;">
+      <div style="background:var(--surface);border-radius:16px;width:640px;max-width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.3);">
+        <!-- 헤더 -->
+        <div style="padding:24px 28px 16px;border-bottom:1px solid var(--line);flex-shrink:0;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <h2 style="margin:0;font-size:18px;">🔍 AI 평가자 성향 분석</h2>
+            <button onclick="App.closeAIEvaluatorTendencyModal()" style="width:28px;height:28px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);font-size:16px;cursor:pointer;display:grid;place-items:center;">×</button>
+          </div>
+          <p class="muted" style="margin:6px 0 0;font-size:13px;">1차·2차 평가자의 평가 점수와 피드백을 AI가 분석하여 관대-엄격 성향을 파악하고 코칭 피드백을 제공합니다.</p>
+          ${tendency?.analysedAt ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">마지막 분석: ${esc(formatDateTime(tendency.analysedAt))}</div>` : ""}
+        </div>
+
+        <!-- 본문 -->
+        <div style="flex:1;overflow-y:auto;padding:20px 28px;">
+          ${running ? `
+            <!-- 분석 진행 중 -->
+            <p class="muted" style="margin:0 0 16px;font-size:13px;">${esc(ui.currentName || "")} 분석 중...</p>
+            <div style="background:var(--line);border-radius:99px;height:10px;overflow:hidden;margin-bottom:10px;">
+              <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#0ea5e9,#6366f1);border-radius:99px;transition:width .3s;"></div>
+            </div>
+            <div style="font-size:14px;font-weight:700;color:var(--primary);margin-bottom:20px;">${completed} / ${total} 완료 (${pct}%)</div>
+          ` : tendency?.evaluators ? `
+            <!-- 분석 결과 -->
+            <div style="display:grid;gap:12px;">
+              ${resultCards}
+            </div>
+          ` : `
+            <!-- 미분석 상태 -->
+            <div class="notice" style="background:var(--primary-lt);border-color:var(--primary-mid);">
+              분석 버튼을 클릭하면 모든 1차·2차 평가자를 대상으로 AI 성향 분석을 실행합니다.<br>분석 결과는 덮어쓰기 저장됩니다.
+            </div>
+          `}
+        </div>
+
+        <!-- 하단 버튼 -->
+        <div style="padding:16px 28px;border-top:1px solid var(--line);flex-shrink:0;display:flex;gap:10px;justify-content:flex-end;">
+          ${running ? "" : `<button class="button" onclick="App.runAIEvaluatorTendency()" style="background:linear-gradient(135deg,#0ea5e9,#6366f1);border-color:#0ea5e9;">${tendency?.analysedAt ? "🔄 재분석" : "▶ 분석 시작"}</button>`}
+          <button class="button secondary" onclick="App.closeAIEvaluatorTendencyModal()">닫기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function callAIEvaluatorTendency(evaluatorId, evaluateeList) {
+  const evaluator = userById(evaluatorId);
+  if (!evaluator || !evaluateeList.length) return null;
+  const cycle = activeCycle();
+
+  // 평가자가 실시한 평가 목록 수집
+  const evalData = evaluateeList.map(emp => {
+    const ev = (cycle.evaluations || {})[emp.id];
+    if (!ev) return null;
+    const isFirst  = emp.evaluator1Id === evaluatorId;
+    const isSecond = emp.evaluator2Id === evaluatorId;
+    const stage = isFirst ? "first" : isSecond ? "second" : null;
+    if (!stage || ev.status[stage] !== "completed") return null;
+    const stageEv = ev[stage];
+    const selfEv  = ev.self;
+    const perfScore = stageEv?.performance ? (() => { const v = deriveComponentScore(stageEv.performance); return v == null ? null : v; })() : null;
+    const selfPerfScore = selfEv?.performance ? (() => { const v = deriveComponentScore(selfEv.performance); return v == null ? null : v; })() : null;
+    return {
+      name: emp.name,
+      stage: stage === "first" ? "1차" : "2차",
+      perfScore,
+      selfPerfScore,
+      feedback: stageEv?.performance?.comment || stageEv?.overallFeedback || "",
+    };
+  }).filter(Boolean);
+
+  if (!evalData.length) return null;
+
+  const evalLines = evalData.map((e, i) =>
+    `평가 ${i+1} (${e.stage} / ${e.name}): 업적평가 점수=${e.perfScore ?? "미기재"}, 자기평가 점수=${e.selfPerfScore ?? "미기재"}, 피드백="${(e.feedback || "").slice(0, 200)}"`
+  ).join("\n");
+
+  const prompt = `당신은 HR 전문가입니다. 아래는 "${evaluator.name}(${evaluator.title || ""})" 평가자가 수행한 평가 목록입니다.
+
+---
+${evalLines}
+---
+
+위 데이터를 분석하여 이 평가자의 평가 성향을 진단하고 코칭 피드백을 작성하세요.
+leniencyScore는 0(매우 엄격)~100(매우 관대) 스펙트럼에서 이 평가자의 위치를 수치로 나타냅니다.
+자기평가 대비 평가 점수 차이, 피드백 톤, 점수 분포를 종합적으로 고려하세요.
+
+반드시 아래 JSON만 출력하세요:
+{
+  "leniencyScore": 숫자(0~100),
+  "leniencyLabel": "매우 엄격/엄격/약간 엄격/중립/약간 관대/관대/매우 관대 중 하나",
+  "coaching": "평가자 코칭 피드백 (한국어 300자 내외, 평가 패턴·강점·개선점 포함)"
+}`;
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.4,
+      max_tokens: 600,
+    }),
+  });
+  if (!response.ok) throw new Error(`API 오류 (${response.status})`);
+  const data = await response.json();
+  return JSON.parse(data.choices[0].message.content);
+}
+
+function renderPwChangeModal() {
+  const forced = state.ui.pwChangeForced;
+  return `
+    <div class="goal-modal-overlay" style="z-index:500;" ${forced ? "" : `onclick="if(event.target===this)App.closePwChangeModal()"`}>
+      <div class="goal-modal" style="max-width:400px;">
+        <div class="goal-modal-head">
+          <h2>🔒 비밀번호 변경${forced ? " (필수)" : ""}</h2>
+          ${forced ? "" : `<button class="modal-x" onclick="App.closePwChangeModal()">×</button>`}
+        </div>
+        <div class="goal-modal-body" style="padding:24px 20px 8px;">
+          ${forced ? `<p style="margin:0 0 16px;font-size:14px;color:var(--muted);">초기 비밀번호를 사용 중입니다. 새 비밀번호를 설정해 주세요.</p>` : ""}
+          <div class="field" style="margin-bottom:12px;">
+            <label for="pw_change_new">새 비밀번호</label>
+            <input id="pw_change_new" type="password" autocomplete="new-password" placeholder="새 비밀번호 입력" />
+          </div>
+          <div class="field" style="margin-bottom:20px;">
+            <label for="pw_change_confirm">비밀번호 확인</label>
+            <input id="pw_change_confirm" type="password" autocomplete="new-password" placeholder="새 비밀번호 재입력" />
+          </div>
+          <div id="pw_change_error" style="color:#dc2626;font-size:13px;margin-bottom:12px;display:none;"></div>
+        </div>
+        <div class="goal-modal-foot" style="padding:0 20px 20px;">
+          <button class="button" onclick="App.submitPwChange()">변경 완료</button>
+          ${forced ? "" : `<button class="button secondary" onclick="App.closePwChangeModal()" style="margin-left:8px;">취소</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderAIFeedbackModal() {
+  const ui = state.ui.aiModal;
+  if (!ui || !ui.open) return "";
+  const employeeId = ui.employeeId;
+  const cycle = activeCycle();
+  const employee = cycleUsers().find(u => u.id === employeeId);
+  const evaluation = (cycle?.evaluations || {})[employeeId];
+  if (!employee || !evaluation) return "";
+
+  const ai = evaluation.aiFeedback || {};
+  const generating = ui.generating || false;
+  const hasResult = Boolean(ai.generatedAt);
+
+  const fieldRow = (label, id, value, rows = 4) => `
+    <div class="field" style="margin-bottom:12px;">
+      <label style="font-weight:600;color:var(--primary);margin-bottom:4px;display:block;">${label}</label>
+      <textarea id="ai_field_${id}" rows="${rows}" style="width:100%;font-size:13px;line-height:1.6;resize:vertical;">${esc(value || "")}</textarea>
+    </div>`;
+
+  const keywordField = (label, id, values) => `
+    <div class="field" style="margin-bottom:12px;">
+      <label style="font-weight:600;color:var(--primary);margin-bottom:4px;display:block;">${label}</label>
+      <input id="ai_field_${id}" type="text" value="${esc(Array.isArray(values) ? values.join(", ") : (values || ""))}"
+        style="width:100%;font-size:13px;padding:8px;" placeholder="키워드를 쉼표로 구분하여 입력" />
+    </div>`;
+
+  const refCard = (n) => {
+    const refTitle  = ai[`ref${n}Title`]  || "";
+    const refUrl    = ai[`ref${n}Url`]    || "";
+    const refSource = ai[`ref${n}Source`] || "";
+    const refDesc   = ai[`ref${n}Desc`]   || "";
+    return `
+    <div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px;background:var(--surface-2);">
+      <div class="field" style="margin-bottom:8px;">
+        <label style="font-size:12px;color:var(--muted);">게시물 제목</label>
+        <input id="ai_field_ref${n}Title" type="text" value="${esc(refTitle)}" style="width:100%;font-size:13px;padding:6px;" />
+      </div>
+      <div class="field" style="margin-bottom:8px;">
+        <label style="font-size:12px;color:var(--muted);">URL (blog.naver.com, brunch.co.kr 등 실제 링크)</label>
+        <input id="ai_field_ref${n}Url" type="url" value="${esc(refUrl)}" style="width:100%;font-size:13px;padding:6px;" />
+      </div>
+      <div class="field" style="margin-bottom:8px;">
+        <label style="font-size:12px;color:var(--muted);">출처 (blog.naver.com 등)</label>
+        <input id="ai_field_ref${n}Source" type="text" value="${esc(refSource)}" style="width:100%;font-size:13px;padding:6px;" />
+      </div>
+      <div class="field" style="margin-bottom:${refUrl ? "6px" : "0"};">
+        <label style="font-size:12px;color:var(--muted);">한 줄 설명</label>
+        <input id="ai_field_ref${n}Desc" type="text" value="${esc(refDesc)}" style="width:100%;font-size:13px;padding:6px;" />
+      </div>
+      ${refUrl ? `<a href="${esc(refUrl)}" target="_blank" rel="noopener" style="font-size:11px;color:#6366f1;">🔗 링크 열어보기 →</a>` : ""}
+    </div>`;
+  };
+
+  return `
+    <div class="goal-modal-overlay" style="z-index:700;" onclick="if(event.target===this)App.closeAIFeedbackModal()">
+      <div class="goal-modal" style="max-width:760px;width:100%;max-height:90vh;overflow-y:auto;">
+        <div class="goal-modal-head" style="position:sticky;top:0;z-index:1;background:var(--surface);">
+          <div>
+            <h2 style="display:flex;align-items:center;gap:8px;">🤖 AI 피드백 생성 <span class="muted" style="font-size:14px;font-weight:400;">— ${esc(employee.name)}</span></h2>
+          </div>
+          <button class="modal-x" onclick="App.closeAIFeedbackModal()">×</button>
+        </div>
+        <div class="goal-modal-body">
+          ${hasResult ? `<div class="notice ok" style="margin-bottom:12px;">✅ AI 피드백이 생성되었습니다 (${ai.generatedAt ? ai.generatedAt.slice(0,16).replace("T"," ") : ""}). 내용을 검토·수정 후 저장하세요.</div>` : ""}
+          <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:16px;">
+            <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;">원문 피드백 (AI 생성 재료)</div>
+            <pre style="font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;max-height:160px;overflow-y:auto;color:var(--text);">${esc(getEvaluatorOverallFeedback(evaluation, employee, true, true))}</pre>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">
+            <button class="button" onclick="App.generateAIFeedback('${employeeId}')" ${generating ? "disabled" : ""} style="display:flex;align-items:center;gap:6px;">
+              ${generating ? `<span class="spinner" style="width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin .7s linear infinite;"></span> 생성 중…` : "🤖 AI 생성"}
+            </button>
+            ${hasResult ? `<span class="muted" style="font-size:12px;">내용을 수정한 뒤 저장할 수 있습니다.</span>` : `<span class="muted" style="font-size:12px;">버튼을 눌러 AI 피드백을 생성하세요.</span>`}
+          </div>
+
+          <h3 style="margin:0 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">📋 종합 평가 피드백</h3>
+          ${fieldRow("종합 평가 피드백", "overall", ai.overall, 5)}
+
+          <h3 style="margin:12px 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">⬆ 상향평가 피드백</h3>
+          ${fieldRow("상향평가 피드백 (없으면 빈칸)", "upward", ai.upward, 3)}
+
+          <h3 style="margin:12px 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">👥 동료평가 피드백</h3>
+          ${fieldRow("동료평가 피드백 (없으면 빈칸)", "peer", ai.peer, 3)}
+
+          <h3 style="margin:12px 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">✨ 강점 &amp; 개선점 키워드</h3>
+          ${keywordField("강점 키워드 (쉼표 구분)", "strengths", ai.strengths)}
+          ${keywordField("개선 필요 키워드 (쉼표 구분)", "weaknesses", ai.weaknesses)}
+
+          <h3 style="margin:12px 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">💡 제언</h3>
+          ${fieldRow("제언 (역량 개선 가이드 / 강점·단점 개선방향 / 사업목표 달성 방향)", "suggestions", ai.suggestions, 6)}
+
+          <h3 style="margin:12px 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">📚 참고자료</h3>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">검색 키워드 입력 시 네이버 검색 링크가 자동 생성됩니다.</div>
+          ${refCard(1)}
+          ${refCard(2)}
+        </div>
+        <div class="goal-modal-foot" style="position:sticky;bottom:0;z-index:1;background:var(--surface);border-top:1px solid var(--line);padding:12px 20px;display:flex;gap:8px;justify-content:flex-end;">
+          <button class="button secondary" onclick="App.closeAIFeedbackModal()">닫기</button>
+          <button class="button" onclick="App.saveAIFeedback('${employeeId}')">💾 저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function filterSupplementalFeedbackBlocks(text, includeUpward, includePeer) {
+  const raw = String(text || "").trim();
+  if (!raw || (includeUpward && includePeer)) return raw;
+  return raw
+    .split(/\n{2,}/)
+    .filter((block) => {
+      const head = block.trim();
+      if (!includeUpward && /^상향평가/.test(head)) return false;
+      if (!includePeer && /^동료평가/.test(head)) return false;
+      return true;
+    })
+    .join("\n\n");
+}
+
+function formatPublishedFeedbackText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const blocks = raw.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (blocks.length <= 1) return raw;
+  const output = [];
+  let activeSupplementalType = "";
+  let supplementalLines = [];
+  const flushSupplemental = () => {
+    if (!activeSupplementalType) return;
+    output.push(`${activeSupplementalType}:\n${supplementalLines.join("\n")}`);
+    activeSupplementalType = "";
+    supplementalLines = [];
+  };
+  blocks.forEach((block) => {
+    const supplementalMatch = block.match(/^(상향평가|동료평가)\d+\s*:/);
+    if (supplementalMatch) {
+      const type = supplementalMatch[1];
+      if (activeSupplementalType && activeSupplementalType !== type) flushSupplemental();
+      activeSupplementalType = type;
+      supplementalLines.push(block);
+      return;
+    }
+    flushSupplemental();
+    output.push(block);
+  });
+  flushSupplemental();
+  return output.join("\n\n");
+}
+
+function getEvaluatorOverallFeedback(evaluation, employee, includeUpward = true, includePeer = true) {
+  const COMPONENT_NAMES = { performance: "업적평가", competency: "역량평가", attitude: "자세·태도평가" };
+  const stages = ["first", "second"].filter((stage) => shouldShowStage(employee, stage));
+  const feedbackGroups = [];
+  stages.forEach((stage) => {
+    const stageEv = evaluation[stage];
+    if (!stageEv) return;
+    const lines = COMPONENTS
+      .map((c) => ({ label: COMPONENT_NAMES[c], comment: String(stageEv[c]?.comment || "").trim() }))
+      .filter((x) => x.comment)
+      .map((x) => `${x.label}: ${x.comment}`);
+    if (lines.length) feedbackGroups.push(`${STAGE_LABELS[stage]}:\n${lines.join("\n")}`);
+  });
+  const upwardFeedbacks = includeUpward ? getSupplementalFeedbacks(employee, "upward") : [];
+  const peerFeedbacks = includePeer ? getSupplementalFeedbacks(employee, "peer") : [];
+  if (upwardFeedbacks.length) feedbackGroups.push(`상향평가:\n${upwardFeedbacks.map((item) => `${item.label}: ${item.text}`).join("\n")}`);
+  if (peerFeedbacks.length) feedbackGroups.push(`동료평가:\n${peerFeedbacks.map((item) => `${item.label}: ${item.text}`).join("\n")}`);
+  if (feedbackGroups.length) return feedbackGroups.join("\n\n");
+  return "최종 평가 피드백이 아직 입력되지 않았습니다.";
+}
+
+function getSupplementalFeedbacks(employee, type = "") {
+  const upwardComments = getUpwardAssignments()
+    .filter((assignment) => assignment.targetId === employee.id && isCompletedStatus(assignment.status) && String(assignment.answer?.comment || "").trim())
+    .map((assignment, index) => ({ stage: "upward", label: `상향평가${index + 1}`, text: assignment.answer.comment.trim() }));
+  const peerComments = getPeerAssignments()
+    .filter((assignment) => assignment.targetId === employee.id && isCompletedStatus(assignment.status) && String(assignment.answer?.comment || "").trim())
+    .map((assignment, index) => ({ stage: "peer", label: `동료평가${index + 1}`, text: assignment.answer.comment.trim() }));
+  if (type === "upward") return upwardComments;
+  if (type === "peer") return peerComments;
+  return [...upwardComments, ...peerComments];
+}
+
+function roleSelect(id, selected) {
+  return `<select id="${id}">${Object.entries(ROLE_LABELS).map(([role, label]) => `<option value="${role}" ${selected === role ? "selected" : ""}>${label}</option>`).join("")}</select>`;
+}
+
+function userSelect(id, selected, options) {
+  return `<select id="${id}"><option value="">-</option>${options.map((user) => `<option value="${user.id}" ${selected === user.id ? "selected" : ""}>${esc(user.name)} · ${ROLE_LABELS[user.role] || user.role}</option>`).join("")}</select>`;
+}
+
+function userOptionLabel(user) {
+  if (!user) return "";
+  return `${user.name} · ${ROLE_LABELS[user.role] || user.role}${user.employeeNo ? ` · ${user.employeeNo}` : ""}`;
+}
+
+function userPicker(id, selected, options, listId = "") {
+  const selectedUser = userById(selected);
+  const resolvedListId = listId || `${id}_list`;
+  return `
+    <input id="${id}" list="${resolvedListId}" value="${esc(userOptionLabel(selectedUser))}" placeholder="이름으로 검색" autocomplete="off" />
+    ${listId ? "" : `<datalist id="${resolvedListId}">${options.map((user) => `<option value="${esc(userOptionLabel(user))}"></option>`).join("")}</datalist>`}
+  `;
+}
+
+function userIdFromPicker(id, options = state.users) {
+  const raw = valueOf(id).trim();
+  if (!raw) return "";
+  const byLabel = options.find((user) => userOptionLabel(user) === raw);
+  if (byLabel) return byLabel.id;
+  const byName = options.filter((user) => user.name === raw);
+  if (byName.length === 1) return byName[0].id;
+  const byId = options.find((user) => user.id === raw || user.employeeNo === raw);
+  return byId?.id || "";
+}
+
+function personSearchText(user) {
+  return [user.name, user.employeeNo, ROLE_LABELS[user.role], user.title, user.orgRoot, user.division, user.team]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function upwardAssignmentSearchText(assignment) {
+  const evaluator = userById(assignment.evaluatorId);
+  const target = userById(assignment.targetId);
+  return [personSearchText(evaluator || {}), personSearchText(target || {}), "상향평가"]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function gradeSelect(id, selected, employeeId = "", autoGrade = "") {
+  const changeHandler = employeeId ? ` onchange="App.handleAdjustmentGradeChange('${employeeId}')"` : "";
+  const dataAttrs = employeeId ? ` data-auto-grade="${esc(autoGrade)}" data-previous="${esc(selected || "")}"` : "";
+  return `<select id="${id}"${dataAttrs}${changeHandler}><option value="" ${selected ? "" : "selected"}>-</option>${GRADES.map((grade) => `<option value="${grade}" ${selected === grade ? "selected" : ""}>${grade}</option>`).join("")}</select>`;
+}
+
+// 프롬프트/자동갱신 없는 단순 등급 조정 select (최종 승인·최종 조정 공용)
+// CSV 한 줄을 필드 배열로 (따옴표 처리, 구분자 지정)
+function parseCsvLine(line, delim = ",") {
+  const out = [];
+  let cur = "", inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else cur += ch;
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === delim) { out.push(cur); cur = ""; }
+      else cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+// 구분자 자동 감지 (탭 / 쉼표 / 세미콜론)
+function detectCsvDelimiter(text) {
+  const sample = text.split(/\r?\n/).slice(0, 12).join("\n");
+  const counts = { "\t": (sample.match(/\t/g) || []).length, ",": (sample.match(/,/g) || []).length, ";": (sample.match(/;/g) || []).length };
+  let best = ",", max = -1;
+  for (const d of ["\t", ",", ";"]) { if (counts[d] > max) { max = counts[d]; best = d; } }
+  return max > 0 ? best : ",";
+}
+
+// ArrayBuffer를 UTF-8 우선, 실패 시 EUC-KR(CP949)로 디코드
+function decodeCsvBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  try {
+    const utf8 = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    // 한글 헤더가 보이거나 깨짐 문자가 거의 없으면 UTF-8 채택
+    if (utf8.includes("문항명") || !utf8.includes("�")) return utf8.replace(/^﻿/, "");
+  } catch (e) {}
+  try {
+    const euckr = new TextDecoder("euc-kr").decode(bytes);
+    return euckr.replace(/^﻿/, "");
+  } catch (e) {
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes).replace(/^﻿/, "");
+  }
+}
+
+// 템플릿 양식 CSV 파싱 → { label, question, guide, items[] }
+function parseTemplateCsv(text) {
+  const delim = detectCsvDelimiter(text);
+  const rows = text.split(/\r?\n/).filter(l => l.trim()).map(l => parseCsvLine(l, delim));
+  return parseTemplateRows(rows);
+}
+
+// 2차원 셀 배열 → 템플릿 데이터 (CSV/XLSX 공용)
+function parseTemplateRows(rows) {
+  const result = { label: "", question: "", guide: "", items: [] };
+  let inItems = false;
+  for (const cols of rows) {
+    const c0 = String(cols[0] ?? "").trim();
+    const c1 = String(cols[1] ?? "").trim();
+    if (!c0 && !c1) continue;
+    if (c0.startsWith("#")) continue;
+    if (c0 === "템플릿 이름") { result.label = c1; continue; }
+    if (c0.startsWith("질문 제목")) { result.question = c1; continue; }
+    if (c0.startsWith("가이드")) { result.guide = c1; continue; }
+    if (c0 === "문항명") { inItems = true; continue; }
+    if (inItems) {
+      if (!c0 || c0.startsWith("예)")) continue;  // 빈 행/예시 행 제외
+      result.items.push({ name: c0, guide: c1, required: true });
+    }
+  }
+  return result;
+}
+
+// ─────────── 최소 XLSX 읽기/쓰기 (라이브러리 없음) ───────────
+const _CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t;
+})();
+function _crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = _CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function _strBytes(s) { return new TextEncoder().encode(s); }
+
+// ZIP writer (stored, 무압축) — Excel이 정상적으로 엽니다
+function buildZip(files) {
+  const enc = [];
+  const central = [];
+  let offset = 0;
+  const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+  const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+  files.forEach(f => {
+    const nameB = _strBytes(f.name);
+    const data = f.data;
+    const crc = _crc32(data);
+    const local = [].concat(u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(data.length), u32(data.length), u16(nameB.length), u16(0));
+    enc.push(new Uint8Array(local), nameB, data);
+    const cen = [].concat(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(data.length), u32(data.length), u16(nameB.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset));
+    central.push(new Uint8Array(cen), nameB);
+    offset += local.length + nameB.length + data.length;
+  });
+  const centralStart = offset;
+  let centralSize = 0;
+  central.forEach(b => centralSize += b.length);
+  const eocd = new Uint8Array([].concat(u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length), u32(centralSize), u32(centralStart), u16(0)));
+  const parts = [...enc, ...central, eocd];
+  let total = 0; parts.forEach(p => total += p.length);
+  const out = new Uint8Array(total); let pos = 0;
+  parts.forEach(p => { out.set(p, pos); pos += p.length; });
+  return out;
+}
+
+function _xmlEsc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function _colRef(c) { let s = "", n = c + 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+
+// 2D 배열 → xlsx (inlineStr 사용)
+function buildXlsx(rows) {
+  const sheetRows = rows.map((row, r) => {
+    const cells = row.map((val, c) => {
+      const v = (val == null) ? "" : String(val);
+      return `<c r="${_colRef(c)}${r+1}" t="inlineStr"><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+    }).join("");
+    return `<row r="${r+1}">${cells}</row>`;
+  }).join("");
+  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`;
+  const wbXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+  const wbRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`;
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  return buildZip([
+    { name: "[Content_Types].xml", data: _strBytes(contentTypes) },
+    { name: "_rels/.rels", data: _strBytes(rootRels) },
+    { name: "xl/workbook.xml", data: _strBytes(wbXml) },
+    { name: "xl/_rels/workbook.xml.rels", data: _strBytes(wbRels) },
+    { name: "xl/worksheets/sheet1.xml", data: _strBytes(sheetXml) },
+  ]);
+}
+
+// ── tiny-inflate (raw DEFLATE 해제) ──
+function _inflateRaw(input) {
+  // 기반: tinf (간결 구현)
+  const out = []; let oc = 0;
+  const bitBuf = { d: input, p: 0, b: 0, n: 0 };
+  const getbit = () => {
+    if (bitBuf.n === 0) { bitBuf.b = bitBuf.d[bitBuf.p++]; bitBuf.n = 8; }
+    const r = bitBuf.b & 1; bitBuf.b >>= 1; bitBuf.n--; return r;
+  };
+  const getbits = (num) => { let v = 0; for (let i = 0; i < num; i++) v |= getbit() << i; return v; };
+  const buildTree = (lengths, off, num) => {
+    const counts = new Array(16).fill(0);
+    for (let i = 0; i < num; i++) counts[lengths[off + i]]++;
+    counts[0] = 0;
+    const offs = new Array(16).fill(0);
+    for (let i = 1; i < 16; i++) offs[i] = offs[i - 1] + counts[i - 1];
+    const codes = new Array(num);
+    for (let i = 0; i < num; i++) if (lengths[off + i]) codes[offs[lengths[off + i]]++] = i;
+    return { counts, symbols: codes };
+  };
+  function decode(tree) {
+    let code = 0, first = 0, index = 0;
+    for (let len = 1; len <= 15; len++) {
+      code |= getbit();
+      const count = tree.counts[len];
+      if (code - first < count) return tree.symbols[index + (code - first)];
+      index += count; first += count; first <<= 1; code <<= 1;
+    }
+    return -1;
+  }
+  const LBASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+  const LEXT  = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+  const DBASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+  const DEXT  = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+  const fixedLitLengths = (() => { const l = new Array(288); let i=0; for (;i<144;i++) l[i]=8; for(;i<256;i++) l[i]=9; for(;i<280;i++) l[i]=7; for(;i<288;i++) l[i]=8; return l; })();
+  function inflateBlock(litTree, distTree) {
+    for (;;) {
+      const sym = decode(litTree);
+      if (sym === 256) return;
+      if (sym < 256) { out[oc++] = sym; }
+      else {
+        const s = sym - 257;
+        const length = LBASE[s] + getbits(LEXT[s]);
+        const dsym = decode(distTree);
+        const dist = DBASE[dsym] + getbits(DEXT[dsym]);
+        let start = oc - dist;
+        for (let i = 0; i < length; i++) out[oc++] = out[start + i];
+      }
+    }
+  }
+  for (;;) {
+    const last = getbit();
+    const type = getbits(2);
+    if (type === 0) {
+      // stored
+      bitBuf.n = 0; // 바이트 정렬
+      const len = bitBuf.d[bitBuf.p] | (bitBuf.d[bitBuf.p+1] << 8); bitBuf.p += 4;
+      for (let i = 0; i < len; i++) out[oc++] = bitBuf.d[bitBuf.p++];
+    } else if (type === 1) {
+      const litTree = buildTree(fixedLitLengths, 0, 288);
+      const distLengths = new Array(30).fill(5);
+      const distTree = buildTree(distLengths, 0, 30);
+      inflateBlock(litTree, distTree);
+    } else if (type === 2) {
+      const hlit = getbits(5) + 257;
+      const hdist = getbits(5) + 1;
+      const hclen = getbits(4) + 4;
+      const order = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+      const clLengths = new Array(19).fill(0);
+      for (let i = 0; i < hclen; i++) clLengths[order[i]] = getbits(3);
+      const clTree = buildTree(clLengths, 0, 19);
+      const lengths = new Array(hlit + hdist).fill(0);
+      let n = 0;
+      while (n < hlit + hdist) {
+        const sym = decode(clTree);
+        if (sym < 16) lengths[n++] = sym;
+        else if (sym === 16) { const r = getbits(2) + 3; const prev = lengths[n-1]; for (let i=0;i<r;i++) lengths[n++]=prev; }
+        else if (sym === 17) { const r = getbits(3) + 3; for (let i=0;i<r;i++) lengths[n++]=0; }
+        else { const r = getbits(7) + 11; for (let i=0;i<r;i++) lengths[n++]=0; }
+      }
+      const litTree = buildTree(lengths, 0, hlit);
+      const distTree = buildTree(lengths, hlit, hdist);
+      inflateBlock(litTree, distTree);
+    } else { throw new Error("bad block type"); }
+    if (last) break;
+  }
+  return new Uint8Array(out);
+}
+
+// ZIP reader → { name: Uint8Array }
+function unzip(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // EOCD 찾기
+  let eo = bytes.length - 22;
+  while (eo >= 0 && dv.getUint32(eo, true) !== 0x06054b50) eo--;
+  if (eo < 0) throw new Error("ZIP EOCD not found");
+  const count = dv.getUint16(eo + 10, true);
+  let cd = dv.getUint32(eo + 16, true);
+  const out = {};
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(cd, true) !== 0x02014b50) break;
+    const method = dv.getUint16(cd + 10, true);
+    const compSize = dv.getUint32(cd + 20, true);
+    const nameLen = dv.getUint16(cd + 28, true);
+    const extraLen = dv.getUint16(cd + 30, true);
+    const commentLen = dv.getUint16(cd + 32, true);
+    const lho = dv.getUint32(cd + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(cd + 46, cd + 46 + nameLen));
+    // local header
+    const lNameLen = dv.getUint16(lho + 26, true);
+    const lExtraLen = dv.getUint16(lho + 28, true);
+    const dataStart = lho + 30 + lNameLen + lExtraLen;
+    const comp = bytes.subarray(dataStart, dataStart + compSize);
+    out[name] = method === 0 ? comp : _inflateRaw(comp);
+    cd += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+// xlsx → 2D 배열 (첫 시트)
+function parseXlsx(bytes) {
+  const files = unzip(bytes);
+  const dec = new TextDecoder();
+  // sharedStrings
+  const shared = [];
+  if (files["xl/sharedStrings.xml"]) {
+    const xml = dec.decode(files["xl/sharedStrings.xml"]);
+    const siRe = /<si\b[^>]*>([\s\S]*?)<\/si>/g; let m;
+    while ((m = siRe.exec(xml))) {
+      const texts = [...m[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(x => _xmlUnesc(x[1]));
+      shared.push(texts.join(""));
+    }
+  }
+  // 첫 워크시트 찾기
+  const sheetName = Object.keys(files).find(n => /^xl\/worksheets\/sheet1\.xml$/i.test(n))
+    || Object.keys(files).find(n => /^xl\/worksheets\/.*\.xml$/i.test(n));
+  if (!sheetName) throw new Error("워크시트를 찾을 수 없습니다.");
+  const sx = dec.decode(files[sheetName]);
+  const rows = [];
+  const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g; let rm;
+  while ((rm = rowRe.exec(sx))) {
+    const cells = [];
+    const cRe = /<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g; let cm;
+    while ((cm = cRe.exec(rm[1]))) {
+      const attrs = cm[1] || cm[3] || "";
+      const inner = cm[2] || "";
+      const ref = (attrs.match(/r="([A-Z]+)\d+"/) || [])[1] || "";
+      const col = _refToCol(ref);
+      const t = (attrs.match(/t="([^"]+)"/) || [])[1] || "";
+      let val = "";
+      if (t === "inlineStr") {
+        val = [...inner.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(x => _xmlUnesc(x[1])).join("");
+      } else if (t === "s") {
+        const idx = parseInt((inner.match(/<v>([\s\S]*?)<\/v>/) || [])[1] || "-1", 10);
+        val = shared[idx] != null ? shared[idx] : "";
+      } else {
+        val = _xmlUnesc((inner.match(/<v>([\s\S]*?)<\/v>/) || [])[1] || "");
+      }
+      if (col >= 0) cells[col] = val; else cells.push(val);
+    }
+    rows.push(cells);
+  }
+  return rows;
+}
+// Excel 날짜 셀 → YYYY-MM-DD 문자열
+// Excel은 날짜를 시리얼 정수(1900-01-01 기준)로 저장하므로 변환이 필요함
+function excelCellToDateStr(val) {
+  const s = String(val ?? "").trim();
+  if (!s) return "";
+  // 이미 날짜 문자열 형식인 경우 (YYYY-MM-DD, YYYY/MM/DD 등)
+  if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(s)) return s.replace(/[/.]/g, "-");
+  // Excel 시리얼 숫자인 경우
+  const num = Number(s);
+  if (Number.isFinite(num) && num > 1000 && num < 200000) {
+    // 25569 = Unix 에포크(1970-01-01)와 Excel 기준일(1900-01-01) 간 일수 차이
+    const d = new Date(Math.round((num - 25569) * 86400 * 1000));
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return s;
+}
+
+function _xmlUnesc(s) {
+  return String(s)
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,"&");
+}
+function _refToCol(ref) { const m = String(ref).match(/^([A-Z]+)/); if (!m) return -1; let n = 0; for (const ch of m[1]) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; }
+
+function adjGradeSelectPlain(id, selected, opts = {}) {
+  const dataDefault = ` data-default="${esc(selected || "")}"`;
+  const onchange = opts.onchange ? ` onchange="${opts.onchange}"` : "";
+  return `<select id="${id}"${dataDefault}${onchange} style="width:72px;font-weight:700;">${GRADES.map((grade) => `<option value="${grade}" ${selected === grade ? "selected" : ""}>${grade}</option>`).join("")}</select>`;
+}
+
+function stageStatusBadge(status) {
+  if (isCompletedStatus(status)) return '<span class="pill green">완료</span>';
+  if (status === "submitted") return '<span class="pill green">제출</span>';
+  if (status === "draft") return '<span class="pill amber">작성 중</span>';
+  return '<span class="pill amber">대기</span>';
+}
+
+function statusPill(status, ready) {
+  if (isCompletedStatus(status)) return '<span class="pill green">완료</span>';
+  if (!ready) return '<span class="pill amber">기간/단계 대기</span>';
+  return '<span class="pill blue">평가 필요</span>';
+}
+
+function isCompletedStatus(status) {
+  return status === "completed" || status === "submitted";
+}
+
+function gradeBadge(grade) {
+  const safeGrade = GRADES.includes(grade) ? grade : "D";
+  return `<span class="grade ${safeGrade}">${safeGrade}</span>`;
+}
+
+// 등급 조정 1단계 이내인지 검사. true = 허용, false = 초과
+function isGradeAdjWithinOneStep(baseGrade, newGrade) {
+  if (!GRADES.includes(baseGrade) || !GRADES.includes(newGrade)) return true;
+  return Math.abs(GRADES.indexOf(newGrade) - GRADES.indexOf(baseGrade)) <= 1;
+}
+
+function average(values) {
+  return values.reduce((total, value) => total + Number(value || 0), 0) / values.length;
+}
+
+function toNumberOrNull(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function clampScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  return Math.max(0, Math.min(100, Math.round(number)));
+}
+
+function valueOf(id) {
+  const element = document.getElementById(id);
+  return element ? element.value : "";
+}
+
+function checked(id) {
+  const element = document.getElementById(id);
+  return Boolean(element?.checked);
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function escAttr(value) {
+  return esc(value);
+}
+
+function jsLiteral(value) {
+  return esc(JSON.stringify(value ?? ""));
+}
+
+function slugId(value) {
+  return String(value ?? "").replace(/[^0-9A-Za-z가-힣_-]+/g, "_");
+}
+
+function nl2br(value) {
+  return esc(value).replace(/\n/g, "<br />");
+}
+
+function collectReviewFromDom(prefix, current = {}, employee = currentUser()) {
+  const next = clone(current);
+  COMPONENTS.forEach((component) => {
+    const template = templateFor(employee, component);
+    next[component] = next[component] || {};
+    if (component === "performance") {
+      const existing = next.performance.achievements || [];
+      next.performance.achievements = existing.map((item, index) => ({
+        name: valueOf(`${prefix}_performance_ach_${index}_name`),
+        goal: valueOf(`${prefix}_performance_ach_${index}_goal`),
+        achievementLevel: valueOf(`${prefix}_performance_ach_${index}_achievementLevel`) || item.achievementLevel || "",
+        detail: valueOf(`${prefix}_performance_ach_${index}_detail`),
+        weight: Number(valueOf(`${prefix}_performance_ach_${index}_weight`) || item.weight || 0),
+        score: clampScore(valueOf(`${prefix}_performance_ach_${index}_score`)),
+        grade: gradeByTemplateScore("performance", valueOf(`${prefix}_performance_ach_${index}_score`), employee),
+        linkedGoalId: valueOf(`${prefix}_performance_ach_${index}_linkedGoalId`) || item.linkedGoalId || "",
+        linkedTeamGoalId: valueOf(`${prefix}_performance_ach_${index}_linkedTeamGoalId`) || item.linkedTeamGoalId || "",
+      }));
+      next.performance.score = deriveComponentScore(next.performance) ?? "";
+      next.performance.comment = valueOf(`${prefix}_performance_comment`);
+    } else {
+      next[component].itemScores = {};
+      template.items.forEach((_, index) => {
+        next[component].itemScores[index] = clampScore(valueOf(`${prefix}_${component}_item_${index}_score`));
+      });
+      next[component].score = deriveComponentScore(next[component]) ?? "";
+      next[component].grade = gradeByTemplateScore(component, next[component].score, employee);
+      next[component].comment = valueOf(`${prefix}_${component}_comment`);
+    }
+  });
+  return next;
+}
+
+function gradeByTemplateScore(component, score, employee = currentUser()) {
+  const value = Number(score);
+  const grade = templateFor(employee, component).grades.find((item) => Number(item.score) === value);
+  return grade?.grade || gradeByScore(value);
+}
+
+function syncTemplateEditor(component, templateIndex) {
+  const template = templateVariantsForKind(component)[templateIndex];
+  if (!template) return;
+  const label = valueOf(`tpl_${component}_${templateIndex}_label`);
+  if (!label) return;
+  template.label = label;
+  const questionEl = document.getElementById(`tpl_${component}_${templateIndex}_question`);
+  if (questionEl) template.question = questionEl.value;  // 있을 때만 갱신 (없으면 기존값 유지)
+  template.guide = valueOf(`tpl_${component}_${templateIndex}_guide`);
+  if (component === "performance") {
+    template.items = valueOf(`tpl_${component}_${templateIndex}_items`)
+      .split(/\n+/)
+      .map((line) => {
+        const [name, guide = ""] = line.split("|").map((part) => part.trim());
+        return name ? { name, guide, required: true } : null;
+      })
+      .filter(Boolean);
+  } else {
+    template.items = template.items
+      .map((item, index) => ({
+        name: valueOf(`tpl_${component}_${templateIndex}_item_${index}_name`).trim(),
+        guide: valueOf(`tpl_${component}_${templateIndex}_item_${index}_guide`).trim(),
+        required: true,
+      }))
+      .filter((item) => item.name || item.guide);
+  }
+  if (!template.items.length) template.items.push({ name: "", guide: "", required: true });
+  // 등급별 점수 입력란이 화면에 있을 때만 갱신 (가중치·등급 탭으로 이동했으므로 평소엔 기존 값 유지)
+  if (document.getElementById(`tpl_${component}_${templateIndex}_grade_S_score`)) {
+    template.grades = GRADES.map((grade) => ({
+      grade,
+      score: Number(valueOf(`tpl_${component}_${templateIndex}_grade_${grade}_score`) || 0),
+      description: valueOf(`tpl_${component}_${templateIndex}_grade_${grade}_desc`),
+    }));
+  }
+  if (COMPONENTS.includes(component)) state.templates[component] = clone(templateVariantsForKind(component)[0]);
+  if (component === "upward") state.upwardTemplate = clone(templateVariantsForKind(component)[0]);
+  if (component === "peer") state.peerTemplate = clone(templateVariantsForKind(component)[0]);
+}
+
+function syncAllTemplateEditors() {
+  TEMPLATE_KINDS.forEach((component) => {
+    templateVariantsForKind(component).forEach((_, index) => syncTemplateEditor(component, index));
+  });
+}
+
+function collectTemplateAssignmentsFromDom() {
+  cycleUsers().filter(isEvaluatee).forEach((employee) => {
+    const assignment = templateAssignmentFor(employee.id);
+    TEMPLATE_KINDS.forEach((kind) => {
+      const selected = valueOf(`tpl_assign_${employee.id}_${kind}`);
+      if (selected) assignment[kind] = selected;
+      else if (!assignment[kind]) assignment[kind] = defaultTemplateIdForKind(kind);
+    });
+  });
+}
+
+function collectDivisionBulkTemplateAssignmentsFromDom() {
+  const evaluatees = cycleUsers().filter(isEvaluatee);
+  const divisions = [...new Set(evaluatees.map((employee) => employee.division || "미지정"))];
+  divisions.forEach((division) => {
+    const targets = evaluatees.filter((employee) => (employee.division || "미지정") === division);
+    if (!targets.length) return;
+    TEMPLATE_KINDS.forEach((kind) => {
+      const elementId = `bulk_tpl_${kind}_${slugId(division)}`;
+      if (!document.getElementById(elementId)) return;
+      const selected = valueOf(elementId);
+      if (!selected) return;
+      targets.forEach((employee) => {
+        const assignment = templateAssignmentFor(employee.id);
+        assignment[kind] = selected;
+      });
+    });
+  });
+}
+
+function collectSpecialTemplateSelectionsFromDom() {
+  const upwardId = valueOf("active_upward_template_id");
+  const peerId = valueOf("active_peer_template_id");
+  const upward = templateVariantsForKind("upward").find((item) => item.id === upwardId);
+  const peer = templateVariantsForKind("peer").find((item) => item.id === peerId);
+  if (upward) state.upwardTemplate = clone(upward);
+  if (peer) state.peerTemplate = clone(peer);
+  state.ui.templateSelections = state.ui.templateSelections || {};
+  if (upward) state.ui.templateSelections.upward = upward.id;
+  if (peer) state.ui.templateSelections.peer = peer.id;
+}
+
+function getUpwardAssignments(cycle = activeCycle()) {
+  if (!cycle) return [];
+  ensureUpwardAssignments(cycle, cycleUsers(cycle));
+  return cycle.upwardAssignments;
+}
+
+function getUpwardAssignmentById(assignmentId) {
+  return getUpwardAssignments().find((assignment) => assignment.id === assignmentId);
+}
+
+function getUpwardEvaluatorOptions() {
+  return state.users.filter((user) => isEvaluatee(user) && user.active !== false).sort(compareEmployeesForDisplay);
+}
+
+function getUpwardTargetOptions() {
+  return state.users.filter((user) => ["teamLead", "divisionHead"].includes(user.role) && isEvaluatorCandidate(user)).sort(compareEmployeesForDisplay);
+}
+
+function upwardAssignmentForEvaluator(evaluatorId) {
+  return getUpwardAssignments().find((assignment) => assignment.evaluatorId === evaluatorId);
+}
+
+function upwardTargetIdForEvaluator(evaluatorId) {
+  return upwardAssignmentForEvaluator(evaluatorId)?.targetId || "";
+}
+
+function hasDuplicateUpwardAssignment(evaluatorId, targetId, exceptId = "") {
+  return getUpwardAssignments().some((assignment) => assignment.id !== exceptId && assignment.evaluatorId === evaluatorId && assignment.targetId === targetId);
+}
+
+function getPeerAssignments(cycle = activeCycle()) {
+  if (!cycle) return [];
+  ensurePeerAssignments(cycle, cycleUsers(cycle));
+  return cycle.peerAssignments;
+}
+
+function getPeerAssignmentById(assignmentId) {
+  return getPeerAssignments().find((assignment) => assignment.id === assignmentId);
+}
+
+function peerAssignmentsForEvaluator(evaluatorId) {
+  return getPeerAssignments().filter((assignment) => assignment.evaluatorId === evaluatorId);
+}
+
+function peerTargetsForEvaluator(evaluatorId) {
+  return peerAssignmentsForEvaluator(evaluatorId).map((assignment) => userById(assignment.targetId)).filter(Boolean);
+}
+
+function hasDuplicatePeerAssignment(evaluatorId, targetId, exceptId = "") {
+  return getPeerAssignments().some((assignment) => assignment.id !== exceptId && assignment.evaluatorId === evaluatorId && assignment.targetId === targetId);
+}
+
+function syncUpwardTemplateEditor() {
+  const template = state.upwardTemplate;
+  template.label = valueOf("up_tpl_label") || template.label;
+  template.question = valueOf("up_tpl_question");
+  template.guide = valueOf("up_tpl_guide");
+  template.items = template.items
+    .map((item, index) => ({
+      name: valueOf(`up_tpl_item_${index}_name`).trim(),
+      guide: valueOf(`up_tpl_item_${index}_guide`).trim(),
+      required: true,
+    }))
+    .filter((item) => item.name || item.guide);
+  if (!template.items.length) template.items.push({ name: "", guide: "", required: true });
+  template.grades = GRADES.map((grade) => ({
+    grade,
+    score: Number(valueOf(`up_tpl_grade_${grade}_score`) || 0),
+    description: valueOf(`up_tpl_grade_${grade}_desc`),
+  }));
+}
+
+function syncPeerTemplateEditor() {
+  const template = state.peerTemplate;
+  template.label = valueOf("peer_tpl_label") || template.label;
+  template.question = valueOf("peer_tpl_question");
+  template.guide = valueOf("peer_tpl_guide");
+  template.items = template.items
+    .map((item, index) => ({
+      name: valueOf(`peer_tpl_item_${index}_name`).trim(),
+      guide: valueOf(`peer_tpl_item_${index}_guide`).trim(),
+      required: true,
+    }))
+    .filter((item) => item.name || item.guide);
+  if (!template.items.length) template.items.push({ name: "", guide: "", required: true });
+  template.grades = GRADES.map((grade) => ({
+    grade,
+    score: Number(valueOf(`peer_tpl_grade_${grade}_score`) || 0),
+    description: valueOf(`peer_tpl_grade_${grade}_desc`),
+  }));
+}
+
+function collectUpwardAnswerFromDom(assignment) {
+  const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
+  const template = evaluator ? templateForKind(evaluator, "upward") : state.upwardTemplate;
+  const answer = { ...makeEmptyUpwardAnswer(), ...(assignment.answer || {}) };
+  answer.itemScores = {};
+  template.items.forEach((_, index) => {
+    answer.itemScores[index] = clampScore(valueOf(`upward_${assignment.id}_item_${index}_score`));
+  });
+  answer.score = deriveUpwardScore(answer) ?? "";
+  answer.grade = gradeByUpwardScore(answer.score, template);
+  answer.comment = valueOf(`upward_${assignment.id}_comment`);
+  return answer;
+}
+
+function collectPeerAnswerFromDom(assignment) {
+  const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
+  const template = evaluator ? templateForKind(evaluator, "peer") : state.peerTemplate;
+  const answer = { ...makeEmptyPeerAnswer(), ...(assignment.answer || {}) };
+  answer.itemScores = {};
+  template.items.forEach((_, index) => {
+    answer.itemScores[index] = clampScore(valueOf(`peer_${assignment.id}_item_${index}_score`));
+  });
+  answer.score = derivePeerScore(answer) ?? "";
+  answer.grade = gradeByPeerScore(answer.score, template);
+  answer.comment = valueOf(`peer_${assignment.id}_comment`);
+  return answer;
+}
+
+function deriveUpwardScore(answer) {
+  const scores = Object.values(answer.itemScores || {}).map(toNumberOrNull).filter((value) => value !== null);
+  if (!scores.length) return null;
+  return Math.round(average(scores) * 10) / 10;
+}
+
+function gradeByUpwardScore(score, template = state.upwardTemplate) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "";
+  const grades = [...template.grades].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  return grades.find((item) => value >= Number(item.score || 0))?.grade || "D";
+}
+
+function derivePeerScore(answer) {
+  const scores = Object.values(answer.itemScores || {}).map(toNumberOrNull).filter((value) => value !== null);
+  if (!scores.length) return null;
+  return Math.round(average(scores) * 10) / 10;
+}
+
+function gradeByPeerScore(score, template = state.peerTemplate) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "";
+  const grades = [...template.grades].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  return grades.find((item) => value >= Number(item.score || 0))?.grade || "D";
+}
+
+function hasMissingUpwardScores(answer, template = state.upwardTemplate) {
+  return template.items.some((_, index) => {
+    const value = answer.itemScores?.[index];
+    return value === "" || value === undefined || value === null;
+  });
+}
+
+function hasMissingPeerScores(answer, template = state.peerTemplate) {
+  return template.items.some((_, index) => {
+    const value = answer.itemScores?.[index];
+    return value === "" || value === undefined || value === null;
+  });
+}
+
+function collectEvaluatorSettingsFromDom() {
+  const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && user.role !== "admin");
+  let valid = true;
+  cycleUsers().filter(isEvaluatee).forEach((employee) => {
+    const evaluator1 = document.getElementById(`emp_${employee.id}_evaluator1Id`);
+    const evaluator2 = document.getElementById(`emp_${employee.id}_evaluator2Id`);
+    const evaluator1Id = evaluator1 ? userIdFromPicker(`emp_${employee.id}_evaluator1Id`, evaluatorOptions) : employee.evaluator1Id || "";
+    const evaluator2Id = evaluator2 ? userIdFromPicker(`emp_${employee.id}_evaluator2Id`, evaluatorOptions) : employee.evaluator2Id || "";
+    if (evaluator1Id === employee.id || evaluator2Id === employee.id) {
+      window.alert(`${employee.name}님은 본인을 평가자로 지정할 수 없습니다.`);
+      valid = false;
+      return;
+    }
+    if (evaluator1) employee.evaluator1Id = evaluator1Id;
+    if (evaluator2) employee.evaluator2Id = evaluator2Id;
+  });
+  return valid;
+}
+
+function collectEvaluatorWeightSettingsFromDom() {
+  const next = clone(state.evaluatorWeights || {});
+  for (const role of EVALUATEE_ROLES) {
+    const firstRaw = valueOf(`eval_ratio_${role}_first`);
+    const secondRaw = valueOf(`eval_ratio_${role}_second`);
+    if (!document.getElementById(`eval_ratio_${role}_first`) || !document.getElementById(`eval_ratio_${role}_second`)) continue;
+    const first = Number(firstRaw);
+    const second = Number(secondRaw);
+    if (!Number.isFinite(first) || !Number.isFinite(second) || first < 0 || second < 0) {
+      window.alert(`${ROLE_LABELS[role]} 평가 반영 비율은 0 이상의 숫자로 입력해 주세요.`);
+      return false;
+    }
+    if (first + second <= 0) {
+      window.alert(`${ROLE_LABELS[role]} 평가 반영 비율 합계는 0보다 커야 합니다.`);
+      return false;
+    }
+    next[role] = { ...(next[role] || {}), first, second, final: 0 };
+  }
+  state.evaluatorWeights = normalizeEvaluatorWeights(next, defaultEvaluatorWeights());
+  return true;
+}
+
+function collectOrganizationSettingsFromDom() {
+  state.users.filter((employee) => employee.role !== "admin").forEach((employee) => {
+    const name = document.getElementById(`emp_${employee.id}_name`);
+    const employeeNo = document.getElementById(`emp_${employee.id}_employeeNo`);
+    const email = document.getElementById(`emp_${employee.id}_email`);
+    const role = document.getElementById(`emp_${employee.id}_role`);
+    const title = document.getElementById(`emp_${employee.id}_title`);
+    const orgRoot = document.getElementById(`emp_${employee.id}_orgRoot`);
+    const division = document.getElementById(`emp_${employee.id}_division`);
+    const team = document.getElementById(`emp_${employee.id}_team`);
+    const active = document.getElementById(`emp_${employee.id}_active`);
+    if (name) employee.name = name.value;
+    if (employeeNo) employee.employeeNo = employeeNo.value;
+    if (email) employee.email = email.value || employee.email;
+    if (role) employee.role = role.value;
+    if (title) employee.title = title.value;
+    if (orgRoot) employee.orgRoot = orgRoot.value || employee.orgRoot || "";
+    if (division) employee.division = division.value || employee.division;
+    if (team) employee.team = team.value || employee.team;
+    if (active) employee.active = active.value === "true";
+  });
+  alignUsersToOrganizationNodes(state.users, state.organizationNodes || []);
+}
+
+function collectUpwardAssignmentsFromDom() {
+  if (activeCycle().useUpward === false) { activeCycle().upwardAssignments = []; return true; } // 미진행
+  const currentAssignments = getUpwardAssignments();
+  const existingByEvaluator = new Map(currentAssignments.map((assignment) => [assignment.evaluatorId, assignment]));
+  const nextAssignments = [];
+  const seen = new Set();
+  const targetOptions = cycleUsers().filter((user) => ["teamLead", "divisionHead"].includes(user.role) && isEvaluatorCandidate(user));
+  for (const employee of cycleUsers().filter(isEvaluatee)) {
+    const targetInput = document.getElementById(`emp_${employee.id}_upwardTargetId`);
+    const targetId = targetInput ? userIdFromPicker(`emp_${employee.id}_upwardTargetId`, targetOptions) : upwardTargetIdForEvaluator(employee.id);
+    if (!targetId) continue;
+    if (employee.id === targetId) {
+      window.alert("본인을 상향평가 대상으로 지정할 수 없습니다.");
+      return false;
+    }
+    const key = `${employee.id}:${targetId}`;
+    if (seen.has(key)) {
+      window.alert("상향평가에 같은 평가자/평가 대상 조합이 중복되어 있습니다.");
+      return false;
+    }
+    seen.add(key);
+    const assignment = existingByEvaluator.get(employee.id);
+    const changed = !assignment || targetId !== assignment.targetId;
+    nextAssignments.push({
+      ...(assignment || {
+        id: `up-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        answer: makeEmptyUpwardAnswer(),
+        createdAt: new Date().toISOString(),
+      }),
+      evaluatorId: employee.id,
+      targetId,
+      source: changed ? "manual" : assignment?.source === "organization" ? "organization" : "manual",
+      status: changed && isCompletedStatus(assignment?.status) ? "draft" : assignment?.status || "pending",
+    });
+  }
+  activeCycle().upwardAssignments = nextAssignments;
+  return true;
+}
+
+function collectPeerAssignmentsFromDom() {
+  if (activeCycle().usePeer === false) { activeCycle().peerAssignments = []; return true; } // 미진행
+  const currentAssignments = getPeerAssignments();
+  const existingByKey = new Map(currentAssignments.map((assignment) => [`${assignment.evaluatorId}:${assignment.targetId}`, assignment]));
+  const targetOptions = cycleUsers().filter(isEvaluatee);
+  const nextAssignments = [];
+  for (const employee of cycleUsers().filter(isEvaluatee)) {
+    const seenTargets = new Set();
+    for (let index = 0; index < (state.peerCount || 3); index += 1) {
+      const input = document.getElementById(`emp_${employee.id}_peerTarget_${index}`);
+      const targetId = input ? userIdFromPicker(`emp_${employee.id}_peerTarget_${index}`, targetOptions) : peerTargetsForEvaluator(employee.id)[index]?.id || "";
+      if (!targetId) continue;
+      if (targetId === employee.id) {
+        window.alert("본인을 동료평가 대상으로 지정할 수 없습니다.");
+        return false;
+      }
+      if (seenTargets.has(targetId)) {
+        window.alert(`${employee.name}님의 동료평가 대상이 중복되어 있습니다.`);
+        return false;
+      }
+      seenTargets.add(targetId);
+      const key = `${employee.id}:${targetId}`;
+      const assignment = existingByKey.get(key);
+      nextAssignments.push({
+        ...(assignment || {
+          id: `peer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          answer: makeEmptyPeerAnswer(),
+          createdAt: new Date().toISOString(),
+        }),
+        evaluatorId: employee.id,
+        targetId,
+        source: assignment?.source === "organization" ? "organization" : "manual",
+        status: assignment?.status || "pending",
+      });
+    }
+  }
+  activeCycle().peerAssignments = nextAssignments;
+  return true;
+}
+
+const App = {
+  injectDummyData() {
+    if (!window.confirm("현재 사이클에 더미 평가 데이터를 주입합니다.\n기존 평가 데이터가 덮어씌워집니다. 계속하시겠습니까?")) return;
+
+    const cycle = selectedCycle();
+    const users = cycleUsers(cycle);
+    const evaluatees = users.filter(isEvaluatee);
+
+    // ─── 더미 데이터 풀 ───────────────────────────────────────────────
+    const rnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+    const selfComments = [
+      "올해 설정한 주요 목표를 계획 대비 100% 이상 달성하였으며, 팀 전체 성과 향상에 실질적으로 기여할 수 있었습니다. 앞으로도 지속적으로 역량을 강화해 나가겠습니다.",
+      "업무 프로세스 전반을 검토하고 불필요한 단계를 줄여 부서 전체의 업무 효율을 개선하는 데 집중하였습니다. 내년에는 디지털 전환 영역에서도 기여하고 싶습니다.",
+      "동료들과의 적극적인 협업을 통해 부서 목표를 초과 달성하였고, 타 팀과의 협력 채널을 강화하여 업무 연계성을 높였습니다. 커뮤니케이션 역량을 더욱 발전시키겠습니다.",
+      "주어진 업무를 항상 기한 내 완수하였으며, 품질 체크리스트를 자체적으로 마련하여 오류율을 크게 줄이는 성과를 거두었습니다. 성과 측정 지표를 더 구체화할 계획입니다.",
+      "관련 자격증 취득과 외부 교육 참여를 통해 새로운 역량을 개발하고, 이를 즉시 현업에 적용하여 업무 성과를 높였습니다. 전문성을 지속적으로 심화해 나가겠습니다.",
+      "고객 접점에서의 응대 프로세스를 개선하여 고객 만족도를 전년 대비 향상시켰습니다. 내년에는 고객 피드백 분석 체계를 더욱 강화하여 서비스 품질을 높이겠습니다.",
+      "팀 내 소통 채널을 다양화하고 의견 충돌 상황에서 중재 역할을 수행하여 원활한 업무 환경 조성에 기여하였습니다. 구성원 간 신뢰를 더욱 강화하는 방향으로 노력하겠습니다.",
+      "분기별 목표를 체계적으로 수립하고 진행 상황을 주기적으로 점검하여 연간 목표를 초과 달성하였습니다. 도전적인 목표 설정과 실행력 강화에 지속적으로 집중하겠습니다.",
+    ];
+    const evalComments = [
+      "목표 달성도가 우수하고 어떠한 상황에서도 책임감 있게 업무를 완수합니다. 특히 어려운 과제에서도 포기하지 않고 끝까지 해내는 모습이 팀 전체에 긍정적인 영향을 줍니다.",
+      "높은 전문성을 바탕으로 주어진 과제를 안정적이고 신속하게 처리합니다. 복잡한 문제도 체계적으로 분석하여 명확한 해결책을 제시하는 능력이 탁월합니다.",
+      "적극적이고 주도적인 자세로 업무에 임하며 팀 내 협업 분위기 형성에 크게 기여합니다. 동료들의 어려움을 먼저 파악하고 지원하는 협력적 태도가 돋보입니다.",
+      "업무 전반에 대한 이해도가 깊고 예상치 못한 문제 상황에서도 논리적으로 접근하여 효과적인 해결책을 도출해 냅니다. 판단력과 실행 역량이 두드러집니다.",
+      "성실하고 꼼꼼하게 업무를 수행하는 점은 높이 평가됩니다. 일부 영역에서 추가적인 역량 개발이 필요하나, 스스로 개선 의지가 강하여 꾸준한 성장이 기대됩니다.",
+      "조직 내 갈등을 조율하고 구성원들의 의견을 통합하는 리더십과 탁월한 의사소통 역량을 보유하고 있습니다. 팀의 방향성을 명확히 제시하는 역할을 훌륭히 수행합니다.",
+      "기존 방식에 얽매이지 않고 창의적인 아이디어를 제안하여 업무 혁신을 이끕니다. 제안한 아이디어 중 다수가 실제 업무에 적용되어 효율성 향상에 기여하였습니다.",
+      "꾸준한 자기계발 노력을 통해 매 평가 주기마다 의미 있는 성장을 이루고 있습니다. 학습한 내용을 즉시 현업에 적용하는 실행력이 높아 팀 전체의 역량 향상에도 기여합니다.",
+    ];
+    const upwardComments = [
+      "팀의 방향성과 목표를 명확하게 제시하고, 각 구성원의 역할과 기대치를 구체적으로 안내해 주십니다. 덕분에 업무에 집중할 수 있는 환경이 잘 조성되어 있습니다.",
+      "공정하고 일관된 기준으로 의사결정을 내려 팀 전체의 신뢰를 얻고 있습니다. 어려운 상황에서도 원칙을 지키는 모습이 조직의 안정감으로 이어지고 있습니다.",
+      "구성원 개개인의 의견을 경청하고 다양한 시각을 의사결정에 반영해 주십니다. 열린 소통 방식 덕분에 팀 내 심리적 안전감이 높아졌습니다.",
+      "업무 방향과 우선순위를 명확히 안내해 주셔서 효율적으로 업무를 수행할 수 있습니다. 위기 상황에서 빠른 판단과 지원을 제공해 주시는 점이 특히 도움이 됩니다.",
+      "구체적이고 건설적인 피드백을 정기적으로 제공해 주셔서 역량 개발에 실질적인 도움이 됩니다. 개선점뿐만 아니라 강점도 함께 짚어 주셔서 동기 부여가 됩니다.",
+      "팀원 각각의 강점을 파악하고 적재적소에 배치하는 역량이 탁월합니다. 구성원이 최대한의 성과를 낼 수 있도록 환경과 지원을 아끼지 않으시는 점이 인상적입니다.",
+    ];
+    const peerComments = [
+      "협업 프로젝트에서 항상 적극적으로 의견을 제시하고 팀 전체의 방향에 맞춰 유연하게 역할을 수행합니다. 어려운 업무 상황에서도 동료들을 먼저 배려하는 모습이 인상적입니다.",
+      "맡은 업무에 대한 책임감이 강하고 약속한 기한과 품질을 반드시 지킵니다. 신뢰할 수 있는 동료로서 팀 내 안정감에 크게 기여하고 있습니다.",
+      "소통이 명확하고 상대방을 배려하는 표현 방식으로 팀 내 갈등을 사전에 예방합니다. 협업 시 주도적으로 커뮤니케이션 채널을 만들어 팀워크를 강화합니다.",
+      "깊은 전문 지식을 보유하고 있으며, 동료가 어려움을 겪을 때 적극적으로 지식을 공유하고 도움을 제공합니다. 팀 전체의 역량 향상에 실질적인 기여를 하고 있습니다.",
+      "어떤 상황에서도 긍정적인 에너지를 유지하며 팀 분위기를 밝게 만듭니다. 어려운 문제에도 해결 중심적으로 접근하는 태도가 팀 전체의 동기 부여에 도움이 됩니다.",
+      "업무 일정과 결과물에 대한 체계적인 관리 능력이 뛰어나며, 공동 작업 시 진행 상황을 투명하게 공유합니다. 덕분에 협업 과정에서 불필요한 혼선이 크게 줄어들었습니다.",
+    ];
+
+    // 점수→등급 변환
+    const scoreToGrade = (score) => {
+      const t = state.gradeThresholds || { S: 95, A: 90, B: 80, C: 70, D: 0 };
+      if (score >= t.S) return "S";
+      if (score >= t.A) return "A";
+      if (score >= t.B) return "B";
+      if (score >= t.C) return "C";
+      return "D";
+    };
+
+    // 역할별 점수 분포 (실제적인 Bell Curve)
+    const scoreByRole = (role) => {
+      const base = { member: [75, 92], teamLead: [80, 95], divisionHead: [82, 96] }[role] || [75, 92];
+      return rnd(base[0], base[1]);
+    };
+
+    // 평가 항목 채우기 (업적·역량·자세태도 점수를 각각 다르게 생성)
+    const makeReview = (role, commentsPool) => {
+      const mk = () => { const s = scoreByRole(role); return { score: s, grade: scoreToGrade(s) }; };
+      const perf = mk(), comp = mk(), att = mk();
+      const tpl = state.templates;
+      // 항목별 점수도 해당 컴포넌트 점수 부근으로 약간씩 변주
+      const buildItemScores = (items, base) => {
+        const out = {};
+        (items || []).forEach((item, i) => { const s = clampScore(base + rnd(-3, 3)); out[i] = { score: s, grade: scoreToGrade(s) }; });
+        return out;
+      };
+      return {
+        performance: {
+          score: perf.score, grade: perf.grade,
+          comment: pick(commentsPool),
+          itemScores: {},
+          achievements: [{ name: "주요 업무 실적", goal: "팀 목표 달성", detail: pick(commentsPool), weight: 100, score: perf.score, grade: perf.grade }],
+        },
+        competency: { score: comp.score, grade: comp.grade, comment: pick(commentsPool), itemScores: buildItemScores(tpl?.competency?.items, comp.score) },
+        attitude: { score: att.score, grade: att.grade, comment: pick(commentsPool), itemScores: buildItemScores(tpl?.attitude?.items, att.score) },
+        overallFeedback: "",
+      };
+    };
+
+    // 자기평가 + 1차 + 2차 주입
+    evaluatees.forEach(emp => {
+      const ev = cycle.evaluations[emp.id];
+      if (!ev) return;
+
+      // 자기평가
+      ev.self = makeReview(emp.role, selfComments);
+      ev.status.self = "submitted";
+
+      // 1차 평가
+      if (emp.evaluator1Id) {
+        ev.first = makeReview(emp.role, evalComments);
+        ev.status.first = "completed";
+      }
+
+      // 2차 평가 (팀원 + 팀장 모두)
+      if (emp.evaluator2Id) {
+        ev.second = makeReview(emp.role, evalComments);
+        ev.status.second = "completed";
+      }
+    });
+
+    // 상향평가 주입
+    (cycle.upwardAssignments || []).forEach(a => {
+      const score = rnd(78, 97);
+      a.answer = {
+        itemScores: Object.fromEntries((state.upwardTemplate?.items || []).map((_, i) => [i, { score, grade: scoreToGrade(score) }])),
+        score, grade: scoreToGrade(score),
+        comment: pick(upwardComments),
+      };
+      a.status = "completed";
+      a.submitted = true;
+      a.submittedAt = new Date().toISOString();
+    });
+
+    // 동료평가 주입
+    (cycle.peerAssignments || []).forEach(a => {
+      const score = rnd(78, 96);
+      a.answer = {
+        itemScores: Object.fromEntries((state.peerTemplate?.items || []).map((_, i) => [i, { score, grade: scoreToGrade(score) }])),
+        score, grade: scoreToGrade(score),
+        comment: pick(peerComments),
+      };
+      a.status = "completed";
+      a.submitted = true;
+      a.submittedAt = new Date().toISOString();
+    });
+
+    invalidateCycleCache();
+    saveState();
+    state.ui.flash = `더미 데이터 주입 완료: 자기평가·1차·2차·상향·동료평가 데이터를 채웠습니다.`;
+    render();
+  },
+  // ── 상대평가 그룹 ────────────────────────────────────────────────────
+  autoGenerateRelativeGroups() {
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) cycle.relativeGroups = {};
+    const allUsers = cycleUsers(cycle);
+    // 팀원(member)만 대상
+    const members = allUsers.filter(u => isEvaluatee(u) && u.role === "member");
+    members.forEach(u => {
+      const rg = cycle.relativeGroups[u.id] || {};
+      if (rg.locked) return;
+      const head = allUsers.find(x => x.role === "divisionHead" && x.division === u.division);
+      if (head) {
+        delete rg.overrideGroup;
+        delete rg.overrideReason;
+        cycle.relativeGroups[u.id] = rg;
+      }
+    });
+    saveState();
+    state.ui.flash = "상대평가그룹 자동 생성이 완료되었습니다.";
+    render();
+  },
+  saveRelativeGroupRow(userId) {
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) cycle.relativeGroups = {};
+    const rg = cycle.relativeGroups[userId] || {};
+    const groupEl  = document.getElementById(`rg_group_${userId}`);
+    const reasonEl = document.getElementById(`rg_reason_${userId}`);
+    const allUsers = cycleUsers(cycle);
+    const u = allUsers.find(x => x.id === userId);
+    const head = u ? allUsers.find(x => x.role === "divisionHead" && x.division === u.division) : null;
+    const autoVal  = head ? head.name : "";
+    const newGroup = groupEl ? groupEl.value : (rg.overrideGroup !== undefined ? rg.overrideGroup : autoVal);
+    const reason   = reasonEl ? reasonEl.value.trim() : (rg.overrideReason || "");
+    if (newGroup !== autoVal) {
+      rg.overrideGroup  = newGroup;
+      rg.overrideReason = reason;
+    } else {
+      delete rg.overrideGroup;
+      delete rg.overrideReason;
+    }
+    rg.locked = true;
+    cycle.relativeGroups[userId] = rg;
+    saveState();
+    render();
+  },
+  unlockRelativeGroup(userId) {
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) return;
+    const rg = cycle.relativeGroups[userId] || {};
+    rg.locked = false;
+    cycle.relativeGroups[userId] = rg;
+    saveState();
+    render();
+  },
+  // 팀 전체 확정
+  lockTeamRelativeGroup(div, team, teamSelectId) {
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) cycle.relativeGroups = {};
+    const allUsers = cycleUsers(cycle);
+    const members  = allUsers.filter(u => isEvaluatee(u) && u.role === "member"
+                       && (u.division||"") === div && (u.team||"") === team);
+    const teamSel  = document.getElementById(teamSelectId);
+    const teamVal  = teamSel ? teamSel.value : "";  // 팀 헤더 select 값
+    members.forEach(u => {
+      const rg      = cycle.relativeGroups[u.id] || {};
+      const head    = allUsers.find(x => x.role === "divisionHead" && x.division === u.division);
+      const autoVal = head ? head.name : "";
+      // 팀 헤더 select에 값이 있으면 그걸로, 없으면 개별 select 값, 없으면 자동값
+      const groupEl  = document.getElementById(`rg_group_${u.id}`);
+      const newGroup = teamVal || (groupEl ? groupEl.value : "") || autoVal;
+      const reasonEl = document.getElementById(`rg_reason_${u.id}`);
+      const reason   = reasonEl ? reasonEl.value.trim() : (rg.overrideReason||"");
+      if (newGroup !== autoVal) {
+        rg.overrideGroup  = newGroup;
+        rg.overrideReason = reason;
+      } else {
+        delete rg.overrideGroup;
+        delete rg.overrideReason;
+      }
+      rg.locked = true;
+      cycle.relativeGroups[u.id] = rg;
+    });
+    saveState();
+    state.ui.flash = `${team} 팀 전체 확정이 완료되었습니다.`;
+    render();
+  },
+  // 팀 전체 확정 취소
+  unlockTeamRelativeGroup(div, team) {
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) return;
+    const allUsers = cycleUsers(cycle);
+    const members  = allUsers.filter(u => isEvaluatee(u) && u.role === "member"
+                       && (u.division||"") === div && (u.team||"") === team);
+    members.forEach(u => {
+      const rg = cycle.relativeGroups[u.id] || {};
+      rg.locked = false;
+      cycle.relativeGroups[u.id] = rg;
+    });
+    saveState();
+    state.ui.flash = `${team} 팀 확정이 취소되었습니다.`;
+    render();
+  },
+  lockAllRelativeGroups() {
+    if (!window.confirm("현재 목록의 모든 팀원을 확정하시겠습니까?")) return;
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) cycle.relativeGroups = {};
+    const allUsers = cycleUsers(cycle);
+    const members  = allUsers.filter(u => isEvaluatee(u) && u.role === "member");
+    members.forEach(u => {
+      const groupEl = document.getElementById(`rg_group_${u.id}`);
+      if (!groupEl) return; // 필터로 숨겨진 행은 건드리지 않음
+      const rg      = cycle.relativeGroups[u.id] || {};
+      const head    = allUsers.find(x => x.role === "divisionHead" && x.division === u.division);
+      const autoVal = head ? head.name : "";
+      const newGroup = groupEl.value;
+      const reasonEl = document.getElementById(`rg_reason_${u.id}`);
+      const reason   = reasonEl ? reasonEl.value.trim() : "";
+      if (newGroup !== autoVal) {
+        rg.overrideGroup  = newGroup;
+        rg.overrideReason = reason;
+      } else {
+        delete rg.overrideGroup;
+        delete rg.overrideReason;
+      }
+      rg.locked = true;
+      cycle.relativeGroups[u.id] = rg;
+    });
+    saveState();
+    state.ui.flash = "전체 확정이 완료되었습니다.";
+    render();
+  },
+  downloadRelativeGroupsCsv() {
+    const cycle = selectedCycle();
+    if (!cycle.relativeGroups) cycle.relativeGroups = {};
+    const allUsers = cycleUsers(cycle);
+    const members  = allUsers.filter(u => isEvaluatee(u) && u.role === "member").sort(compareEmployeesForDisplay);
+    const rows = [["사번","성명","본부","팀","자동상대평가그룹","최종상대평가그룹","수동수정여부","수정사유","확정여부"]];
+    members.forEach(u => {
+      const rg   = cycle.relativeGroups[u.id] || {};
+      const head = allUsers.find(x => x.role === "divisionHead" && x.division === u.division);
+      const auto = head ? head.name : "";
+      const final= rg.overrideGroup !== undefined ? rg.overrideGroup : auto;
+      rows.push([
+        u.employeeNo||u.employeeId||"", u.name, u.division||"", u.team||"",
+        auto, final,
+        rg.overrideGroup !== undefined ? "수동" : "자동",
+        rg.overrideReason||"",
+        rg.locked ? "확정" : "미확정",
+      ]);
+    });
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob = new Blob(["﻿"+csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `상대평가그룹_${cycle.name}_${todayStamp()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  },
+  // ── 결과 확인 / 인사팀 소통 ──────────────────────────────────────────
+  confirmResult() {
+    const user = currentUser();
+    const ev = evaluations()[user.id];
+    if (!ev) return;
+    if (!ev.reportFeedback) ev.reportFeedback = {};
+    ev.reportFeedback.resultConfirmed = true;
+    ev.reportFeedback.confirmedAt = new Date().toISOString();
+    saveState();
+    state.ui.flash = "평가 결과를 확인하였습니다.";
+    render();
+  },
+  openOpinionModal() {
+    state.ui.opinionModal = true;
+    render();
+  },
+  closeOpinionModal() {
+    state.ui.opinionModal = false;
+    render();
+  },
+
+  openAIFeedbackModal(employeeId) {
+    state.ui.aiModal = { open: true, employeeId, generating: false };
+    render();
+  },
+  closeAIFeedbackModal() {
+    state.ui.aiModal = { open: false, employeeId: null, generating: false };
+    render();
+  },
+  async generateAIFeedback(employeeId) {
+    state.ui.aiModal = { open: true, employeeId, generating: true };
+    render();
+    try {
+      const result = await callAIFeedbackAPI(employeeId);
+      const cycle = activeCycle();
+      const ev = (cycle.evaluations || {})[employeeId];
+      if (!ev) throw new Error("평가 데이터 없음");
+      if (!ev.aiFeedback) ev.aiFeedback = {};
+      Object.assign(ev.aiFeedback, {
+        overall:     String(result.overall     || ""),
+        upward:      String(result.upward      || ""),
+        peer:        String(result.peer        || ""),
+        strengths:   Array.isArray(result.strengths)  ? result.strengths  : String(result.strengths  || "").split(",").map(s=>s.trim()).filter(Boolean),
+        weaknesses:  Array.isArray(result.weaknesses) ? result.weaknesses : String(result.weaknesses || "").split(",").map(s=>s.trim()).filter(Boolean),
+        suggestions: String(result.suggestions || ""),
+        ref1Title:   String(result.ref1Title   || ""),
+        ref1Url:     String(result.ref1Url     || ""),
+        ref1Source:  String(result.ref1Source  || ""),
+        ref1Desc:    String(result.ref1Desc    || ""),
+        ref2Title:   String(result.ref2Title   || ""),
+        ref2Url:     String(result.ref2Url     || ""),
+        ref2Source:  String(result.ref2Source  || ""),
+        ref2Desc:    String(result.ref2Desc    || ""),
+        generatedAt: new Date().toISOString(),
+      });
+      saveState();
+      state.ui.aiModal = { open: true, employeeId, generating: false };
+    } catch (err) {
+      window.alert("AI 생성 오류: " + (err.message || err));
+      state.ui.aiModal = { open: true, employeeId, generating: false };
+    }
+    render();
+  },
+  closeBulkAIModal() {
+    state.ui.bulkAIModal = { open: false };
+    render();
+  },
+  cancelBulkAIFeedback() {
+    if (state.ui.bulkAIModal) state.ui.bulkAIModal.cancelled = true;
+    render();
+  },
+  forceStopBulkAIFeedback() {
+    if (_bulkAbortController) _bulkAbortController.abort();
+    if (state.ui.bulkAIModal) {
+      state.ui.bulkAIModal.cancelled = true;
+      state.ui.bulkAIModal.done = true;
+      state.ui.bulkAIModal.current = null;
+    }
+    saveState();
+    render();
+  },
+  async generateAllAIFeedback() {
+    const cycle = activeCycle();
+    const evaluatees = cycleUsers(cycle).filter(u => isEvaluatee(u) && u.active !== false);
+    if (!evaluatees.length) { window.alert("처리할 평가 대상자가 없습니다."); return; }
+    if (!window.confirm(`${evaluatees.length}명에 대해 AI 피드백을 일괄 생성합니다.\n기존 AI 피드백은 덮어씌워집니다. 진행하시겠습니까?`)) return;
+
+    _bulkAbortController = new AbortController();
+    state.ui.bulkAIModal = {
+      open: true, total: evaluatees.length, completed: 0,
+      current: null, errors: [], startTime: Date.now(), done: false,
+    };
+    render();
+
+    const CONCURRENCY = 3;
+    const queue = [...evaluatees];
+    const signal = _bulkAbortController.signal;
+
+    const processOne = async (employee) => {
+      if (state.ui.bulkAIModal.cancelled || signal.aborted) return;
+      state.ui.bulkAIModal.current = employee.name;
+      render();
+      try {
+        const result = await callAIFeedbackAPI(employee.id, true, signal);
+        const ev = (cycle.evaluations || {})[employee.id];
+        if (ev) {
+          if (!ev.aiFeedback) ev.aiFeedback = {};
+          Object.assign(ev.aiFeedback, {
+            overall:     String(result.overall     || ""),
+            upward:      String(result.upward      || ""),
+            peer:        String(result.peer        || ""),
+            strengths:   Array.isArray(result.strengths)  ? result.strengths  : String(result.strengths  || "").split(",").map(s=>s.trim()).filter(Boolean),
+            weaknesses:  Array.isArray(result.weaknesses) ? result.weaknesses : String(result.weaknesses || "").split(",").map(s=>s.trim()).filter(Boolean),
+            suggestions: String(result.suggestions || ""),
+            ref1Title:   String(result.ref1Title   || ""),
+            ref1Url:     String(result.ref1Url     || ""),
+            ref1Source:  String(result.ref1Source  || ""),
+            ref1Desc:    String(result.ref1Desc    || ""),
+            ref2Title:   String(result.ref2Title   || ""),
+            ref2Url:     String(result.ref2Url     || ""),
+            ref2Source:  String(result.ref2Source  || ""),
+            ref2Desc:    String(result.ref2Desc    || ""),
+            generatedAt: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        if (err.name === "AbortError") {
+          state.ui.bulkAIModal.cancelled = true;
+          return;
+        }
+        state.ui.bulkAIModal.errors.push(`${employee.name}: ${err.message || "오류"}`);
+      }
+      state.ui.bulkAIModal.completed++;
+      saveState();
+      render();
+    };
+
+    // CONCURRENCY명씩 병렬 처리
+    const workers = Array.from({ length: CONCURRENCY }, async () => {
+      while (queue.length > 0 && !state.ui.bulkAIModal.cancelled && !signal.aborted) {
+        const emp = queue.shift();
+        if (emp) await processOne(emp);
+      }
+    });
+    await Promise.all(workers);
+
+    state.ui.bulkAIModal.done = true;
+    state.ui.bulkAIModal.current = null;
+    saveState();
+    render();
+  },
+  toggleCycleAIEval(enabled) {
+    const cycle = selectedCycle();
+    if (!cycle) return;
+    cycle.useAIEval = !!enabled;
+    saveState();
+    render();
+  },
+
+  openAIEvaluatorTendency() {
+    state.ui.aiTendencyModal = { open: true, running: false, completed: 0, total: 0, currentName: "" };
+    render();
+  },
+  closeAIEvaluatorTendencyModal() {
+    state.ui.aiTendencyModal = { open: false };
+    render();
+  },
+  async runAIEvaluatorTendency() {
+    const cycle = activeCycle();
+    if (!cycle) return;
+    const evaluatees = cycleUsers(cycle).filter(isEvaluatee);
+
+    // 1차·2차 평가자 목록 수집 (중복 제거)
+    const evaluatorIds = [...new Set([
+      ...evaluatees.map(e => e.evaluator1Id).filter(Boolean),
+      ...evaluatees.map(e => e.evaluator2Id).filter(Boolean),
+    ])];
+    if (!evaluatorIds.length) return window.alert("분석할 평가자가 없습니다.");
+
+    state.ui.aiTendencyModal = { open: true, running: true, completed: 0, total: evaluatorIds.length, currentName: "" };
+    saveState(); render();
+
+    const results = {};
+    const TENDENCY_CONCURRENCY = 3;
+    const queue = [...evaluatorIds];
+
+    const processEvaluator = async (evId) => {
+      const ev = userById(evId);
+      state.ui.aiTendencyModal.currentName = ev?.name || evId;
+      render();
+      try {
+        const res = await callAIEvaluatorTendency(evId, evaluatees);
+        if (res) {
+          results[evId] = {
+            name: ev?.name || evId,
+            role: ROLE_LABELS[ev?.role] || ev?.role || "",
+            leniencyScore: Math.min(100, Math.max(0, Number(res.leniencyScore) || 50)),
+            leniencyLabel: res.leniencyLabel || "",
+            coaching: res.coaching || "",
+          };
+        }
+      } catch (e) {
+        console.warn("평가자 성향 분석 오류:", evId, e);
+      }
+      state.ui.aiTendencyModal.completed++;
+      saveState(); render();
+    };
+
+    const workers = Array.from({ length: TENDENCY_CONCURRENCY }, async () => {
+      while (queue.length > 0) {
+        const evId = queue.shift();
+        if (evId) await processEvaluator(evId);
+      }
+    });
+    await Promise.all(workers);
+
+    // 결과 저장
+    cycle.aiEvaluatorTendency = { analysedAt: new Date().toISOString(), evaluators: results };
+    state.ui.aiTendencyModal.running = false;
+    saveState(); render();
+  },
+  setHRGroupRefGrade(grade) {
+    state.ui.hrGroupRefGrade = grade;
+    render();
+  },
+  hrGroupAutoGrade() {
+    const rows = getHRGroupMembers();
+    const total = rows.length;
+    if (!total) return;
+    const sorted = [...rows].sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+    const refGrade = GRADES.includes(state.ui.hrGroupRefGrade) ? state.ui.hrGroupRefGrade : "B";
+    const dist = state.distributionMatrix[refGrade] || state.distributionMatrix["B"] || {};
+    const quotas = Object.fromEntries(GRADES.map(g => [g, Math.round(total * Number(dist[g] || 0) / 100)]));
+    let remaining = total - Object.values(quotas).reduce((s, v) => s + v, 0);
+    if (remaining > 0) quotas["B"] = (quotas["B"] || 0) + remaining;
+    const assigned = {};
+    GRADES.forEach(g => { assigned[g] = 0; });
+    sorted.forEach(emp => {
+      for (const g of GRADES) {
+        if (assigned[g] < quotas[g]) {
+          const sel = document.getElementById(`org_adj_grade_${emp.id}`);
+          if (sel) sel.value = g;
+          const ev = evaluations()[emp.id];
+          if (ev) {
+            const auto = calculateFinal(emp.id).autoGrade;
+            ev.orgAdjustment = ev.orgAdjustment || {};
+            ev.orgAdjustment.gradeManual = g !== auto;
+            ev.orgAdjustment.grade = g !== auto ? g : "";
+          }
+          assigned[g]++;
+          return;
+        }
+      }
+    });
+    render();
+  },
+  saveHRGroupComprehensive(submit) {
+    const cycle = activeCycle();
+    const rows = getHRGroupMembers();
+    if (!rows.length) return;
+    if (submit) {
+      const ungraded = rows.filter(emp => {
+        const ev = evaluations()[emp.id];
+        const sel = document.getElementById(`org_adj_grade_${emp.id}`);
+        const grade = sel ? sel.value : (ev?.orgAdjustment?.gradeManual ? ev.orgAdjustment.grade : calculateFinal(emp.id).autoGrade);
+        return !GRADES.includes(grade);
+      });
+      if (ungraded.length) return window.alert(`등급이 배분되지 않은 구성원이 있습니다: ${ungraded.map(e => e.name).join(", ")}`);
+      if (!window.confirm(`인사총무팀 그룹 ${rows.length}명의 종합평가를 확정 제출하시겠습니까?`)) return;
+    }
+    rows.forEach(emp => {
+      const ev = evaluations()[emp.id];
+      if (!ev) return;
+      const sel = document.getElementById(`org_adj_grade_${emp.id}`);
+      if (sel) {
+        const g = sel.value;
+        const auto = calculateFinal(emp.id).autoGrade;
+        ev.orgAdjustment = ev.orgAdjustment || {};
+        ev.orgAdjustment.gradeManual = GRADES.includes(g) && g !== auto;
+        ev.orgAdjustment.grade = (GRADES.includes(g) && g !== auto) ? g : "";
+        ev.orgAdjustment.reason = ev.orgAdjustment.reason || "";
+      }
+    });
+    if (!cycle.resultSubmissions) cycle.resultSubmissions = {};
+    const submittedAt = new Date().toISOString();
+    cycle.resultSubmissions[HR_GROUP_SCOPE_KEY] = {
+      scopeKey: HR_GROUP_SCOPE_KEY,
+      scopeLabel: "인사총무팀 그룹",
+      submitted: submit,
+      submittedAt: submit ? submittedAt : null,
+      savedAt: submittedAt,
+    };
+    saveState();
+    state.ui.flash = submit ? "인사총무팀 그룹 종합평가가 확정 제출되었습니다." : "임시 저장되었습니다.";
+    render();
+  },
+  saveAIFeedback(employeeId) {
+    const cycle = activeCycle();
+    const ev = (cycle.evaluations || {})[employeeId];
+    if (!ev) return;
+    if (!ev.aiFeedback) ev.aiFeedback = {};
+    const g = (id) => (document.getElementById(`ai_field_${id}`)?.value || "").trim();
+    const kw = (id) => g(id).split(",").map(s => s.trim()).filter(Boolean);
+    Object.assign(ev.aiFeedback, {
+      overall:     g("overall"),
+      upward:      g("upward"),
+      peer:        g("peer"),
+      strengths:   kw("strengths"),
+      weaknesses:  kw("weaknesses"),
+      suggestions: g("suggestions"),
+      ref1Title:  g("ref1Title"),
+      ref1Url:    g("ref1Url"),
+      ref1Source: g("ref1Source"),
+      ref1Desc:   g("ref1Desc"),
+      ref2Title:  g("ref2Title"),
+      ref2Url:    g("ref2Url"),
+      ref2Source: g("ref2Source"),
+      ref2Desc:   g("ref2Desc"),
+    });
+    saveState();
+    state.ui.aiModal = { open: false, employeeId: null, generating: false };
+    state.ui.flash = "AI 피드백이 저장되었습니다.";
+    render();
+  },
+  submitOpinion() {
+    const content = (document.getElementById("opinion_content")?.value || "").trim();
+    if (!content) return window.alert("의견을 입력해 주세요.");
+    const wantsInterview = document.getElementById("opinion_interview_check")?.checked || false;
+    const user = currentUser();
+    const ev = evaluations()[user.id];
+    if (!ev) return;
+    if (!ev.reportFeedback) ev.reportFeedback = {};
+    ev.reportFeedback.opinionSubmitted = true;
+    ev.reportFeedback.opinion = content;
+    ev.reportFeedback.opinionAt = new Date().toISOString();
+    if (wantsInterview) {
+      ev.reportFeedback.interviewRequested = true;
+      ev.reportFeedback.interviewAt = new Date().toISOString();
+    }
+    state.ui.opinionModal = false;
+    saveState();
+    state.ui.flash = wantsInterview
+      ? "의견이 제출되었습니다. 면담 요청이 완료되었습니다. 인사팀에서 빠른 시일 안에 연락을 드리도록 하겠습니다."
+      : "의견이 제출되었습니다.";
+    render();
+  },
+  saveFeedbackRow(userId) {
+    const ev = evaluations()[userId];
+    if (!ev) return;
+    if (!ev.reportFeedback) ev.reportFeedback = {};
+    const status  = document.getElementById(`fb_status_${userId}`)?.value || "미처리";
+    const hrDone  = document.getElementById(`fb_hrdone_${userId}`)?.checked || false;
+    const memo    = document.getElementById(`fb_memo_${userId}`)?.value || "";
+    ev.reportFeedback.hrStatus    = status;
+    ev.reportFeedback.hrConfirmed = hrDone;
+    ev.reportFeedback.hrMemo      = memo;
+    ev.reportFeedback.hrUpdatedAt = new Date().toISOString();
+    saveState();
+    state.ui.flash = `${userById(userId)?.name || userId}님의 피드백 정보를 저장했습니다.`;
+    render();
+  },
+  toggleHrConfirmed(userId, checked) {
+    const ev = evaluations()[userId];
+    if (!ev) return;
+    if (!ev.reportFeedback) ev.reportFeedback = {};
+    ev.reportFeedback.hrConfirmed = !!checked;
+    ev.reportFeedback.hrUpdatedAt = new Date().toISOString();
+    saveState();
+    // 숫자만 업데이트 — render() 전체 호출 없이 직접 DOM 갱신
+    render();
+  },
+  saveFeedbackAll() {
+    const cycle = selectedCycle();
+    const evaluatees = cycleUsers(cycle).filter(u => isEvaluatee(u) && u.active !== false);
+    const evs = evaluations();
+    let count = 0;
+    evaluatees.forEach(u => {
+      const statusEl  = document.getElementById(`fb_status_${u.id}`);
+      const hrDoneEl  = document.getElementById(`fb_hrdone_${u.id}`);
+      const memoEl    = document.getElementById(`fb_memo_${u.id}`);
+      if (!statusEl && !hrDoneEl && !memoEl) return;
+      const ev = evs[u.id];
+      if (!ev) return;
+      if (!ev.reportFeedback) ev.reportFeedback = {};
+      if (statusEl) ev.reportFeedback.hrStatus    = statusEl.value;
+      if (hrDoneEl) ev.reportFeedback.hrConfirmed = hrDoneEl.checked;
+      if (memoEl)   ev.reportFeedback.hrMemo      = memoEl.value;
+      ev.reportFeedback.hrUpdatedAt = new Date().toISOString();
+      count++;
+    });
+    saveState();
+    state.ui.flash = `${count}건의 피드백 정보를 저장했습니다.`;
+    render();
+  },
+  doLogin() {
+    const id = (document.getElementById("login_id")?.value || "").trim();
+    const pw = (document.getElementById("login_pw")?.value || "").trim();
+    const result = tryLogin(id, pw);
+    if (!result.ok) {
+      render(result.msg);
+      return;
+    }
+    state.currentUserId = result.userId;
+    // 로그인 랜딩 탭: 어드민 → 평가 진행 현황, 그 외 → 대시보드(홈)
+    const loggedUser = userById(result.userId) || (result.userId === "u-admin" ? state.users.find(u => u.role === "admin") : null);
+    state.ui.tab = loggedUser?.role === "admin" ? "admin" : "home";
+    // 초기 비밀번호(1234@) 사용 계정은 로그인 직후 변경 강제
+    if (loggedUser && loggedUser.role !== "admin" && !loggedUser.password) {
+      state.ui.showPwChangeModal = true;
+      state.ui.pwChangeForced = true;
+    } else {
+      state.ui.showPwChangeModal = false;
+      state.ui.pwChangeForced = false;
+    }
+    saveState();
+    render();
+  },
+  doLogout() {
+    if (!window.confirm("로그아웃 하시겠습니까?")) return;
+    clearSession();
+    render();
+  },
+  setTab(tab) {
+    state.ui.tab = tab;
+    state.ui.selectedTaskKey = "";
+    state.ui.flash = "";
+    if (tab === "memberDashboard") state.ui.dashboardMemberId = "";
+    if (tab === "goals") state.ui.goalViewMode = "goals"; // 탭 재진입 시 기본 뷰로 복귀
+    saveState();
+    render();
+  },
+  openDashboardMember(id) {
+    state.ui.dashboardMemberId = id || "";
+    saveState();
+    render();
+  },
+  clearDashboardMember() {
+    state.ui.dashboardMemberId = "";
+    saveState();
+    render();
+  },
+  filterDashboardMembers(query) {
+    const q = String(query || "").trim().toLowerCase();
+    document.querySelectorAll(".dash-member-row").forEach((row) => {
+      const match = !q || String(row.dataset.search || "").includes(q);
+      row.style.display = match ? "" : "none";
+    });
+  },
+  filterCurrentAccount(query) {
+    const q = String(query || "").trim().toLowerCase();
+    const dropdown = document.getElementById("acct-dropdown");
+    if (!dropdown) return;
+    // 전체 목록에서 검색어로 필터 (검색어 없으면 전체 표시, 퇴사자 제외)
+    const allActive = state.users.filter(u => u.active !== false && !isRetired(u));
+    const matched = q
+      ? allActive.filter(u => (u.name||"").toLowerCase().includes(q) || (u.employeeNo||"").includes(q))
+      : allActive;
+    if (!matched.length) {
+      dropdown.innerHTML = `<div class="acct-item muted">검색 결과 없음</div>`;
+    } else {
+      dropdown.innerHTML = matched.map((u, i) => `
+        <div class="acct-item ${u.id === state.currentUserId ? "current" : ""}" data-id="${esc(u.id)}"
+          onmousedown="App.switchToAccount('${esc(u.id)}')">
+          <span class="acct-item-name">${esc(u.name)}</span>
+          <span class="acct-item-role">${ROLE_LABELS[u.role]||u.role}</span>
+        </div>`).join("");
+    }
+    dropdown.style.display = "block";
+    // 현재 계정 위치로 스크롤
+    const currentEl = dropdown.querySelector(".acct-item.current");
+    if (currentEl && !q) setTimeout(() => currentEl.scrollIntoView({ block: "nearest" }), 0);
+  },
+  openAccountDropdown() {
+    const input = document.getElementById("userSwitchSearch");
+    if (input) { input.value = ""; input.select(); }
+    App.filterCurrentAccount("");
+  },
+  closeAccountDropdown() {
+    const dropdown = document.getElementById("acct-dropdown");
+    if (dropdown) dropdown.style.display = "none";
+    const input = document.getElementById("userSwitchSearch");
+    if (input) input.value = currentUser().name;
+  },
+  accountSearchKeydown(event) {
+    const dropdown = document.getElementById("acct-dropdown");
+    if (!dropdown || dropdown.style.display === "none") return;
+    const items = [...dropdown.querySelectorAll(".acct-item[data-id]")];
+    if (!items.length) return;
+    const focused = dropdown.querySelector(".acct-item.focused");
+    let idx = items.indexOf(focused);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      idx = Math.min(idx + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle("focused", i === idx));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      idx = Math.max(idx - 1, 0);
+      items.forEach((el, i) => el.classList.toggle("focused", i === idx));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const target = focused || items[0];
+      if (target?.dataset.id) App.switchToAccount(target.dataset.id);
+    } else if (event.key === "Escape") {
+      App.closeAccountDropdown();
+    }
+  },
+  switchToAccount(userId) {
+    if (!userId) return;
+    state.currentUserId = userId;
+    const nextUser = currentUser();
+    const nextTabs = getVisibleTabs(nextUser);
+    if (nextUser.role === "admin") {
+      state.ui.tab = "admin";
+    } else {
+      state.ui.tab = nextTabs.includes(state.ui.tab) ? state.ui.tab : nextTabs[0];
+    }
+    state.ui.selectedTaskKey = "";
+    saveState();
+    render();
+  },
+  goHome() {
+    const user = currentUser();
+    state.ui.tab = user.role === "admin" ? "admin" : "home";
+    state.ui.selectedTaskKey = "";
+    render();
+  },
+  setAdminSection(section) {
+    state.ui.adminSection = section;
+    if (section === "people") state.ui.peopleSubTab = "targets";
+    state.ui.flash = "";
+    saveState();
+    render();
+  },
+  openCycleDetailModal(cycleId) {
+    if (cycleId) { state.activeCycleId = cycleId; invalidateCycleCache(); }
+    state.ui.cycleDetailModal = { tab: "dashboard", fullscreen: false };
+    saveState();
+    render();
+  },
+  closeCycleDetailModal() {
+    state.ui.cycleDetailModal = null;
+    saveState();
+    render();
+  },
+  setCycleDetailTab(tab) {
+    if (!state.ui.cycleDetailModal) state.ui.cycleDetailModal = {};
+    state.ui.cycleDetailModal.tab = tab;
+    saveState();
+    render();
+  },
+  toggleCycleDetailFullscreen() {
+    if (!state.ui.cycleDetailModal) return;
+    state.ui.cycleDetailModal.fullscreen = !state.ui.cycleDetailModal.fullscreen;
+    saveState();
+    render();
+  },
+  openCycleSettings(cycleId) {
+    if (cycleId) { state.activeCycleId = cycleId; invalidateCycleCache(); }
+    state.ui.cycleSettingsModal = { section: "progress" };
+    saveState();
+    render();
+  },
+  closeCycleSettings() {
+    state.ui.cycleSettingsModal = null;
+    saveState();
+    render();
+  },
+  toggleCycleSettingsFullscreen() {
+    if (!state.ui.cycleSettingsModal) return;
+    state.ui.cycleSettingsModal.fullscreen = !state.ui.cycleSettingsModal.fullscreen;
+    saveState();
+    render();
+  },
+  setCycleSettingsSection(section) {
+    if (!state.ui.cycleSettingsModal) state.ui.cycleSettingsModal = {};
+    state.ui.cycleSettingsModal.section = section;
+    saveState();
+    render();
+  },
+  switchCycle(cycleId) {
+    state.activeCycleId = cycleId;
+    state.ui.selectedTaskKey = "";
+    saveState();
+    render();
+  },
+  createCycleAndOpen() {
+    const name = window.prompt("새 평가명을 입력하세요.", `${new Date().getFullYear()}년 정기 인사평가`);
+    if (!name) return;
+    const cycle = createCycle(name, state.users);
+    cycle.status = "paused";
+    state.cycles.push(cycle);
+    state.activeCycleId = cycle.id;
+    invalidateCycleCache();
+    state.ui.tab = "admin";
+    state.ui.cycleSettingsModal = { section: "progress" };
+    saveState();
+    state.ui.flash = `새 평가 '${name}'을 만들었습니다. 각 단계를 세팅하고 리포트 설정에서 평가를 시작하세요.`;
+    render();
+  },
+  createCycle() {
+    const name = window.prompt("새 평가명을 입력하세요.", `${new Date().getFullYear()}년 정기 인사평가`);
+    if (!name) return;
+    const cycle = createCycle(name, state.users);
+    cycle.status = "paused";
+    state.cycles.push(cycle);
+    state.activeCycleId = cycle.id;
+    invalidateCycleCache();
+    state.ui.tab = "admin";
+    state.ui.cycleSettingsModal = { section: "progress" };
+    saveState();
+    state.ui.flash = `새 평가 '${name}'을 만들었습니다.`;
+    render();
+  },
+  deleteCycleById(cycleId) {
+    if (state.cycles.length <= 1) { window.alert("최소 1개의 평가는 남아 있어야 합니다."); return; }
+    const c = state.cycles.find((x) => x.id === cycleId);
+    if (!c) return;
+    if (!window.confirm(`'${c.name}' 평가와 그 데이터를 삭제할까요?`)) return;
+    state.cycles = state.cycles.filter((x) => x.id !== cycleId);
+    if (state.activeCycleId === cycleId) state.activeCycleId = state.cycles[0].id;
+    invalidateCycleCache();
+    saveState();
+    render();
+  },
+  deleteCycle() {
+    if (state.cycles.length <= 1) {
+      window.alert("최소 1개의 평가는 남아 있어야 합니다.");
+      return;
+    }
+    if (!window.confirm("현재 선택한 평가와 그 평가 데이터를 삭제할까요?")) return;
+    state.cycles = state.cycles.filter((cycle) => cycle.id !== state.activeCycleId);
+    state.activeCycleId = state.cycles[0].id;
+    saveState();
+    render();
+  },
+  startEvaluation() {
+    const cycle = selectedCycle();
+    // 먼저 현재 입력된 세팅 저장
+    if (document.getElementById("cycle_name")) cycle.name = valueOf("cycle_name");
+    ["selfStart","selfEnd","firstStart","firstEnd","secondStart","secondEnd","upwardStart","upwardEnd","peerStart","peerEnd","gradeStart","gradeEnd","feedbackStart","feedbackEnd"].forEach(k => {
+      const v = valueOf(`cycle_${k}`); if (v !== null && v !== undefined && document.getElementById(`cycle_${k}`)) cycle[k] = v;
+    });
+    if (!cycle.selfStart || !cycle.selfEnd) {
+      if (!window.confirm("자기평가 기간이 비어 있습니다. 그래도 평가를 시작할까요?")) return;
+    }
+    if (!window.confirm(`'${cycle.name}' 평가를 시작하시겠습니까?\n시작하면 설정된 기간에 따라 구성원이 평가를 작성할 수 있습니다.`)) return;
+    // 진행중인 다른 사이클은 중지 상태로 전환
+    state.cycles.forEach(c => { if (c.id !== cycle.id && c.status === "active") c.status = "paused"; });
+    cycle.status = "active";
+    saveState();
+    state.ui.flash = `'${cycle.name}' 평가를 시작했습니다. 진행 현황은 '평가 진행 현황' 메뉴에서 확인하세요.`;
+    render();
+  },
+  saveCycleStatusOnly() {
+    const cycle = state.cycles.find(c => c.id === state.activeCycleId) || state.cycles[0];
+    const v = valueOf("dash_cycle_status");
+    if (!v) return;
+    // active로 변경 시 다른 사이클은 모두 paused로
+    if (v === "active") {
+      state.cycles.forEach(c => { if (c.id !== cycle.id && c.status === "active") c.status = "paused"; });
+    }
+    cycle.status = v;
+    saveState();
+    state.ui.flash = cycle.status === "active" ? "평가를 진행 상태로 변경했습니다."
+      : cycle.status === "done" ? "평가 완료 상태로 변경했습니다. (결과 공개 설정만 가능)"
+      : "평가를 중지했습니다.";
+    render();
+  },
+  autoFillPhaseDates(referenceDate) {
+    if (!referenceDate) return;
+    const base = new Date(referenceDate);
+    const addDays = (d, n) => {
+      const r = new Date(d);
+      r.setDate(r.getDate() + n);
+      return r.toISOString().slice(0, 10);
+    };
+    // 기준일 기준 단계별 오프셋 (기존 기본 구조 반영)
+    const phases = [
+      ["cycle_selfStart",     0],
+      ["cycle_selfEnd",      11],
+      ["cycle_firstStart",   12],
+      ["cycle_firstEnd",     18],
+      ["cycle_secondStart",  19],
+      ["cycle_secondEnd",    25],
+      ["cycle_upwardStart",  19],
+      ["cycle_upwardEnd",    25],
+      ["cycle_peerStart",    19],
+      ["cycle_peerEnd",      25],
+      ["cycle_gradeStart",   26],
+      ["cycle_gradeEnd",     32],
+      ["cycle_feedbackStart",33],
+      ["cycle_feedbackEnd",  41],
+    ];
+    phases.forEach(([id, offset]) => {
+      const el = document.getElementById(id);
+      if (el) el.value = addDays(base, offset);
+    });
+  },
+  saveCycleSettings() {
+    const cycle = state.cycles.find(c => c.id === state.activeCycleId) || state.cycles[0];
+    if (document.getElementById("cycle_name")) cycle.name = valueOf("cycle_name");
+    if (document.getElementById("cycle_status")) {
+      const newStatus = valueOf("cycle_status");
+      // active로 변경 시 다른 사이클은 모두 paused로
+      if (newStatus === "active") {
+        state.cycles.forEach(c => { if (c.id !== cycle.id && c.status === "active") c.status = "paused"; });
+      }
+      cycle.status = newStatus;
+    }
+    cycle.selfStart = valueOf("cycle_selfStart");
+    cycle.selfEnd = valueOf("cycle_selfEnd");
+    cycle.firstStart = valueOf("cycle_firstStart");
+    cycle.firstEnd = valueOf("cycle_firstEnd");
+    cycle.secondStart = valueOf("cycle_secondStart");
+    cycle.secondEnd = valueOf("cycle_secondEnd");
+    cycle.upwardStart = valueOf("cycle_upwardStart");
+    cycle.upwardEnd = valueOf("cycle_upwardEnd");
+    cycle.peerStart = valueOf("cycle_peerStart");
+    cycle.peerEnd = valueOf("cycle_peerEnd");
+    cycle.gradeStart = valueOf("cycle_gradeStart");
+    cycle.gradeEnd = valueOf("cycle_gradeEnd");
+    cycle.feedbackStart = valueOf("cycle_feedbackStart");
+    cycle.feedbackEnd = valueOf("cycle_feedbackEnd");
+    if (document.getElementById("cycle_referenceDate")) cycle.referenceDate = valueOf("cycle_referenceDate");
+    saveState();
+    render();
+  },
+  openTask(taskKey) {
+    state.ui.tab = "tasks";
+    state.ui.selectedTaskKey = taskKey;
+    saveState();
+    render();
+  },
+  setTaskViewMode(mode) {
+    state.ui.taskViewMode = mode;
+    saveState();
+    render();
+  },
+  selectTemplateComponent(component) {
+    if (!TEMPLATE_KINDS.includes(component)) return;
+    syncAllTemplateEditors();
+    state.ui.templateComponent = component;
+    state.ui.templateSelections = state.ui.templateSelections || {};
+    state.ui.templateSelections[component] = state.ui.templateSelections[component] || defaultTemplateIdForKind(component);
+    saveState();
+    render();
+  },
+  setPerformancePreviewRole(role) {
+    state.ui.performancePreviewRole = role;
+    saveState();
+    render();
+  },
+  openTemplatePreviewModal(component, templateIndex) {
+    state.ui.templatePreviewModal = { component, templateIndex: Number(templateIndex) };
+    saveState();
+    render();
+  },
+  closeTemplatePreviewModal() {
+    state.ui.templatePreviewModal = null;
+    saveState();
+    render();
+  },
+  selectTemplateVariant(component, templateId) {
+    if (!TEMPLATE_KINDS.includes(component)) return;
+    syncAllTemplateEditors();
+    state.ui.templateSelections = state.ui.templateSelections || {};
+    state.ui.templateSelections[component] = templateId || defaultTemplateIdForKind(component);
+    saveState();
+    render();
+  },
+  setTemplateAssignment(employeeId, component, templateId) {
+    if (!TEMPLATE_KINDS.includes(component)) return;
+    const assignment = templateAssignmentFor(employeeId);
+    assignment[component] = templateId || defaultTemplateIdForKind(component);
+    saveState();
+  },
+  saveSelectedTemplate() {
+    const component = selectedTemplateComponent();
+    syncTemplateEditor(component, selectedTemplateIndex(component));
+    saveState();
+    state.ui.flash = `${WEIGHT_COMPONENT_LABELS[component]} 템플릿을 저장하였습니다.`;
+    render();
+  },
+  pickScore(inputId, score, button) {
+    const input = document.getElementById(inputId);
+    if (input) input.value = score;
+    const wrap = button?.closest(".grade-picker") || button?.parentElement;
+    if (wrap) {
+      [...wrap.querySelectorAll("button")].forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+    }
+  },
+  addAchievement(prefix) {
+    const target = getReviewByPrefix(prefix);
+    target.performance.achievements = collectReviewFromDom(prefix, target, getEmployeeByPrefix(prefix)).performance.achievements;
+    const max = Number(state.maxAchievements || 0);
+    if (max > 0 && target.performance.achievements.length >= max) {
+      return window.alert(`업적은 최대 ${max}개까지 추가할 수 있습니다.`);
+    }
+    target.performance.achievements.push({ name: "", goal: "", detail: "", weight: 0, score: "", grade: "" });
+    saveState();
+    render();
+  },
+  saveMaxAchievements() {
+    const v = parseInt(valueOf("max_achievements"), 10);
+    if (isNaN(v) || v < 0 || v > 30) return window.alert("업적 개수는 0~30 사이로 입력해 주세요.");
+    state.maxAchievements = v;
+    saveState();
+    state.ui.flash = v > 0 ? `자기평가 업적 개수를 최대 ${v}개로 제한했습니다.` : "업적 개수 제한을 해제했습니다.";
+    render();
+  },
+  // 평가 응답 등급별 환산 점수 저장 — 각 평가 종류의 모든 템플릿에 적용
+  saveAnswerGradeScales() {
+    TEMPLATE_KINDS.forEach((component) => {
+      if (!document.getElementById(`ags_${component}_S_score`)) return;
+      const grades = GRADES.map((g) => ({
+        grade: g,
+        score: Number(valueOf(`ags_${component}_${g}_score`) || 0),
+        description: valueOf(`ags_${component}_${g}_desc`),
+      }));
+      templateVariantsForKind(component).forEach((tpl) => { tpl.grades = clone(grades); });
+      if (COMPONENTS.includes(component) && templateVariantsForKind(component)[0]) state.templates[component] = clone(templateVariantsForKind(component)[0]);
+      if (component === "upward") state.upwardTemplate = clone(templateVariantsForKind(component)[0]);
+      if (component === "peer") state.peerTemplate = clone(templateVariantsForKind(component)[0]);
+    });
+    saveState();
+    state.ui.flash = "평가 응답 등급별 환산 점수를 저장했습니다.";
+    render();
+  },
+  removeAchievement(prefix, index) {
+    const target = getReviewByPrefix(prefix);
+    target.performance.achievements = collectReviewFromDom(prefix, target, getEmployeeByPrefix(prefix)).performance.achievements;
+    target.performance.achievements.splice(index, 1);
+    if (!target.performance.achievements.length) target.performance.achievements.push({ name: "", goal: "", detail: "", weight: 100, score: "", grade: "" });
+    saveState();
+    render();
+  },
+  downloadTemplateForm(component) {
+    // 실제 엑셀(.xlsx) 양식 다운로드 — 쉼표가 셀을 나누지 않습니다
+    const label = WEIGHT_COMPONENT_LABELS[component] || component;
+    const rows = [
+      ["# 평가 템플릿 작성 양식 (안내 줄은 지우지 않아도 됩니다)", ""],
+      ["템플릿 이름", `${label} 사본`],
+      ["질문 제목(선택)", ""],
+      ["가이드(선택)", ""],
+      ["", ""],
+      ["문항명", "가이드"],
+      ["예) 협업 기여", "공동 목표 달성을 위해 정보를 공유하고, 필요한 도움을 제공한다."],
+      ["예) 책임감", "맡은 역할과 약속을, 성실히 이행한다."],
+    ];
+    try {
+      const data = buildXlsx(rows);
+      const blob = new Blob([data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${label}_템플릿양식.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e); window.alert("양식 생성 중 오류가 발생했습니다.");
+    }
+  },
+  handleTemplateUpload(event, component) {
+    const file = event.target?.files?.[0];
+    if (!file) return;
+    const reset = () => { if (event.target) event.target.value = ""; };
+    const name = (file.name || "").toLowerCase();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let parsed;
+        if (name.endsWith(".xlsx")) {
+          const rows = parseXlsx(new Uint8Array(e.target.result));
+          parsed = parseTemplateRows(rows);
+        } else if (name.endsWith(".xls")) {
+          window.alert("구형 .xls는 지원하지 않습니다. 엑셀에서 .xlsx로 저장한 뒤 업로드해 주세요.");
+          reset(); return;
+        } else {
+          // CSV 호환 (구버전 양식)
+          const text = decodeCsvBuffer(e.target.result);
+          parsed = parseTemplateCsv(text);
+        }
+        if (!parsed.items.length) {
+          window.alert("문항을 찾을 수 없습니다. 양식의 '문항명' 아래 행에 문항을 작성했는지 확인해 주세요.");
+          reset(); return;
+        }
+        const variants = templateVariantsForKind(component);
+        const base = component === "upward" ? defaultUpwardTemplate() : component === "peer" ? defaultPeerTemplate() : defaultTemplateVariants()[component][0];
+        const newTemplate = {
+          ...clone(base),
+          id: `${component}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          label: parsed.label || `${WEIGHT_COMPONENT_LABELS[component]} (업로드)`,
+          question: parsed.question || "",
+          guide: parsed.guide || "",
+          items: parsed.items,
+          grades: clone(base.grades || defaultGradeScale()),
+        };
+        variants.push(newTemplate);
+        state.ui.templateComponent = component;
+        state.ui.templateSelections = state.ui.templateSelections || {};
+        state.ui.templateSelections[component] = newTemplate.id;
+        saveState();
+        state.ui.flash = `'${newTemplate.label}' 템플릿을 업로드했습니다. (문항 ${parsed.items.length}개)`;
+        render();
+      } catch (err) {
+        console.error(err);
+        window.alert("파일을 읽는 중 오류가 발생했습니다. 내려받은 .xlsx 양식을 사용했는지 확인해 주세요.");
+      }
+      reset();
+    };
+    reader.readAsArrayBuffer(file);
+  },
+  addTemplateVariant(component) {
+    syncAllTemplateEditors();
+    const variants = templateVariantsForKind(component);
+    const base = clone(variants[0] || (component === "upward" ? { id: "upward-default", ...defaultUpwardTemplate() } : component === "peer" ? { id: "peer-default", ...defaultPeerTemplate() } : defaultTemplateVariants()[component][0]));
+    const nextTemplate = {
+      ...base,
+      id: `${component}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      label: `${base.label || WEIGHT_COMPONENT_LABELS[component]} 사본`,
+    };
+    variants.push(nextTemplate);
+    state.ui.templateComponent = component;
+    state.ui.templateSelections = state.ui.templateSelections || {};
+    state.ui.templateSelections[component] = nextTemplate.id;
+    saveState();
+    render();
+  },
+  removeSelectedTemplateVariant() {
+    const component = selectedTemplateComponent();
+    this.removeTemplateVariant(component, selectedTemplateIndex(component));
+  },
+  removeTemplateVariant(component, templateIndex) {
+    const variants = templateVariantsForKind(component);
+    if (variants.length <= 1) return window.alert("기본 템플릿은 삭제할 수 없습니다.");
+    const removed = variants[templateIndex];
+    variants.splice(templateIndex, 1);
+    const fallbackId = defaultTemplateIdForKind(component);
+    if (TEMPLATE_KINDS.includes(component)) {
+      state.cycles.forEach((cycle) => {
+        Object.values(cycle.templateAssignments || {}).forEach((assignment) => {
+          if (assignment[component] === removed.id) assignment[component] = fallbackId;
+        });
+      });
+    }
+    if (COMPONENTS.includes(component)) {
+      state.templates[component] = clone(variants[0]);
+    }
+    if (component === "upward") state.upwardTemplate = clone(variants[0]);
+    if (component === "peer") state.peerTemplate = clone(variants[0]);
+    state.ui.templateSelections = state.ui.templateSelections || {};
+    state.ui.templateSelections[component] = fallbackId;
+    saveState();
+    render();
+  },
+  addTemplateItem(component, templateIndex) {
+    syncTemplateEditor(component, templateIndex);
+    templateVariantsForKind(component)[templateIndex].items.push({ name: "", guide: "", required: true });
+    saveState();
+    render();
+  },
+  removeTemplateItem(component, templateIndex, index) {
+    syncTemplateEditor(component, templateIndex);
+    const template = templateVariantsForKind(component)[templateIndex];
+    template.items.splice(index, 1);
+    if (!template.items.length) template.items.push({ name: "", guide: "", required: true });
+    saveState();
+    render();
+  },
+  addUpwardTemplateItem() {
+    syncUpwardTemplateEditor();
+    state.upwardTemplate.items.push({ name: "", guide: "", required: true });
+    saveState();
+    render();
+  },
+  removeUpwardTemplateItem(index) {
+    syncUpwardTemplateEditor();
+    state.upwardTemplate.items.splice(index, 1);
+    if (!state.upwardTemplate.items.length) state.upwardTemplate.items.push({ name: "", guide: "", required: true });
+    saveState();
+    render();
+  },
+  addPeerTemplateItem() {
+    syncPeerTemplateEditor();
+    state.peerTemplate.items.push({ name: "", guide: "", required: true });
+    saveState();
+    render();
+  },
+  removePeerTemplateItem(index) {
+    syncPeerTemplateEditor();
+    state.peerTemplate.items.splice(index, 1);
+    if (!state.peerTemplate.items.length) state.peerTemplate.items.push({ name: "", guide: "", required: true });
+    saveState();
+    render();
+  },
+  saveUpwardTemplate() {
+    syncUpwardTemplateEditor();
+    saveState();
+    render();
+  },
+  saveSelf(submit) {
+    const user = currentUser();
+    const evaluation = evaluations()[user.id];
+    evaluation.self = collectReviewFromDom("self", evaluation.self, user);
+    if (submit) {
+      if (!canEditStage("self")) return window.alert(periodMessage("self", activeCycle()));
+      if (hasInvalidPerformanceWeightTotal(evaluation.self, user)) return window.alert("업적평가의 업적 가중치 합계는 100이어야 제출할 수 있습니다.");
+      if (hasMissingScores(evaluation.self, user)) return window.alert("모든 평가 항목의 등급을 선택해야 제출할 수 있습니다.");
+      const missingSelfResponses = missingSelfResponseLabels(evaluation.self);
+      if (missingSelfResponses.length) return window.alert(`${missingSelfResponses.join(", ")}을(를) 작성해야 제출할 수 있습니다.`);
+      evaluation.status.self = "submitted";
+      // AI 평가 기능이 활성화된 경우 자동으로 업적평가 채점 시작
+      if (activeCycle()?.useAIEval) {
+        callAIPerformanceEval(user.id).catch(() => {});
+      }
+    }
+    saveState();
+    render();
+  },
+  saveStage(employeeId, stage, submit) {
+    const employee = userById(employeeId);
+    const evaluation = evaluations()[employeeId];
+    alignPerformanceAchievements(evaluation[stage], evaluation.self, stage, evaluation.first);
+    evaluation[stage] = collectReviewFromDom(stage, evaluation[stage], employee);
+    // 1차 평가자가 가중치를 저장할 때 오버라이드 배열에 기록
+    if (stage === "first") {
+      const achs = evaluation.first?.performance?.achievements || [];
+      if (achs.length) {
+        evaluation.first.performance.achievementWeightOverrides = achs.map(a => a.weight ?? 0);
+      }
+    }
+    evaluation[stage].overallFeedback = "";
+    if (submit) {
+      if (!canEditStage(stage)) return window.alert(periodMessage(stage, activeCycle()));
+      // 업적 가중치 합계 검증 (평가자 및 자기평가 공통)
+      const perfTemplate = templateFor(employee, "performance");
+      if (perfTemplate?.useWeight) {
+        const achs = evaluation[stage]?.performance?.achievements || [];
+        if (achs.length > 0) {
+          const weightSum = achs.reduce((s, a) => s + (Number(a.weight) || 0), 0);
+          if (weightSum !== 100) return window.alert(`업적 가중치 합계가 100%이어야 제출할 수 있습니다. 현재 합계: ${weightSum}%`);
+        }
+      }
+      if (hasMissingScores(evaluation[stage], employee)) return window.alert("모든 평가 항목의 등급을 선택해야 제출할 수 있습니다.");
+      const missingComments = missingReviewCommentLabels(evaluation[stage]);
+      if (missingComments.length) return window.alert(`${missingComments.join(", ")}을(를) 작성해야 제출할 수 있습니다.`);
+      evaluation.status[stage] = "completed";
+    }
+    saveState();
+    render();
+  },
+  saveBatchTaskScores(submit) {
+    const tasks = getTasksForUser(currentUser());
+    const normalTasks = tasks.filter((task) => !task.type);
+    const upwardTasks = tasks.filter((task) => task.type === "upward");
+    const peerTasks = tasks.filter((task) => task.type === "peer");
+    const errors = [];
+    let touched = 0;
+    normalTasks.forEach((task) => {
+      const evaluation = evaluations()[task.employee.id];
+      const review = evaluation[task.stage];
+      ["competency", "attitude"].forEach((component) => {
+        const template = templateFor(task.employee, component);
+        review[component] = review[component] || { itemScores: {} };
+        review[component].itemScores = review[component].itemScores || {};
+        template.items.forEach((_, index) => {
+          const id = `batch_${task.employee.id}_${task.stage}_${component}_${index}_score`;
+          const element = document.getElementById(id);
+          if (!element) return;
+          review[component].itemScores[index] = clampScore(element.value);
+          touched += 1;
+        });
+        review[component].score = deriveComponentScore(review[component]) ?? "";
+        review[component].grade = gradeByTemplateScore(component, review[component].score, task.employee);
+        const comment = document.getElementById(`batch_comment_${task.employee.id}_${task.stage}_${component}`);
+        if (comment) review[component].comment = comment.value;
+      });
+      if (submit) {
+        if (!task.ready || !canEditStage(task.stage)) {
+          errors.push(`${task.employee.name} ${task.label}: 기간 또는 단계 대기`);
+        } else if (hasMissingScores(review, task.employee)) {
+          errors.push(`${task.employee.name} ${task.label}: 답변하지 않은 평가 문항이 있습니다.`);
+        } else {
+          const missingComments = missingReviewCommentLabels(review);
+          if (missingComments.length) errors.push(`${task.employee.name} ${task.label}: ${missingComments.join(", ")}을(를) 작성해 주세요.`);
+        }
+      }
+    });
+    upwardTasks.forEach((task) => {
+      const sourceAssignment = getUpwardAssignmentById(task.assignment.id);
+      if (!sourceAssignment) return;
+      const evaluator = cycleUserById(sourceAssignment.evaluatorId) || userById(sourceAssignment.evaluatorId);
+      const template = evaluator ? templateForKind(evaluator, "upward") : state.upwardTemplate;
+      const answer = { ...makeEmptyUpwardAnswer(), ...(sourceAssignment.answer || {}), itemScores: { ...(sourceAssignment.answer?.itemScores || {}) } };
+      template.items.forEach((_, index) => {
+        const element = document.getElementById(`batch_upward_${sourceAssignment.id}_${index}_score`);
+        if (!element) return;
+        answer.itemScores[index] = clampScore(element.value);
+        touched += 1;
+      });
+      const comment = document.getElementById(`batch_upward_${sourceAssignment.id}_comment`);
+      if (comment) answer.comment = comment.value;
+      answer.score = deriveUpwardScore(answer) ?? "";
+      answer.grade = gradeByUpwardScore(answer.score, template);
+      const assignment = getUpwardAssignmentById(sourceAssignment.id);
+      if (!assignment) return;
+      assignment.answer = answer;
+      if (submit) {
+        if (!canEditUpward()) errors.push(`${task.employee.name} 상향평가: ${periodMessage("upward", activeCycle())}`);
+        else if (hasMissingUpwardScores(answer, template)) errors.push(`${task.employee.name} 상향평가: 답변하지 않은 평가 문항이 있습니다.`);
+        else if (!String(answer.comment || "").trim()) errors.push(`${task.employee.name} 상향평가: 평가 의견을 작성해 주세요.`);
+      }
+    });
+    peerTasks.forEach((task) => {
+      const sourceAssignment = getPeerAssignmentById(task.assignment.id);
+      if (!sourceAssignment) return;
+      const evaluator = cycleUserById(sourceAssignment.evaluatorId) || userById(sourceAssignment.evaluatorId);
+      const template = evaluator ? templateForKind(evaluator, "peer") : state.peerTemplate;
+      const answer = { ...makeEmptyPeerAnswer(), ...(sourceAssignment.answer || {}), itemScores: { ...(sourceAssignment.answer?.itemScores || {}) } };
+      template.items.forEach((_, index) => {
+        const element = document.getElementById(`batch_peer_${sourceAssignment.id}_${index}_score`);
+        if (!element) return;
+        answer.itemScores[index] = clampScore(element.value);
+        touched += 1;
+      });
+      const comment = document.getElementById(`batch_peer_${sourceAssignment.id}_comment`);
+      if (comment) answer.comment = comment.value;
+      answer.score = derivePeerScore(answer) ?? "";
+      answer.grade = gradeByPeerScore(answer.score, template);
+      const assignment = getPeerAssignmentById(sourceAssignment.id);
+      if (!assignment) return;
+      assignment.answer = answer;
+      if (submit) {
+        if (!canEditPeer()) errors.push(`${task.employee.name} 동료평가: ${periodMessage("peer", activeCycle())}`);
+        else if (hasMissingPeerScores(answer, template)) errors.push(`${task.employee.name} 동료평가: 답변하지 않은 평가 문항이 있습니다.`);
+        else if (!String(answer.comment || "").trim()) errors.push(`${task.employee.name} 동료평가: 평가 의견을 작성해 주세요.`);
+      }
+    });
+    if (submit && errors.length) {
+      saveState();
+      window.alert(`제출할 수 없는 항목이 있습니다.\n\n${errors.slice(0, 20).join("\n")}${errors.length > 20 ? `\n외 ${errors.length - 20}건` : ""}`);
+      return render();
+    }
+    if (submit) {
+      normalTasks.forEach((task) => {
+        evaluations()[task.employee.id].status[task.stage] = "completed";
+      });
+      upwardTasks.forEach((task) => {
+        const assignment = getUpwardAssignmentById(task.assignment.id);
+        if (!assignment) return;
+        assignment.status = "completed";
+        assignment.submitted = true;
+        assignment.submittedAt = new Date().toISOString();
+      });
+      peerTasks.forEach((task) => {
+        const assignment = getPeerAssignmentById(task.assignment.id);
+        if (!assignment) return;
+        assignment.status = "completed";
+        assignment.submitted = true;
+        assignment.submittedAt = new Date().toISOString();
+      });
+    }
+    saveState();
+    state.ui.flash = submit ? "입력된 일괄 평가를 저장하고 완료 가능한 평가는 완료 처리했습니다." : "입력된 일괄 평가를 저장했습니다.";
+    render();
+  },
+  saveUpward(assignmentId, submit) {
+    const assignment = getUpwardAssignmentById(assignmentId);
+    if (!assignment) return window.alert("상향평가 배정을 찾을 수 없습니다. 평가권한 관리에서 배정을 다시 확인해 주세요.");
+    const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
+    const template = evaluator ? templateForKind(evaluator, "upward") : state.upwardTemplate;
+    const answer = collectUpwardAnswerFromDom(assignment);
+    if (submit) {
+      if (!canEditUpward()) return window.alert(periodMessage("upward", activeCycle()));
+      if (hasMissingUpwardScores(answer, template)) return window.alert("모든 상향평가 문항의 등급을 선택해야 제출할 수 있습니다.");
+      if (!String(answer.comment || "").trim()) return window.alert("상향평가 의견을 작성해야 제출할 수 있습니다.");
+    }
+    const targetAssignment = getUpwardAssignmentById(assignmentId);
+    if (!targetAssignment) return window.alert("상향평가 배정을 찾을 수 없습니다. 평가권한 관리에서 배정을 다시 확인해 주세요.");
+    targetAssignment.answer = answer;
+    if (submit) {
+      targetAssignment.status = "completed";
+      targetAssignment.submitted = true;
+      targetAssignment.submittedAt = new Date().toISOString();
+    } else if (!isCompletedStatus(targetAssignment.status)) {
+      targetAssignment.status = "draft";
+    }
+    state.ui.tab = "tasks";
+    state.ui.taskViewMode = "person";
+    state.ui.selectedTaskKey = `upward:${targetAssignment.id}`;
+    state.ui.flash = submit ? "상향평가를 제출했습니다." : "상향평가를 저장했습니다.";
+    saveState();
+    render();
+  },
+  savePeer(assignmentId, submit) {
+    const assignment = getPeerAssignmentById(assignmentId);
+    if (!assignment) return window.alert("동료평가 배정을 찾을 수 없습니다. 평가권한 관리에서 배정을 다시 확인해 주세요.");
+    const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
+    const template = evaluator ? templateForKind(evaluator, "peer") : state.peerTemplate;
+    const answer = collectPeerAnswerFromDom(assignment);
+    if (submit) {
+      if (!canEditPeer()) return window.alert(periodMessage("peer", activeCycle()));
+      if (hasMissingPeerScores(answer, template)) return window.alert("모든 동료평가 문항의 등급을 선택해야 제출할 수 있습니다.");
+      if (!String(answer.comment || "").trim()) return window.alert("동료평가 의견을 작성해야 제출할 수 있습니다.");
+    }
+    const targetAssignment = getPeerAssignmentById(assignmentId);
+    if (!targetAssignment) return window.alert("동료평가 배정을 찾을 수 없습니다. 평가권한 관리에서 배정을 다시 확인해 주세요.");
+    targetAssignment.answer = answer;
+    if (submit) {
+      targetAssignment.status = "completed";
+      targetAssignment.submitted = true;
+      targetAssignment.submittedAt = new Date().toISOString();
+    } else if (!isCompletedStatus(targetAssignment.status)) {
+      targetAssignment.status = "draft";
+    }
+    state.ui.tab = "tasks";
+    state.ui.taskViewMode = "person";
+    state.ui.selectedTaskKey = `peer:${targetAssignment.id}`;
+    state.ui.flash = submit ? "동료평가를 제출했습니다." : "동료평가를 저장했습니다.";
+    saveState();
+    render();
+  },
+  saveEvaluators(employeeId) {
+    const employee = cycleUserById(employeeId);
+    if (!employee) return;
+    const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && user.role !== "admin");
+    const evaluator1Id = userIdFromPicker(`emp_${employeeId}_evaluator1Id`, evaluatorOptions);
+    const evaluator2Id = userIdFromPicker(`emp_${employeeId}_evaluator2Id`, evaluatorOptions);
+    if (evaluator1Id === employee.id || evaluator2Id === employee.id) return window.alert("본인을 평가자로 지정할 수 없습니다.");
+    employee.evaluator1Id = evaluator1Id;
+    employee.evaluator2Id = evaluator2Id;
+    if (!collectUpwardAssignmentsFromDom()) return;
+    if (!collectPeerAssignmentsFromDom()) return;
+    saveState();
+    render();
+  },
+  saveEvaluationRights() {
+    if (!collectEvaluatorWeightSettingsFromDom()) return;
+    if (!collectEvaluatorSettingsFromDom()) return;
+    if (!collectUpwardAssignmentsFromDom()) return;
+    if (!collectPeerAssignmentsFromDom()) return;
+    const cycle = selectedCycle();
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    saveState();
+    state.ui.flash = "현재 세팅을 저장하였습니다.";
+    render();
+  },
+  downloadEvaluationRightsExcel() {
+    const cycle = selectedCycle();
+    const targets = cycleUsers(cycle).filter(isEvaluatee);
+    const upwardAssigns = getUpwardAssignments(cycle);
+    const peerAssigns = getPeerAssignments(cycle);
+    const exclusionReasons = cycle.exclusionReasons || {};
+    const peerCount = state.peerCount || 3;
+
+    // 사용자 이름 헬퍼
+    const userName = (id) => {
+      if (!id) return "";
+      const u = userById(id) || cycleUsers(cycle).find(x => x.id === id);
+      return u ? u.name : id;
+    };
+
+    // 상향평가 대상 조직장: 해당 구성원이 evaluatorId인 assignment의 targetId (본인이 평가하는 상위자)
+    const upwardTargetFor = (userId) => {
+      const a = upwardAssigns.find(a => a.evaluatorId === userId);
+      return a ? userName(a.targetId) : "";
+    };
+
+    // 동료평가자 목록
+    const peersFor = (userId) => {
+      return peerAssigns
+        .filter(a => a.evaluatorId === userId)
+        .map(a => userName(a.targetId))
+        .filter(Boolean);
+    };
+
+    // ── 시트1: 평가 대상자 ──
+    const sheet1Headers = ["이름", "사번", "역할", "본부/조직", "1차 평가자", "2차 평가자", "상향평가 대상 조직장"];
+    for (let i = 1; i <= peerCount; i++) sheet1Headers.push(`동료평가 ${i}`);
+
+    const sheet1Rows = targets.map(u => {
+      const peers = peersFor(u.id);
+      const row = [
+        u.name,
+        u.employeeNo || u.employeeId || "",
+        ROLE_LABELS[u.role] || u.role,
+        u.division || "",
+        userName(u.evaluator1Id),
+        userName(u.evaluator2Id),
+        upwardTargetFor(u.id),
+      ];
+      for (let i = 0; i < peerCount; i++) row.push(peers[i] || "");
+      return row;
+    });
+
+    // ── 시트2: 평가 제외자 ──
+    const allEvaluatees = state.users.filter(u => isEvaluatee(u) && u.active !== false);
+    const targetIds = new Set(targets.map(u => u.id));
+    const excluded = allEvaluatees.filter(u => !targetIds.has(u.id)).sort(compareEmployeesForDisplay);
+
+    const sheet2Headers = ["이름", "사번", "역할", "본부/조직", "제외 사유"];
+    const sheet2Rows = excluded.map(u => [
+      u.name,
+      u.employeeNo || u.employeeId || "",
+      ROLE_LABELS[u.role] || u.role,
+      u.division || "",
+      exclusionReasons[u.id] || "-",
+    ]);
+
+    if (typeof XLSX === "undefined") {
+      window.alert("엑셀 라이브러리 로딩 중입니다. 잠시 후 다시 시도해 주세요.");
+      return;
+    }
+
+    const cycleName = (cycle.name || "평가세팅").replace(/[/\\?%*:|"<>]/g, "_");
+    const today = new Date().toISOString().slice(0, 10);
+
+    const toSheet = (headers, rows) => XLSX.utils.aoa_to_sheet([headers, ...rows]);
+
+    const wb = XLSX.utils.book_new();
+    const ws1 = toSheet(sheet1Headers, sheet1Rows);
+    const ws2 = toSheet(sheet2Headers, sheet2Rows);
+
+    // 열 너비 자동 설정
+    const colWidth = (rows, headers) => headers.map((h, i) => ({
+      wch: Math.max(h.length + 2, ...rows.map(r => String(r[i] ?? "").length + 1))
+    }));
+    ws1["!cols"] = colWidth(sheet1Rows, sheet1Headers);
+    ws2["!cols"] = colWidth(sheet2Rows, sheet2Headers);
+
+    XLSX.utils.book_append_sheet(wb, ws1, "평가대상자");
+    XLSX.utils.book_append_sheet(wb, ws2, "평가제외자");
+
+    XLSX.writeFile(wb, `${cycleName}_평가권한_${today}.xlsx`);
+
+    state.ui.flash = `평가 대상자(${targets.length}명) · 제외자(${excluded.length}명) 엑셀을 다운로드했습니다.`;
+    render();
+  },
+  addEvaluationTarget(directUserId) {
+    const userId = directUserId || valueOf("new_evaluation_target_id");
+    if (!userId) return window.alert("평가 대상자로 변경할 구성원을 선택해 주세요.");
+    const source = state.users.find((user) => user.id === userId && isEvaluatee(user) && user.active !== false);
+    if (!source) return window.alert("조직도 내 활성 구성원만 평가 대상자로 추가할 수 있습니다.");
+    const cycle = selectedCycle();
+    cycle.usersSnapshot = Array.isArray(cycle.usersSnapshot) ? cycle.usersSnapshot : [];
+    if (cycle.usersSnapshot.some((user) => user.id === userId)) return window.alert("이미 현재 평가 대상에 포함된 구성원입니다.");
+    cycle.usersSnapshot.push(clone(source));
+    // 제외 사유 제거
+    if (cycle.exclusionReasons) delete cycle.exclusionReasons[userId];
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    saveState();
+    state.ui.flash = `${source.name}님을 평가 대상자로 변경했습니다.`;
+    render();
+  },
+  applyAutoTargetSelection() {
+    const months = parseInt(valueOf("auto_exclude_months"), 10);
+    if (isNaN(months) || months < 0 || months > 60) return window.alert("개월 수는 0~60 사이로 입력해 주세요.");
+    const condition = valueOf("auto_exclude_condition") || "미만";
+    const includeLeave = document.getElementById("auto_exclude_leave")?.checked !== false;
+    const cycle = selectedCycle();
+    cycle.autoExcludeMonths = months;
+    cycle.autoExcludeCondition = condition;
+    cycle.autoExcludeLeave = includeLeave;
+    const targetUsers = cycleUsers().filter(isEvaluatee);
+    const matches = autoExcludeMatches(targetUsers, months, condition, includeLeave);
+    if (!matches.length) {
+      saveState();
+      return window.alert("현재 기준에 해당하는 제외 대상자가 없습니다.");
+    }
+    const newbieCount = matches.filter((u) => u.workStatus !== "휴직").length;
+    const leaveCount = matches.filter((u) => u.workStatus === "휴직").length;
+    if (!window.confirm(`${matches.length}명을 평가 대상에서 제외합니다.\n(입사 ${months}개월 ${condition} ${newbieCount}명${includeLeave ? ` · 휴직 ${leaveCount}명` : ""})\n\n계속하시겠습니까?`)) return;
+    const removeIds = new Set(matches.map((u) => u.id));
+    if (!cycle.exclusionReasons) cycle.exclusionReasons = {};
+    matches.forEach((u) => {
+      cycle.exclusionReasons[u.id] = u.workStatus === "휴직" ? "휴직" : `입사 ${tenureMonths(u.joinDate)}개월 (${months}개월 ${condition})`;
+    });
+    cycle.usersSnapshot = (cycle.usersSnapshot || []).filter((user) => !removeIds.has(user.id));
+    removeIds.forEach((id) => { delete cycle.evaluations?.[id]; });
+    cycle.upwardAssignments = getUpwardAssignments(cycle).filter((a) => !removeIds.has(a.evaluatorId) && !removeIds.has(a.targetId));
+    cycle.peerAssignments = getPeerAssignments(cycle).filter((a) => !removeIds.has(a.evaluatorId) && !removeIds.has(a.targetId));
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    saveState();
+    state.ui.flash = `자동 선정으로 ${matches.length}명을 평가 제외자로 처리했습니다.`;
+    render();
+  },
+  removeEvaluationTarget(employeeId) {
+    const cycle = selectedCycle();
+    const employee = cycle.usersSnapshot?.find((user) => user.id === employeeId);
+    if (!employee) return;
+    cycle.usersSnapshot = cycle.usersSnapshot.filter((user) => user.id !== employeeId);
+    delete cycle.evaluations?.[employeeId];
+    cycle.upwardAssignments = getUpwardAssignments(cycle).filter((assignment) => assignment.evaluatorId !== employeeId && assignment.targetId !== employeeId);
+    cycle.peerAssignments = getPeerAssignments(cycle).filter((assignment) => assignment.evaluatorId !== employeeId && assignment.targetId !== employeeId);
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    saveState();
+    state.ui.flash = `${employee.name}님을 평가 제외자로 처리했습니다.`;
+    render();
+  },
+  removeEvaluationTargetWithReason(employeeId) {
+    const cycle = selectedCycle();
+    const employee = cycle.usersSnapshot?.find((user) => user.id === employeeId);
+    if (!employee) return;
+    const reason = window.prompt(
+      `${employee.name}님을 평가 대상에서 제외합니다.\n제외 사유를 입력하세요.\n(입력하지 않으면 "직접 제외"로 기록됩니다.)`,
+      ""
+    );
+    if (reason === null) return; // 취소
+    if (!cycle.exclusionReasons) cycle.exclusionReasons = {};
+    cycle.exclusionReasons[employeeId] = reason.trim() || "직접 제외";
+    cycle.usersSnapshot = cycle.usersSnapshot.filter((user) => user.id !== employeeId);
+    delete cycle.evaluations?.[employeeId];
+    cycle.upwardAssignments = getUpwardAssignments(cycle).filter((a) => a.evaluatorId !== employeeId && a.targetId !== employeeId);
+    cycle.peerAssignments = getPeerAssignments(cycle).filter((a) => a.evaluatorId !== employeeId && a.targetId !== employeeId);
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    saveState();
+    state.ui.flash = `${employee.name}님을 평가 제외자로 처리했습니다. (사유: ${cycle.exclusionReasons[employeeId]})`;
+    render();
+  },
+  filterPeople(query) {
+    const normalized = String(query || "").trim().toLowerCase();
+    const rows = [...document.querySelectorAll(".people-filter-row")];
+    rows.forEach((row) => {
+      const visible = !normalized || String(row.dataset.search || "").includes(normalized);
+      row.style.display = visible ? "" : "none";
+    });
+    [...document.querySelectorAll(".team-group, .org-group")].forEach((group) => {
+      const groupRows = [...group.querySelectorAll(".people-filter-row")];
+      if (!groupRows.length) return;
+      group.style.display = groupRows.some((row) => row.style.display !== "none") ? "" : "none";
+    });
+  },
+  filterTemplateAssign() {
+    const name = (document.getElementById("tpl_filter_name")?.value || "").trim().toLowerCase();
+    const fDiv = document.getElementById("tpl_filter_div")?.value || "";
+    const fTeam = document.getElementById("tpl_filter_team")?.value || "";
+    const fRole = document.getElementById("tpl_filter_role")?.value || "";
+    const fGrade2 = document.getElementById("tpl_filter_grade2")?.value || "";
+    const anyFilter = name || fDiv || fTeam || fRole || fGrade2;
+    [...document.querySelectorAll(".tpl-filter-row")].forEach(row => {
+      const ok =
+        (!name   || (row.dataset.name||"").includes(name)) &&
+        (!fDiv   || row.dataset.div   === fDiv) &&
+        (!fTeam  || row.dataset.team  === fTeam) &&
+        (!fRole  || row.dataset.role  === fRole) &&
+        (!fGrade2|| row.dataset.grade2=== fGrade2);
+      row.style.display = ok ? "" : "none";
+    });
+    const updateGroups = (selector) => {
+      [...document.querySelectorAll(selector)].forEach(group => {
+        const groupRows = [...group.querySelectorAll(".tpl-filter-row")];
+        if (!groupRows.length) return;
+        const hasVisible = groupRows.some(r => r.style.display !== "none");
+        group.style.display = hasVisible ? "" : "none";
+        if (group.tagName === "DETAILS") group.open = anyFilter ? hasVisible : false; // 필터 시 매칭 그룹 펼침
+      });
+    };
+    updateGroups(".team-group");
+    updateGroups(".org-group");
+  },
+  filterPeopleAdvanced() {
+    const name = (document.getElementById("people_filter_name")?.value || "").trim().toLowerCase();
+    const fDiv = document.getElementById("people_filter_div")?.value || "";
+    const fTeam = document.getElementById("people_filter_team")?.value || "";
+    const fRole = document.getElementById("people_filter_role")?.value || "";
+    const fGrade2 = document.getElementById("people_filter_grade2")?.value || "";
+    [...document.querySelectorAll(".people-filter-row")].forEach(row => {
+      const ok =
+        (!name   || (row.dataset.name||"").includes(name)) &&
+        (!fDiv   || row.dataset.div   === fDiv) &&
+        (!fTeam  || row.dataset.team  === fTeam) &&
+        (!fRole  || row.dataset.role  === fRole) &&
+        (!fGrade2|| row.dataset.grade2=== fGrade2);
+      row.style.display = ok ? "" : "none";
+    });
+    // 빈 그룹(팀/본부) 접기
+    [...document.querySelectorAll(".team-group")].forEach(group => {
+      const groupRows = [...group.querySelectorAll(".people-filter-row")];
+      if (!groupRows.length) return;
+      group.style.display = groupRows.some(r => r.style.display !== "none") ? "" : "none";
+    });
+    [...document.querySelectorAll(".org-group")].forEach(group => {
+      const groupRows = [...group.querySelectorAll(".people-filter-row")];
+      if (!groupRows.length) return;
+      group.style.display = groupRows.some(r => r.style.display !== "none") ? "" : "none";
+    });
+  },
+  saveEmployee(employeeId) {
+    const employee = userById(employeeId);
+    if (!employee) return;
+    employee.name = valueOf(`emp_${employeeId}_name`);
+    employee.employeeNo = valueOf(`emp_${employeeId}_employeeNo`);
+    employee.email = valueOf(`emp_${employeeId}_email`) || employee.email;
+    employee.role = valueOf(`emp_${employeeId}_role`);
+    employee.title = valueOf(`emp_${employeeId}_title`);
+    employee.orgRoot = valueOf(`emp_${employeeId}_orgRoot`) || employee.orgRoot || "";
+    employee.division = valueOf(`emp_${employeeId}_division`) || employee.division;
+    employee.team = valueOf(`emp_${employeeId}_team`) || employee.team;
+    if (document.getElementById(`emp_${employeeId}_evaluator1Id`)) employee.evaluator1Id = valueOf(`emp_${employeeId}_evaluator1Id`);
+    if (document.getElementById(`emp_${employeeId}_evaluator2Id`)) employee.evaluator2Id = valueOf(`emp_${employeeId}_evaluator2Id`);
+    employee.active = valueOf(`emp_${employeeId}_active`) === "true";
+    alignUsersToOrganizationNodes(state.users, state.organizationNodes || []);
+    saveState();
+    refreshCurrentUserSwitch();
+    if (state.ui.tab === "organization") return refreshOrganizationPanel(`${employee.name} 구성원 정보를 저장했습니다.`);
+    render();
+  },
+  deleteEmployee(employeeId) {
+    const employee = userById(employeeId);
+    if (!employee || employee.role === "admin") return;
+    if (!window.confirm(`${employee.name}님을 조직관리에서 삭제할까요? 기존 평가 입력과 배정 정보에서도 제외됩니다.`)) return;
+    state.users.forEach((user) => {
+      if (user.evaluator1Id === employeeId) user.evaluator1Id = "";
+      if (user.evaluator2Id === employeeId) user.evaluator2Id = "";
+      if (user.finalEvaluatorId === employeeId) user.finalEvaluatorId = "";
+    });
+    state.users = state.users.filter((user) => user.id !== employeeId);
+    if (state.currentUserId === employeeId) state.currentUserId = state.users.find((user) => user.role === "admin")?.id || state.users[0]?.id || "";
+    saveState();
+    refreshCurrentUserSwitch();
+    state.ui.flash = `${employee.name}님을 삭제하였습니다.`;
+    if (state.ui.tab === "organization") return refreshOrganizationPanel(`${employee.name} 구성원을 삭제했습니다.`);
+    render();
+  },
+  saveOrganizationSettings() {
+    collectOrganizationSettingsFromDom();
+    saveState();
+    refreshCurrentUserSwitch();
+    refreshOrganizationPanel("현재 조직도 세팅을 저장하였습니다.");
+  },
+  addEmployee() {
+    const name = valueOf("new_name").trim();
+    const email = valueOf("new_email").trim();
+    if (!name || !email) return window.alert("이름과 이메일은 필수입니다.");
+    const id = `u-${Date.now()}`;
+    const tree = buildOrganizationTree();
+    const selectedNode = tree.byId[valueOf("new_employee_org_node")];
+    const selectedPath = organizationNodePath(selectedNode, tree);
+    state.users.push({
+      id,
+      employeeNo: valueOf("new_employeeNo").trim(),
+      name,
+      email,
+      phone: valueOf("new_phone").trim(),
+      role: valueOf("new_role"),
+      orgRoot: selectedPath.orgRoot || valueOf("new_orgRoot"),
+      division: selectedPath.division || valueOf("new_division"),
+      team: selectedPath.team || valueOf("new_team"),
+      title: valueOf("new_title"),
+      active: valueOf("new_active") !== "false",
+      joinDate: valueOf("new_joinDate").trim(),
+      workStatus: valueOf("new_workStatus") || "근무",
+      retired: false,
+      retireDate: "",
+    });
+    saveState();
+    state.ui.orgAddPopup = null;
+    refreshCurrentUserSwitch();
+    refreshOrganizationPanel(`${name} 구성원을 추가했습니다.`);
+  },
+  // ── 종합평가: 본부장 담당 구성원 전체 ──
+  exportResultSubmission() {
+    const user = currentUser();
+    const rows = getResultSubmissionScopeUsers(user)
+      .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+    if (!rows.length) return window.alert("내보낼 구성원이 없습니다.");
+    const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "추천등급", "조정등급", "배분율 초과 사유"];
+    const out = [header];
+    rows.forEach((emp, i) => {
+      const m = memberScoreCells(emp);
+      out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
+        ...scoreBlockCells(m), m.score, m.autoGrade, m.orgGrade || m.autoGrade, m.distReason]);
+    });
+    downloadXlsxRows(out, `종합평가_${(user.division || "본부")}_${todayStamp()}.xlsx`);
+  },
+  // ── 최종 승인: 사장/회장 조회 범위 구성원 전체 ──
+  exportApproval() {
+    const user = currentUser();
+    const allUsers = cycleUsers();
+    const rows = allUsers.filter(isEvaluatee)
+      .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+    if (!rows.length) return window.alert("내보낼 구성원이 없습니다.");
+    const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
+      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종등급"];
+    const out = [["[구성원 평가 결과]"], header];
+    rows.forEach((emp, i) => {
+      const m = memberScoreCells(emp);
+      out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
+        ...scoreBlockCells(m), m.score, m.autoGrade,
+        orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
+        m.presidentReason, m.chairmanReason, m.finalGrade]);
+    });
+    out.push([""]);
+    out.push(["[부서별 등급 분포]"]);
+    deptDistributionExportRows(rows, allUsers).forEach(r => out.push(r));
+    // 종합평가 등급 조정 이력 (본부장 원안 + 조정 세션 사유)
+    orgAdjustmentHistoryExportRows(rows).forEach(r => out.push(r));
+    downloadXlsxRows(out, `최종승인_${todayStamp()}.xlsx`);
+  },
+  // ── 최종 결과/리포트 공개: 어드민 전체 구성원 + 조정 정보 ──
+  exportFinalAdjust() {
+    const evaluatees = cycleUsers().filter(isEvaluatee)
+      .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+    if (!evaluatees.length) return window.alert("내보낼 구성원이 없습니다.");
+    const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
+      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "공개피드백"];
+    const out = [["[구성원 평가 결과]"], header];
+    evaluatees.forEach((emp, i) => {
+      const m = memberScoreCells(emp);
+      out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
+        ...scoreBlockCells(m), m.score, m.autoGrade,
+        orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
+        m.presidentReason, m.chairmanReason, m.adminReason, m.finalGrade, m.feedback]);
+    });
+    out.push([""]);
+    out.push(["[부서별 등급 분포]"]);
+    deptDistributionExportRows(evaluatees, cycleUsers()).forEach(r => out.push(r));
+    // 종합평가 등급 조정 이력 (본부장 원안 + 조정 세션 사유)
+    orgAdjustmentHistoryExportRows(evaluatees).forEach(r => out.push(r));
+    downloadXlsxRows(out, `최종결과_리포트공개_${todayStamp()}.xlsx`);
+  },
+  // ── 최종 평가 결과 확인: 조회 범위 구성원(점수·최종등급) ──
+  exportResults() {
+    const user = currentUser();
+    const rows = getVisibleResultUsers(user)
+      .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+    if (!rows.length) return window.alert("내보낼 평가 결과가 없습니다.");
+    const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "최종등급"];
+    const out = [header];
+    rows.forEach((emp, i) => {
+      const m = memberScoreCells(emp);
+      out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
+        ...scoreBlockCells(m), m.score, m.finalGrade]);
+    });
+    downloadXlsxRows(out, `최종평가결과_${todayStamp()}.xlsx`);
+  },
+  // ── 멤버 대시보드: 선택한 구성원 1명의 정보(인적사항 + 목표 + 평가 결과)를 하나로 ──
+  exportMemberDashboard(memberId) {
+    const viewer = currentUser();
+    const id = memberId || state.ui.dashboardMemberId || "";
+    const target = dashboardViewableUsers(viewer).find((u) => u.id === id);
+    if (!target) return window.alert("내보낼 구성원을 선택해 주세요.");
+    downloadMemberDashboardXlsx(target, false);
+  },
+  // ── 나의 대시보드: 내 정보 + 목표 + 공개된 평가 결과 ──
+  exportMyDashboard() {
+    downloadMemberDashboardXlsx(currentUser(), true);
+  },
+  downloadMemberTemplate() {
+    const rows = [
+      ["# 구성원 추가 양식 — 아래 헤더 행은 지우지 말고, 예시 행은 지운 뒤 작성해 주세요. (이름·이메일 필수)"],
+      ["이름", "사번", "이메일", "연락처", "직책", "권한", "상위조직", "본부", "팀", "활성상태", "입사일자", "근무상태"],
+      ["예) 홍길동", "250999", "hong@interojo.com", "010-0000-0000", "사원", "팀원", "인터로조", "경영지원본부", "인사총무팀", "활성", "2025-01-02", "근무"],
+    ];
+    try {
+      const data = buildXlsx(rows);
+      const blob = new Blob([data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "구성원추가_양식.xlsx";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e); window.alert("양식 생성 중 오류가 발생했습니다.");
+    }
+  },
+  handleMemberUpload(event) {
+    const file = event.target?.files?.[0];
+    if (!file) return;
+    const reset = () => { if (event.target) event.target.value = ""; };
+    const name = (file.name || "").toLowerCase();
+    if (!name.endsWith(".xlsx")) {
+      window.alert("내려받은 .xlsx 양식만 업로드할 수 있습니다.");
+      reset(); return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const rows = parseXlsx(new Uint8Array(e.target.result));
+        // 헤더 행 찾기 (첫 칸이 '이름')
+        const headerIdx = rows.findIndex((r) => String(r[0] || "").trim() === "이름");
+        if (headerIdx < 0) { window.alert("양식의 헤더(이름 ...) 행을 찾을 수 없습니다. 내려받은 양식을 사용해 주세요."); reset(); return; }
+        const roleByLabel = Object.fromEntries(Object.entries(ROLE_LABELS).map(([k, v]) => [v, k]));
+        const added = [];
+        const skipped = [];
+        for (let i = headerIdx + 1; i < rows.length; i++) {
+          const r = rows[i].map((c) => String(c == null ? "" : c).trim());
+          const nm = r[0] || "";
+          if (!nm || nm.startsWith("예)")) continue;       // 빈 행·예시 행 건너뜀
+          const email = r[2] || "";
+          if (!email) { skipped.push(`${nm}(이메일 없음)`); continue; }
+          const roleRaw = r[5] || "";
+          const role = roleByLabel[roleRaw] || (["admin","chairman","president","divisionHead","teamLead","member"].includes(roleRaw) ? roleRaw : "member");
+          state.users.push({
+            id: `u-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: nm,
+            employeeNo: r[1] || "",
+            email,
+            phone: r[3] || "",
+            title: r[4] || "",
+            role,
+            orgRoot: r[6] || "",
+            division: r[7] || "",
+            team: r[8] || "",
+            active: r[9] !== "비활성",
+            joinDate: excelCellToDateStr(r[10]),
+            workStatus: r[11] === "휴직" ? "휴직" : "근무",
+            retired: false,
+            retireDate: "",
+          });
+          added.push(nm);
+        }
+        if (!added.length) { window.alert("추가할 구성원을 찾지 못했습니다. 예시 행 아래에 정보를 입력했는지 확인해 주세요." + (skipped.length ? `\n\n건너뜀: ${skipped.join(", ")}` : "")); reset(); return; }
+        syncAllUsersToOrganizationNodes();
+        saveState();
+        refreshCurrentUserSwitch();
+        refreshOrganizationPanel(`${added.length}명의 구성원을 추가했습니다.${skipped.length ? ` (건너뜀 ${skipped.length}건)` : ""}`);
+      } catch (err) {
+        console.error(err);
+        window.alert("파일을 읽는 중 오류가 발생했습니다. 내려받은 .xlsx 양식을 사용했는지 확인해 주세요.");
+      }
+      reset();
+    };
+    reader.readAsArrayBuffer(file);
+  },
+  selectOrgForNewEmployee(nodeId) {
+    state.ui.selectedNewEmployeeOrgNode = nodeId || "";
+    selectOrganizationNodeForInputs(nodeId);
+    saveState();
+  },
+  filterOrgTree(query) {
+    const normalized = String(query || "").trim().toLowerCase();
+    const nodes = [...document.querySelectorAll(".org-tree-node")];
+    nodes.forEach((node) => {
+      const ownMatch = String(node.dataset.search || "").includes(normalized);
+      const memberMatch = [...node.querySelectorAll(".org-tree-member")].some((member) => String(member.dataset.search || "").includes(normalized));
+      const childMatch = [...node.querySelectorAll(".org-tree-node")].some((child) => String(child.dataset.search || "").includes(normalized));
+      const visible = !normalized || ownMatch || memberMatch || childMatch;
+      node.style.display = visible ? "" : "none";
+      if (normalized && visible) node.open = true;
+    });
+  },
+  startOrgDrag(event, type, id) {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/json", JSON.stringify({ type, id }));
+    event.dataTransfer.setData("text/plain", JSON.stringify({ type, id }));
+  },
+  allowOrgDrop(event) {
+    event.preventDefault();
+  },
+  dropOnOrgNode(event, nodeId) {
+    event.preventDefault();
+    event.stopPropagation();
+    const raw = event.dataTransfer.getData("application/json") || event.dataTransfer.getData("text/plain");
+    if (!raw) return;
+    let payload = {};
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const tree = buildOrganizationTree();
+    const target = tree.byId[nodeId];
+    if (!target) return;
+    if (payload.type === "employee") {
+      const employee = userById(payload.id);
+      if (!employee || employee.role === "admin") return;
+      placeEmployeeInOrganizationNode(employee, target, tree);
+      saveState();
+      refreshOrganizationPanel(`${employee.name}님의 조직을 이동하였습니다.`);
+      return;
+    }
+    if (payload.type === "node") {
+      const source = tree.byId[payload.id];
+      if (!source || !moveOrganizationNode(source, target, tree)) return;
+      saveState();
+      refreshOrganizationPanel(`${source.name} 조직을 이동하였습니다.`);
+    }
+  },
+  createOrgNode() {
+    const name = valueOf("new_org_node_name").trim();
+    const type = valueOf("new_org_node_type");
+    const parentId = valueOf("new_org_node_parent");
+    const result = createOrganizationNodeRecordFromValues(name, type, parentId);
+    if (result.error) return window.alert(result.error);
+    saveState();
+    refreshOrganizationPanel(`${name} 조직을 생성하였습니다.`);
+  },
+  createOrgNodeFromMemberForm() {
+    const name = valueOf("quick_org_node_name").trim();
+    const type = valueOf("quick_org_node_type");
+    const parentId = valueOf("quick_org_node_parent");
+    const result = createOrganizationNodeRecordFromValues(name, type, parentId);
+    if (result.error) return window.alert(result.error);
+    state.ui.selectedNewEmployeeOrgNode = result.node.id;
+    state.ui.orgAddPopup = null;
+    saveState();
+    refreshOrganizationPanel(`${name} 조직을 생성하였습니다.`);
+  },
+  promoteOrgNode(nodeId) {
+    const tree = buildOrganizationTree();
+    const node = tree.byId[nodeId];
+    if (!node || !node.parentId) return;
+    const parent = tree.byId[node.parentId];
+    const grandParentId = parent?.parentId || "";
+    if (!grandParentId && node.type !== "root") {
+      const rootCount = (tree.childrenByParent.root || []).length;
+      if (rootCount <= 1 && parent?.type === "root") return window.alert("최상위 조직 바로 아래에 있는 조직입니다.");
+    }
+    upsertOrganizationNodeRecord(node, grandParentId);
+    const nextTree = buildOrganizationTree();
+    usersForOrganizationNode(node, nextTree).forEach((user) => {
+      const userNode = nextTree.byId[user.orgNodeId] || nextTree.byId[node.id];
+      if (userNode) syncUserFieldsToOrganizationNode(user, userNode, nextTree.nodes);
+    });
+    saveState();
+    refreshOrganizationPanel(`${node.name} 조직을 한 단계 상위로 이동하였습니다.`);
+  },
+  deleteOrgNode(nodeId) {
+    const tree = buildOrganizationTree();
+    const node = tree.byId[nodeId];
+    if (!node) return;
+    const affectedUsers = usersForOrganizationNode(node, tree);
+    const parentNode = tree.byId[node.parentId];
+    const moveMsg = affectedUsers.length ? ` 소속 구성원 ${affectedUsers.length}명은 ${parentNode ? `'${parentNode.name}' 조직으로` : "미지정 조직으로"} 이동됩니다.` : "";
+    if (!window.confirm(`${node.name} 조직을 삭제할까요?${moveMsg}`)) return;
+    const path = organizationNodePath(node, tree);
+    affectedUsers.forEach((user) => {
+      const fallbackNode = tree.byId[node.parentId];
+      if (fallbackNode) {
+        syncUserFieldsToOrganizationNode(user, fallbackNode, tree.nodes);
+        return;
+      }
+      user.orgNodeId = "";
+      if (node.type === "root") {
+        user.orgRoot = "미지정";
+        user.division = "미지정";
+        user.team = "미지정";
+      } else if (node.type === "division") {
+        user.orgRoot = path.orgRoot || user.orgRoot || "미지정";
+        user.division = "미지정";
+        user.team = "미지정";
+      } else {
+        user.orgRoot = path.orgRoot || user.orgRoot || "미지정";
+        user.division = path.division || user.division || "미지정";
+        user.team = "미지정";
+      }
+    });
+    const removedIds = new Set(descendantOrgNodeIds(nodeId, tree));
+    state.organizationNodes = (state.organizationNodes || []).filter((item) => !removedIds.has(item.id));
+    saveState();
+    refreshOrganizationPanel(`${node.name} 조직을 삭제하였습니다.`);
+  },
+  savePeerCount() {
+    const val = parseInt(valueOf("peer_count_setting"), 10);
+    if (!val || val < 1 || val > 10) return window.alert("동료평가 대상 수는 1~10 사이로 입력해 주세요.");
+    state.peerCount = val;
+    saveState();
+    state.ui.flash = `동료평가 대상 수가 ${val}명으로 저장되었습니다. 조직도 기준 자동 지정을 다시 실행하면 반영됩니다.`;
+    render();
+  },
+  toggleCycleEvalUse(kind, on) {
+    const cycle = selectedCycle();
+    if (kind === "upward") {
+      cycle.useUpward = !!on;
+      if (!on) cycle.upwardAssignments = [];                       // 미진행 시 배정 비움
+      else if (!cycle.upwardAssignments?.length) cycle.upwardAssignments = buildDefaultUpwardAssignments(cycle.usersSnapshot || state.users);
+    } else if (kind === "peer") {
+      cycle.usePeer = !!on;
+      if (!on) cycle.peerAssignments = [];
+      else if (!cycle.peerAssignments?.length) cycle.peerAssignments = buildDefaultPeerAssignments(cycle.usersSnapshot || state.users);
+    }
+    invalidateCycleCache();
+    saveState();
+    state.ui.flash = `${kind === "upward" ? "상향평가" : "동료평가"}를 ${on ? "진행" : "미진행"}으로 설정했습니다.`;
+    render();
+  },
+  autoAssignEvaluators() {
+    if (!window.confirm("조직 관리 탭의 현재 조직도 기준으로 평가 대상자 및 평가자를 자동 지정합니다.\n기존 평가자 배정과 동료·상향평가 배정이 초기화됩니다. 계속하시겠습니까?")) return;
+    const cycle = selectedCycle();
+    // 조직도(state.users)에서 평가 대상자를 새로 동기화
+    const orgUsers = state.users.filter(u => u.role !== "admin" && u.active !== false);
+    // 기존 스냅샷의 평가 데이터(이미 작성된 평가)는 유지하면서 조직 정보만 갱신
+    const existingSnapshot = cycle.usersSnapshot || [];
+    const existingMap = new Map(existingSnapshot.map(u => [u.id, u]));
+    cycle.usersSnapshot = orgUsers.map(u => {
+      const existing = existingMap.get(u.id);
+      // 조직 정보는 state.users 기준, 평가자 배정 등은 기존 유지
+      return existing ? { ...existing, ...u } : clone(u);
+    });
+    autoAssignEvaluatorsForUsers(cycle.usersSnapshot);
+    cycle.upwardAssignments = cycle.useUpward !== false ? buildDefaultUpwardAssignments(cycle.usersSnapshot) : [];
+    cycle.peerAssignments = cycle.usePeer !== false ? buildDefaultPeerAssignments(cycle.usersSnapshot) : [];
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    invalidateCycleCache();
+    saveState();
+    state.ui.flash = `조직도 기준으로 ${cycle.usersSnapshot.filter(isEvaluatee).length}명의 평가 대상자와 평가자 배정이 완료되었습니다.`;
+    render();
+  },
+  autoAssignUpward() {
+    if (!window.confirm("현재 평가의 상향평가 배정을 조직도 기준으로 다시 세팅할까요? 기존 상향평가 배정과 입력 내용은 초기화됩니다.")) return;
+    const cycle = selectedCycle();
+    cycle.usersSnapshot = Array.isArray(cycle.usersSnapshot) && cycle.usersSnapshot.length ? cycle.usersSnapshot : clone(state.users.filter((user) => user.role !== "admin"));
+    cycle.upwardAssignments = buildDefaultUpwardAssignments(cycle.usersSnapshot);
+    ensureCycleEvaluations(cycle, cycle.usersSnapshot);
+    saveState();
+    render();
+  },
+  addUpwardAssignment() {
+    const evaluatorId = valueOf("new_upward_evaluatorId");
+    const targetId = valueOf("new_upward_targetId");
+    if (!evaluatorId || !targetId) return window.alert("평가자와 평가 대상 조직장을 모두 선택해 주세요.");
+    if (evaluatorId === targetId) return window.alert("본인을 상향평가 대상으로 지정할 수 없습니다.");
+    if (hasDuplicateUpwardAssignment(evaluatorId, targetId)) return window.alert("이미 같은 평가자/평가 대상 조합이 배정되어 있습니다.");
+    activeCycle().upwardAssignments.push({
+      id: `up-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      evaluatorId,
+      targetId,
+      source: "manual",
+      status: "pending",
+      answer: makeEmptyUpwardAnswer(),
+      createdAt: new Date().toISOString(),
+    });
+    saveState();
+    render();
+  },
+  saveUpwardAssignment(assignmentId) {
+    const assignment = getUpwardAssignmentById(assignmentId);
+    if (!assignment) return;
+    const evaluatorId = valueOf(`up_assign_${assignmentId}_evaluatorId`);
+    const targetId = valueOf(`up_assign_${assignmentId}_targetId`);
+    if (!evaluatorId || !targetId) return window.alert("평가자와 평가 대상 조직장을 모두 선택해 주세요.");
+    if (evaluatorId === targetId) return window.alert("본인을 상향평가 대상으로 지정할 수 없습니다.");
+    if (hasDuplicateUpwardAssignment(evaluatorId, targetId, assignmentId)) return window.alert("이미 같은 평가자/평가 대상 조합이 배정되어 있습니다.");
+    assignment.evaluatorId = evaluatorId;
+    assignment.targetId = targetId;
+    assignment.source = "manual";
+    if (isCompletedStatus(assignment.status)) assignment.status = "draft";
+    saveState();
+    render();
+  },
+  removeUpwardAssignment(assignmentId) {
+    activeCycle().upwardAssignments = getUpwardAssignments().filter((assignment) => assignment.id !== assignmentId);
+    saveState();
+    render();
+  },
+  saveTemplates() {
+    ["member", "teamLead", "divisionHead"].forEach((role) => {
+      WEIGHT_COMPONENTS.forEach((component) => {
+        state.roleWeights[role][component] = Number(valueOf(`weight_${role}_${component}`) || 0);
+      });
+      // 평가자 가중치 저장 (③ 가중치 페이지의 입력값)
+      const firstVal = Number(valueOf(`evalw_${role}_first`) || 0);
+      const secondVal = Number(valueOf(`evalw_${role}_second`) || 0);
+      const aiVal = Number(valueOf(`evalw_${role}_ai`) || 0);
+      if (firstVal > 0 || secondVal > 0) {
+        state.evaluatorWeights[role] = state.evaluatorWeights[role] || {};
+        state.evaluatorWeights[role].first = firstVal;
+        state.evaluatorWeights[role].second = secondVal;
+        state.evaluatorWeights[role].ai = aiVal;
+      }
+    });
+    syncAllTemplateEditors();
+    collectSpecialTemplateSelectionsFromDom();
+    collectTemplateAssignmentsFromDom();
+    collectDivisionBulkTemplateAssignmentsFromDom();
+    saveState();
+    state.ui.flash = "가중치 · 템플릿 설정을 저장하였습니다.";
+    render();
+  },
+  applyDivisionTemplates(division) {
+    syncAllTemplateEditors();
+    collectTemplateAssignmentsFromDom();
+    cycleUsers().filter((employee) => isEvaluatee(employee) && employee.division === division).forEach((employee) => {
+      const assignment = templateAssignmentFor(employee.id);
+      TEMPLATE_KINDS.forEach((kind) => {
+        const selected = valueOf(`bulk_tpl_${kind}_${slugId(division)}`);
+        if (selected) assignment[kind] = selected;
+      });
+    });
+    saveState();
+    state.ui.flash = `${division} 템플릿 적용 설정을 반영했습니다.`;
+    render();
+  },
+  applyAllDivisionTemplates() {
+    syncAllTemplateEditors();
+    collectTemplateAssignmentsFromDom();
+    const evaluatees = cycleUsers().filter(isEvaluatee);
+    const divisions = [...new Set(evaluatees.map((employee) => employee.division || "미지정"))];
+    let count = 0;
+    divisions.forEach((division) => {
+      evaluatees
+        .filter((employee) => (employee.division || "미지정") === division)
+        .forEach((employee) => {
+          const assignment = templateAssignmentFor(employee.id);
+          TEMPLATE_KINDS.forEach((kind) => {
+            const selected = valueOf(`bulk_tpl_${kind}_${slugId(division)}`);
+            if (selected) assignment[kind] = selected;
+          });
+          count += 1;
+        });
+    });
+    saveState();
+    state.ui.flash = `전체 ${divisions.length}개 본부 · ${count}명에게 템플릿 설정을 일괄 적용했습니다.`;
+    render();
+  },
+  saveGrades() {
+    GRADES.forEach((grade) => {
+      state.gradeThresholds[grade] = Number(valueOf(`threshold_${grade}`) || 0);
+      state.distributionMatrix[grade] = state.distributionMatrix[grade] || {};
+      GRADES.forEach((childGrade) => {
+        state.distributionMatrix[grade][childGrade] = Number(valueOf(`dist_${grade}_${childGrade}`) || 0);
+      });
+    });
+    saveState();
+    state.ui.flash = "등급 체계를 저장하였습니다.";
+    render();
+  },
+  saveReportSettings() {
+    state.reportVisibility = currentReportVisibilityFromDom();
+    saveState();
+    state.ui.flash = "리포트 설정을 저장하였습니다.";
+    render();
+  },
+  previewReportSettings() {
+    const preview = document.getElementById("report_preview");
+    if (preview) preview.innerHTML = renderReportPreview(currentReportVisibilityFromDom());
+  },
+  saveResultVisibility() {
+    collectResultVisibilityFromDom();
+    const chairmanApproved = Boolean(activeCycle().resultSubmissions?.["approval:chairman"]?.submitted);
+    if (activeCycle().resultsVisible && !chairmanApproved) {
+      activeCycle().resultsVisible = false;
+      const toggle = document.getElementById("cycle_resultsVisible");
+      if (toggle) toggle.checked = false;
+      saveState();
+      return showAdminAdjustmentMessage("회장 최종 확정이 완료된 뒤 결과를 공개할 수 있습니다.");
+    }
+    // 최초 결과 공개 시 피드백 관리 탭을 영구 잠금 해제
+    if (activeCycle().resultsVisible && !activeCycle().feedbackMgmtUnlocked) {
+      activeCycle().feedbackMgmtUnlocked = true;
+    }
+    saveState();
+    showAdminAdjustmentMessage(activeCycle().resultsVisible ? "결과 공개가 켜졌습니다." : "결과 공개가 꺼졌습니다.");
+  },
+  handleAdjustmentGradeChange(employeeId) {
+    const select = document.getElementById(`adj_grade_${employeeId}`);
+    if (!select) return;
+    const autoGrade = select.dataset.autoGrade || "";
+    const selected = select.value;
+    const reasonInput = document.getElementById(`adj_reason_${employeeId}`);
+    if (!selected || selected === autoGrade) {
+      select.dataset.previous = selected;
+      if (reasonInput) reasonInput.value = "";
+      syncAdjustmentDraftsFromDom();
+      refreshAdminAdjustmentsPanel();
+      return;
+    }
+    const currentReason = reasonInput?.value || "";
+    const reason = window.prompt("조정 사유를 입력하세요.", currentReason);
+    if (!String(reason || "").trim()) {
+      window.alert("조정 등급을 변경하려면 조정 사유를 입력해야 합니다.");
+      select.value = select.dataset.previous || autoGrade;
+      return;
+    }
+    if (reasonInput) reasonInput.value = reason.trim();
+    select.dataset.previous = selected;
+    syncAdjustmentDraftsFromDom();
+    refreshAdminAdjustmentsPanel();
+  },
+  handleOrgAdjustmentGradeChange(employeeId) {
+    const select = document.getElementById(`org_adj_grade_${employeeId}`);
+    if (!select) return;
+    const autoGrade = select.dataset.autoGrade || "";
+    const newGrade = select.value;
+    if (!isGradeAdjWithinOneStep(autoGrade, newGrade)) {
+      const idx = GRADES.indexOf(autoGrade);
+      const allowed = GRADES.filter((_, i) => Math.abs(i - idx) <= 1).join(", ");
+      window.alert(`추천 등급(${autoGrade})에서 최대 1단계까지만 조정할 수 있습니다.\n선택 가능한 등급: ${allowed}`);
+      select.value = select.dataset.previous || autoGrade;
+      return;
+    }
+    select.dataset.previous = newGrade;
+  },
+  saveOrgResultSubmission(submit) {
+    const user = currentUser();
+    if (user.role !== "divisionHead") return;
+    const rows = getResultSubmissionScopeUsers(user);
+    if (submit) {
+      const missing = getMissingEvaluationItemsForUsers(rows, { ignoreTeamLeadSecond: true });
+      if (missing.length) {
+        return window.alert(`아직 완료되지 않은 평가가 있어 제출할 수 없습니다.\n\n${missing.slice(0, 20).join("\n")}${missing.length > 20 ? `\n외 ${missing.length - 20}건` : ""}`);
+      }
+      // 등급 미배분 확인
+      const ungraded = rows.filter((employee) => {
+        const ev = evaluations()[employee.id];
+        return !ev?.orgAdjustment?.gradeManual && !calculateFinal(employee.id).autoGrade;
+      });
+      if (ungraded.length) {
+        return window.alert(`등급이 배분되지 않은 구성원이 있습니다: ${ungraded.map((e) => e.name).join(", ")}`);
+      }
+      // 등급 배분율 가이드 검증
+      const headGradeCheck = (() => { const r = calculateFinal(user.id); return (r && GRADES.includes(r.finalGrade)) ? r.finalGrade : "B"; })();
+      const dist = state.distributionMatrix[headGradeCheck] || state.distributionMatrix["B"] || {};
+      const total = rows.length;
+      const gradeCounts = Object.fromEntries(GRADES.map(g => [g, 0]));
+      rows.forEach(emp => {
+        const ev = evaluations()[emp.id];
+        const sel = document.getElementById(`org_adj_grade_${emp.id}`);
+        const grade = sel ? sel.value : (ev?.orgAdjustment?.gradeManual ? ev.orgAdjustment.grade : calculateFinal(emp.id).autoGrade);
+        if (GRADES.includes(grade)) gradeCounts[grade]++;
+      });
+      // 가이드 정원을 ceil로 계산 → 반올림 오차(6.3→7) 수용, 실제 초과(8명↑)만 위반
+      const violations = GRADES.filter(g => {
+        const guidePct = Number(dist[g] ?? -1);
+        if (guidePct === 0) return gradeCounts[g] > 0;
+        if (guidePct < 0) return false;
+        const guideCt = Math.ceil(total * guidePct / 100);
+        return gradeCounts[g] > guideCt;
+      });
+      // ceil 기준 정원 합계가 인원보다 적은 경우만 진짜 수용 불가
+      const capacitySum = GRADES.reduce((s, g) => s + Math.ceil(total * Number(dist[g] || 0) / 100), 0);
+      const distributionImpossible = capacitySum < total;
+      if (violations.length && distributionImpossible) {
+        // 충족 불가능한 경우: 조정 세션 없이 그대로 제출 허용
+        if (!window.confirm(`현재 배분율 가이드로는 ${total}명을 모두 수용할 수 없어(가이드 정원 합계 ${capacitySum}명) 배분율을 완전히 맞출 수 없습니다.\n\n이 경우 그대로 제출이 가능합니다. 확정 제출하시겠습니까?`)) return;
+        window._orgSubmitReason = `배분율 충족 불가(가이드 정원 합계 ${capacitySum}명 < 인원 ${total}명)`;
+        window._orgSubmitViolations = violations.map(g => ({ grade: g, guidePct: Number(dist[g]||0), guideCt: Math.ceil(total*Number(dist[g]||0)/100), actual: gradeCounts[g] }));
+        window._orgNeedsSession = false;
+      } else if (violations.length) {
+        const detail = violations.map(g => {
+          const guidePct = Number(dist[g] || 0);
+          const guideCt = Math.ceil(total * guidePct / 100);
+          return `${g}등급: 가이드 ${guideCt}명 (${guidePct}%) → 현재 ${gradeCounts[g]}명`;
+        }).join("\n");
+        const reason = window.prompt(`⚠️ 등급 배분율 가이드를 초과한 등급이 있습니다.\n\n${detail}\n\n이 배분으로 진행하려는 사유를 입력해 주세요.\n(취소하면 중단합니다.)`, "");
+        if (reason === null) return;
+        if (!reason.trim()) return window.alert("사유를 입력해야 합니다.");
+        // 사유/위반 내역 임시 보관 + 평가 등급 조정 세션 필요 플래그
+        window._orgSubmitReason = reason.trim();
+        window._orgSubmitViolations = violations.map(g => ({ grade: g, guidePct: Number(dist[g]||0), guideCt: Math.ceil(total*Number(dist[g]||0)/100), actual: gradeCounts[g] }));
+        window._orgNeedsSession = true;
+      } else {
+        if (!window.confirm(`${rows.length}명의 종합평가를 확정 제출하시겠습니까?`)) return;
+      }
+    }
+    // org 조정 저장
+    rows.forEach((employee) => {
+      const ev = evaluations()[employee.id];
+      if (!ev) return;
+      const select = document.getElementById(`org_adj_grade_${employee.id}`);
+      const result = calculateFinal(employee.id);
+      if (select) {
+        const selectedGrade = select.value;
+        const hasManual = GRADES.includes(selectedGrade) && selectedGrade !== result.autoGrade;
+        ev.orgAdjustment.gradeManual = hasManual;
+        ev.orgAdjustment.grade = hasManual ? selectedGrade : "";
+        ev.orgAdjustment.reason = "";
+      }
+    });
+    const submittedAt = new Date().toISOString();
+    if (submit) {
+      const needsSession = Boolean(window._orgNeedsSession);
+      if (needsSession) {
+        // 배분율 위반 → 평가 등급 조정 세션 필요. 제출은 보류하고 어드민(인사총무팀)이 처리.
+        const snap = captureDivisionDistribution(user.division);
+        activeCycle().resultSubmissions[resultSubmissionScopeKey(user)] = {
+          scopeKey: resultSubmissionScopeKey(user),
+          scopeLabel: resultSubmissionScopeLabel(user),
+          scopeType: user.role,
+          submitted: false,
+          needsAdjustmentSession: true,
+          requestedBy: user.id,
+          requestedAt: submittedAt,
+          userIds: rows.map((employee) => employee.id),
+          distributionReason: window._orgSubmitReason || "",
+          distributionViolations: window._orgSubmitViolations || [],
+          // 본부장 원안(등급 분배 + 사유) 기록
+          history: [{ stage: "divisionHead", by: user.id, at: submittedAt, reason: window._orgSubmitReason || "", counts: snap.counts, grades: snap.grades }],
+        };
+        window._orgSubmitReason = null;
+        window._orgSubmitViolations = null;
+        window._orgNeedsSession = null;
+        saveState();
+        render();
+        return window.alert("⚠️ 등급 배분율을 초과하여 평가 등급 조정 세션이 필요합니다.\n\n입력하신 사유가 인사총무팀에 전달되었으며, 인사총무팀에서 별도로 연락드리겠습니다.\n조정 세션 후 인사총무팀에서 최종 제출 처리를 진행합니다.");
+      }
+      activeCycle().resultSubmissions[resultSubmissionScopeKey(user)] = {
+        scopeKey: resultSubmissionScopeKey(user),
+        scopeLabel: resultSubmissionScopeLabel(user),
+        scopeType: user.role,
+        submitted: true,
+        submittedBy: user.id,
+        submittedAt,
+        userIds: rows.map((employee) => employee.id),
+        distributionReason: window._orgSubmitReason || "",
+        distributionViolations: window._orgSubmitViolations || [],
+      };
+      window._orgSubmitReason = null;
+      window._orgSubmitViolations = null;
+      window._orgNeedsSession = null;
+    }
+    saveState();
+    state.ui.flash = submit ? "종합평가를 확정 제출하였습니다. 사장/회장 승인 단계로 전달됩니다." : "종합평가 내용을 임시 저장했습니다.";
+    render();
+  },
+  // 어드민(인사총무팀): 조정 세션 시작 — 해당 본부 종합평가 모달 오픈
+  openAdjustmentSession(division) {
+    const user = currentUser();
+    if (user.role !== "admin") return window.alert("인사총무팀(어드민) 권한이 필요합니다.");
+    const record = activeCycle().resultSubmissions?.[divisionSubmissionKey(division)];
+    if (!record || !record.needsAdjustmentSession) return window.alert("해당 본부는 조정 세션 대상이 아닙니다.");
+    state.ui.adjustmentSessionDivision = division;
+    saveState();
+    render();
+  },
+  closeAdjustmentSession() {
+    state.ui.adjustmentSessionDivision = "";
+    saveState();
+    render();
+  },
+  // 모달 내 등급 변경 시 분배 현황 배지 갱신
+  refreshSessionDist(division) {
+    const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
+    const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
+    const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
+    const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
+    const total = members.length;
+    const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
+    members.forEach((e) => { const sel = document.getElementById(`sess_grade_${e.id}`); const g = sel ? sel.value : ""; if (GRADES.includes(g)) counts[g] += 1; });
+    const box = document.getElementById("session-dist-status");
+    if (box) box.innerHTML = GRADES.map((g) => { const guide = Math.round(total * Number(dist[g] || 0) / 100); const over = (Number(dist[g] || 0) === 0 && counts[g] > 0) || (guide > 0 && counts[g] > guide); return `<span class="pill ${over ? "red" : "green"}" style="font-size:12px;">${g}: ${counts[g]}/${guide}명${over ? " ⚠" : ""}</span>`; }).join("");
+  },
+  // 조정 세션 완료 → 등급 반영 + 사유 입력 + 제출 처리, 기록 남김
+  completeAdjustmentSession(division) {
+    const user = currentUser();
+    if (user.role !== "admin") return window.alert("인사총무팀(어드민) 권한이 필요합니다.");
+    const cycle = selectedCycle();
+    const record = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
+    if (!record) return window.alert("대상 본부 기록을 찾을 수 없습니다.");
+    const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
+    // 모달에서 조정한 등급을 orgAdjustment에 반영
+    const overStepNames = [];
+    members.forEach((emp) => {
+      const sel = document.getElementById(`sess_grade_${emp.id}`);
+      if (!sel) return;
+      const result = calculateFinal(emp.id);
+      const baseGrade = result.autoGrade;
+      if (!isGradeAdjWithinOneStep(baseGrade, sel.value)) overStepNames.push(`${emp.name}(추천:${baseGrade}→선택:${sel.value})`);
+    });
+    if (overStepNames.length) {
+      window.alert(`추천 등급에서 최대 1단계까지만 조정할 수 있습니다.\n초과 항목:\n${overStepNames.join("\n")}`);
+      return;
+    }
+    members.forEach((emp) => {
+      const sel = document.getElementById(`sess_grade_${emp.id}`);
+      if (!sel) return;
+      const ev = evaluations()[emp.id];
+      const result = calculateFinal(emp.id);
+      const selected = sel.value;
+      const hasManual = GRADES.includes(selected) && selected !== result.autoGrade;
+      ev.orgAdjustment.gradeManual = hasManual;
+      ev.orgAdjustment.grade = hasManual ? selected : "";
+    });
+    invalidateCycleCache();
+    const reason = window.prompt(`[${division}] 조정 세션 결과를 반영하여 제출합니다.\n조정 사유를 입력해 주세요.`, record.distributionReason || "");
+    if (reason === null) return;
+    if (!reason.trim()) return window.alert("조정 사유를 입력해야 합니다.");
+    const now = new Date().toISOString();
+    const snap = captureDivisionDistribution(division);
+    record.history = Array.isArray(record.history) ? record.history : [];
+    record.history.push({ stage: "adjustmentSession", by: user.id, at: now, reason: reason.trim(), counts: snap.counts, grades: snap.grades });
+    record.submitted = true;
+    record.needsAdjustmentSession = false;
+    record.adjustmentResolved = true;
+    record.distributionReason = reason.trim();
+    record.submittedBy = user.id;
+    record.submittedAt = now;
+    record.adjustmentResolvedBy = user.id;
+    record.adjustmentResolvedAt = now;
+    state.ui.adjustmentSessionDivision = "";
+    saveState();
+    state.ui.flash = `${division} 본부의 종합평가를 조정 세션 반영 후 제출 처리했습니다.`;
+    render();
+  },
+  comprehensiveAutoGrade() {
+    const user = currentUser();
+    if (user.role !== "divisionHead") return;
+    if (!window.confirm("배분율 가이드(A 20%, B 50%, C 20%, D 10%)에 따라 자동으로 등급을 배분하시겠습니까?")) return;
+    const rows = getResultSubmissionScopeUsers(user);
+    const sortedRows = [...rows].sort((a, b) => {
+      const sa = calculateFinal(a.id).rawScore ?? -1;
+      const sb = calculateFinal(b.id).rawScore ?? -1;
+      return sb - sa;
+    });
+    const total = sortedRows.length;
+    const headGrade2 = (() => { const r = calculateFinal(user.id); return (r && GRADES.includes(r.finalGrade)) ? r.finalGrade : "B"; })();
+    const dist = state.distributionMatrix[headGrade2] || state.distributionMatrix["B"] || { S: 0, A: 20, B: 50, C: 20, D: 10 };
+    const slots = buildDistributionSlots(total, dist);
+    sortedRows.forEach((employee, idx) => {
+      const ev = evaluations()[employee.id];
+      if (!ev) return;
+      const assignedGrade = slots[idx] || "D";
+      const autoGrade = calculateFinal(employee.id).autoGrade;
+      ev.orgAdjustment.gradeManual = assignedGrade !== autoGrade;
+      ev.orgAdjustment.grade = assignedGrade !== autoGrade ? assignedGrade : "";
+      if (!ev.orgAdjustment.gradeManual) ev.orgAdjustment.reason = "";
+    });
+    saveState();
+    state.ui.flash = "등급이 자동 배분되었습니다. 내용을 검토 후 확정 제출해 주세요.";
+    render();
+  },
+  refreshComprehensiveStats() {
+    const panel = document.getElementById("grade-dist-panel");
+    if (!panel) return;
+    const headGrade = panel.dataset.headGrade || "B";
+    const total = parseInt(panel.dataset.total || "0", 10);
+    if (!total) return;
+    // 현재 선택된 등급 집계
+    const gradeCounts = Object.fromEntries(GRADES.map(g => [g, 0]));
+    document.querySelectorAll("[id^='org_adj_grade_']").forEach(sel => {
+      const g = sel.value;
+      if (GRADES.includes(g)) gradeCounts[g]++;
+    });
+    const barsEl = document.getElementById("grade-dist-bars");
+    if (barsEl) barsEl.innerHTML = renderGradeDistCards(gradeCounts, total, headGrade);
+  },
+  // ── 구성원 상세 패널 (종합평가 이름 클릭) ──────────────────────────────
+  openMemberDetail(employeeId, options = {}) {
+    const employee = cycleUserById(employeeId);
+    const ev = evaluations()[employeeId];
+    if (!employee || !ev) return;
+    const result = calculateFinal(employeeId);
+    const hideGrades = !!options.hideGrades;          // 등급 숨김 (점수만)
+    const allowStages = options.stages || null;        // 표시 허용 단계 (null이면 전체)
+    const showStage = (key) => !allowStages || allowStages.includes(key);
+    const showUpwardPeer = !allowStages;               // 단계 제한 시 상향/동료 숨김
+    // 점수 표시: 특정 단계 점수만(자기평가/1차) 또는 전체 종합 점수
+    const scoreStage = options.scoreStage || null;
+    const scoreLabel = options.scoreLabel || "종합 점수";
+    const headerScoreText = scoreStage
+      ? (() => { const v = stageComponentScore(employee, ev[scoreStage]); return v === null ? "-" : v.toFixed(1); })()
+      : result.scoreText;
+
+    document.getElementById("member-detail-panel")?.remove();
+
+    const upwardAssigns = (getUpwardAssignments ? getUpwardAssignments() : [])
+      .filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
+    const peerAssigns = (getPeerAssignments ? getPeerAssignments() : [])
+      .filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
+
+    const upAvg = upwardAssigns.length
+      ? (upwardAssigns.reduce((s,a) => s + (Number(a.answer?.score)||0), 0) / upwardAssigns.length).toFixed(1) : null;
+    const peerAvg = peerAssigns.length
+      ? (peerAssigns.reduce((s,a) => s + (Number(a.answer?.score)||0), 0) / peerAssigns.length).toFixed(1) : null;
+
+    // 평가 그룹 카드 생성 함수
+    const stageColors = {
+      self:   { bg:"#f0f9ff", border:"#bae6fd", label:"#0369a1" },
+      first:  { bg:"#f0fdf4", border:"#bbf7d0", label:"#166534" },
+      second: { bg:"#fefce8", border:"#fde68a", label:"#92400e" },
+      upward: { bg:"#f5f3ff", border:"#ddd6fe", label:"#5b21b6" },
+      peer:   { bg:"#f0fdfa", border:"#99f6e4", label:"#065f46" },
+    };
+
+    const stageCard = (stageKey, label, stageEv, status, required) => {
+      if (required && status !== (stageKey === "self" ? "submitted" : "completed")) {
+        return `<div class="mdp-card" style="background:#f9fafb;border-color:var(--line);opacity:.6;">
+          <div class="mdp-card-head"><span class="mdp-label" style="color:var(--muted);">${label}</span><span class="pill" style="font-size:10px;background:var(--line);color:var(--muted);">미완료</span></div>
+        </div>`;
+      }
+      if (!stageEv) return "";
+      const c = stageColors[stageKey];
+      const compRows = COMPONENTS.map(comp => {
+        const d = stageEv[comp];
+        if (!d || (d.score === "" && !d.comment)) return "";
+        const s = d.score !== undefined && d.score !== "" ? `<strong>${typeof d.score==="number"?d.score.toFixed(1):d.score}점</strong>` : "";
+        const g = "";
+        const comment = d.comment ? `<p style="font-size:11.5px;color:var(--muted);margin:4px 0 0;line-height:1.5;">${esc(d.comment)}</p>` : "";
+        return `<div style="padding:6px 0;border-bottom:1px solid ${c.border};">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <span style="font-size:12px;color:${c.label};font-weight:600;">${COMPONENT_LABELS[comp]}</span>
+            <div style="display:flex;gap:5px;align-items:center;">${s}${g}</div>
+          </div>
+          ${comment}
+        </div>`;
+      }).filter(Boolean).join("");
+      const feedback = stageEv.overallFeedback ? `<p style="font-size:12px;color:var(--muted);margin:8px 0 0;line-height:1.5;font-style:italic;">"${esc(stageEv.overallFeedback)}"</p>` : "";
+      return `<div class="mdp-card" style="background:${c.bg};border-color:${c.border};">
+        <div class="mdp-card-head">
+          <span class="mdp-label" style="color:${c.label};">${label}</span>
+          ${compRows ? "" : `<span style="font-size:11px;color:var(--muted);">평가 완료</span>`}
+        </div>
+        ${compRows}
+        ${feedback}
+      </div>`;
+    };
+
+    const upwardCard = () => {
+      if (!upwardAssigns.length) return "";
+      const c = stageColors.upward;
+      const avgRow = `<div style="padding:6px 0;border-bottom:1px solid ${c.border};display:flex;justify-content:space-between;"><span style="font-size:12px;color:${c.label};font-weight:600;">평균 점수</span><strong>${upAvg}점</strong></div>`;
+      const comments = upwardAssigns.filter(a => a.answer?.comment).map((a,i) =>
+        `<div style="font-size:12px;padding:6px 0;border-bottom:1px solid ${c.border};"><span style="color:${c.label};font-weight:600;">평가자 ${i+1}</span><p style="margin:3px 0 0;color:var(--muted);line-height:1.5;">${esc(a.answer.comment)}</p></div>`
+      ).join("");
+      return `<div class="mdp-card" style="background:${c.bg};border-color:${c.border};">
+        <div class="mdp-card-head"><span class="mdp-label" style="color:${c.label};">상향평가</span><span style="font-size:11px;color:var(--muted);">${upwardAssigns.length}건</span></div>
+        ${avgRow}${comments}
+      </div>`;
+    };
+
+    const peerCard = () => {
+      if (!peerAssigns.length) return "";
+      const c = stageColors.peer;
+      const avgRow = `<div style="padding:6px 0;border-bottom:1px solid ${c.border};display:flex;justify-content:space-between;"><span style="font-size:12px;color:${c.label};font-weight:600;">평균 점수</span><strong>${peerAvg}점</strong></div>`;
+      const comments = peerAssigns.filter(a => a.answer?.comment).map((a,i) =>
+        `<div style="font-size:12px;padding:6px 0;border-bottom:1px solid ${c.border};"><span style="color:${c.label};font-weight:600;">동료 ${i+1}</span><p style="margin:3px 0 0;color:var(--muted);line-height:1.5;">${esc(a.answer.comment)}</p></div>`
+      ).join("");
+      return `<div class="mdp-card" style="background:${c.bg};border-color:${c.border};">
+        <div class="mdp-card-head"><span class="mdp-label" style="color:${c.label};">동료평가</span><span style="font-size:11px;color:var(--muted);">${peerAssigns.length}건</span></div>
+        ${avgRow}${comments}
+      </div>`;
+    };
+
+    const panel = document.createElement("div");
+    panel.id = "member-detail-panel";
+    panel.style.cssText = `position:fixed;top:56px;right:0;width:400px;height:calc(100vh - 56px);
+      background:var(--surface);border-left:1px solid var(--line);
+      box-shadow:-4px 0 24px rgba(0,0,0,.12);z-index:620;
+      display:flex;flex-direction:column;overflow:hidden;`;
+    panel.innerHTML = `
+      <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;background:var(--surface-2);">
+        <div>
+          <div style="font-size:15px;font-weight:700;">${esc(employee.name)}<span style="margin-left:6px;font-size:11px;background:var(--primary-lt);color:var(--primary);padding:2px 7px;border-radius:10px;">${ROLE_LABELS[employee.role]||""}</span></div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">${esc(employee.title||"")} · ${esc(employee.team||employee.division||"")}${employee.email ? " · "+esc(employee.email) : ""}</div>
+        </div>
+        <button onclick="document.getElementById('member-detail-panel').remove()" style="width:28px;height:28px;border-radius:6px;background:var(--surface);border:1px solid var(--line);font-size:16px;cursor:pointer;display:grid;place-items:center;">×</button>
+      </div>
+      <!-- 점수 -->
+      <div style="padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;background:var(--primary-lt);flex-shrink:0;">
+        <span style="font-size:13px;font-weight:600;color:var(--primary);">${esc(scoreLabel)}</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:22px;font-weight:800;color:var(--primary);">${headerScoreText}</span>
+          ${hideGrades ? "" : gradeBadge(result.finalGrade || result.orgGrade || "")}
+        </div>
+      </div>
+      <!-- 평가 그룹 카드들 -->
+      <div style="flex:1;overflow-y:auto;padding:12px 14px;display:grid;gap:10px;">
+        ${showStage("self")   ? stageCard("self",   "자기평가",  ev.self,   ev.status?.self,   true) : ""}
+        ${showStage("first")  ? stageCard("first",  "1차 평가",  ev.first,  ev.status?.first,  Boolean(employee.evaluator1Id)) : ""}
+        ${showStage("second") ? stageCard("second", "2차 평가",  ev.second, ev.status?.second, Boolean(employee.evaluator2Id) && employee.role === "member") : ""}
+        ${showUpwardPeer ? upwardCard() : ""}
+        ${showUpwardPeer ? peerCard() : ""}
+        ${(() => {
+          const cyc = activeCycle();
+          if (!cyc?.useAIEval) return "";
+          const ai = ev.aiEval;
+          const c = { bg:"#fdf4ff", border:"#e9d5ff", label:"#7e22ce" };
+          if (!ai || ai.status === "pending") {
+            return `<div class="mdp-card" style="background:${c.bg};border-color:${c.border};">
+              <div class="mdp-card-head"><span class="mdp-label" style="color:${c.label};">🤖 AI 평가자</span></div>
+              <div style="padding:10px 0;font-size:12px;color:var(--muted);">AI 평가자가 평가를 진행하고 있습니다.</div>
+            </div>`;
+          }
+          if (ai.status === "failed") {
+            return `<div class="mdp-card" style="background:${c.bg};border-color:${c.border};">
+              <div class="mdp-card-head"><span class="mdp-label" style="color:${c.label};">🤖 AI 평가자</span><span class="pill" style="font-size:10px;background:#fee2e2;color:#991b1b;">오류</span></div>
+              <div style="padding:6px 0;font-size:12px;color:var(--muted);">AI 평가 생성 중 오류가 발생했습니다.</div>
+            </div>`;
+          }
+          const achScores = Array.isArray(ai.achievementScores) ? ai.achievementScores : [];
+          const achBreakdown = achScores.length
+            ? achScores.map(a => `
+              <div style="background:rgba(124,58,237,0.06);border-radius:6px;padding:8px 10px;margin-bottom:6px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+                  <span style="font-size:11px;font-weight:600;color:#6d28d9;">업적 ${a.index}</span>
+                  <strong style="font-size:13px;color:#4c1d95;">${a.score}점</strong>
+                </div>
+                <div style="font-size:11px;color:var(--muted);line-height:1.55;">${esc(a.rationale || "")}</div>
+              </div>`).join("")
+            : "";
+          return `<div class="mdp-card" style="background:${c.bg};border-color:${c.border};">
+            <div class="mdp-card-head"><span class="mdp-label" style="color:${c.label};">🤖 AI 평가자 (업적평가)</span><strong>${ai.score}점</strong></div>
+            ${achBreakdown}
+            ${ai.rationale ? `<div style="padding:6px 0 2px;font-size:12px;color:var(--muted);line-height:1.6;border-top:1px solid #e9d5ff;margin-top:4px;padding-top:8px;"><strong style="font-size:11px;color:#7e22ce;">종합 의견</strong><br>${esc(ai.rationale)}</div>` : ""}
+          </div>`;
+        })()}
+      </div>`;
+    document.body.appendChild(panel);
+  },
+
+  // ── 최종 평가 결과 확인 → 이름 클릭 시 내 리포트 형식 팝업 ──────────────
+  openReportModal(employeeId) {
+    const cycle = activeCycle();
+    if (!cycle) return;
+    const employee = (cycle.usersSnapshot || state.users).find(u => u.id === employeeId);
+    if (!employee) return;
+
+    document.getElementById("report-modal-overlay")?.remove();
+
+    const content = withCycle(cycle.id, () => {
+      const evaluation = (cycle.evaluations || {})[employeeId];
+      if (!evaluation) return `<div class="empty">평가 데이터가 없습니다.</div>`;
+      const result = calculateFinal(employeeId);
+      const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+      const showCoverResult = visibility.finalGrade || visibility.finalScore;
+      const hasAIFeedback = !!(evaluation?.aiFeedback?.generatedAt);
+      const hasVisibleDetail = showCoverResult || visibility.summary || visibility.upwardSummary || visibility.peerSummary || hasAIFeedback;
+
+      const summarySection = (visibility.summary || visibility.upwardSummary || visibility.peerSummary) ? `
+        <section class="panel">
+          <div class="panel-head"><div><h2>평가 요약</h2><p class="muted">공개 설정에 따라 평가별 산출 점수를 표시합니다.</p></div></div>
+          <div class="panel-body grid">
+            ${[
+              ...(visibility.summary ? COMPONENTS : []),
+              ...(visibility.upwardSummary ? ["upward"] : []),
+              ...(visibility.peerSummary ? ["peer"] : []),
+            ].map(component => {
+              const item = result.componentScores[component];
+              return `<div><div class="toolbar" style="justify-content:space-between;"><strong>${WEIGHT_COMPONENT_LABELS[component]}</strong><span class="score">${item?.text || "-"}</span></div><div class="bar"><span style="width:${Math.max(0, Math.min(100, item?.value || 0))}%"></span></div></div>`;
+            }).join("")}
+          </div>
+        </section>` : "";
+
+      return `
+        <div class="grid">
+          <section class="panel">
+            <div class="panel-body">
+              <div class="${showCoverResult ? "report-cover" : "grid"}">
+                <div class="grid">
+                  <div>
+                    <h2 class="section-title">${esc(employee.name)} 평가 리포트</h2>
+                    <p class="muted">${esc(employee.title || "")} · ${esc(employee.division || "")} / ${esc(employee.team || "")}</p>
+                  </div>
+                  <div class="notice ok">평가 리포트 (관리자 미리보기)</div>
+                </div>
+                ${showCoverResult ? `<div class="report-grade grade-${result.finalGrade}">
+                  <div>
+                    ${visibility.finalGrade ? `<span>최종 등급</span><strong>${esc(result.finalGrade)}</strong>` : ""}
+                    ${visibility.finalScore ? `<p>${result.scoreText}점</p>` : ""}
+                  </div>
+                </div>` : ""}
+              </div>
+            </div>
+          </section>
+          ${summarySection}
+          ${renderAIFeedbackPanels(evaluation, visibility, true)}
+          ${renderEvaluatorTendencyPanel(employee, visibility, true)}
+          ${!hasVisibleDetail ? `<section class="panel"><div class="panel-body"><div class="empty">현재 공개된 리포트 항목이 없습니다.</div></div></section>` : ""}
+        </div>`;
+    });
+
+    const overlay = document.createElement("div");
+    overlay.id = "report-modal-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:700;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:40px 20px;box-sizing:border-box;";
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.innerHTML = `
+      <div style="background:var(--surface);border-radius:16px;width:100%;max-width:800px;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden;margin:auto;">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;background:var(--surface-2);">
+          <div>
+            <div style="font-size:16px;font-weight:700;">${esc(employee.name)}<span style="margin-left:8px;font-size:11px;background:var(--primary-lt);color:var(--primary);padding:2px 8px;border-radius:10px;">${ROLE_LABELS[employee.role] || ""}</span></div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px;">${esc(employee.title || "")} · ${esc(employee.division || "")} / ${esc(employee.team || "")}</div>
+          </div>
+          <button onclick="document.getElementById('report-modal-overlay').remove()" style="width:32px;height:32px;border-radius:8px;background:var(--surface);border:1px solid var(--line);font-size:18px;cursor:pointer;display:grid;place-items:center;">×</button>
+        </div>
+        <div style="padding:20px;">${content}</div>
+      </div>`;
+    document.body.appendChild(overlay);
+  },
+
+  // ── 독려 메일 발송 ─────────────────────────────────────────────────────
+  sendReminderMail(userId, stage) {
+    const user = cycleUserById(userId) || userById(userId);
+    if (!user) return;
+    const name = user.name || userId;
+    const email = user.email || "";
+    if (!email) return window.alert(`${name}님의 이메일 주소가 없습니다.`);
+    window.alert(`📧 독려 메일 발송\n\n수신: ${name} <${email}>\n단계: ${stage}\n\n실제 운영 환경에서는 메일이 발송됩니다.\n(현재 데모 모드)`);
+  },
+  sendBulkReminder(userIds, stage) {
+    const users = userIds.map(id => cycleUserById(id) || userById(id)).filter(Boolean);
+    const withEmail = users.filter(u => u.email);
+    if (!withEmail.length) return window.alert("이메일 주소가 있는 대상자가 없습니다.");
+    if (!window.confirm(`${stage} 미완료자 ${withEmail.length}명에게 독려 메일을 발송하시겠습니까?`)) return;
+    window.alert(`📧 ${withEmail.length}명에게 독려 메일 발송 완료\n\n${withEmail.slice(0,5).map(u=>`· ${u.name} <${u.email}>`).join("\n")}${withEmail.length>5 ? `\n외 ${withEmail.length-5}명` : ""}`);
+  },
+  sendAllReminderMail() {
+    const cycle = selectedCycle();
+    const evaluatees = cycleUsers(cycle).filter(isEvaluatee);
+    const pending = evaluatees.filter(e => evaluations()[e.id]?.status?.self !== "submitted");
+    if (!pending.length) return window.alert("모든 구성원이 자기평가를 완료했습니다.");
+    App.sendBulkReminder(pending.map(u => u.id), "자기평가");
+  },
+  updateReminderList() {
+    const type = valueOf("reminder_type_select");
+    const cycle = selectedCycle();
+    const allUsers = cycleUsers(cycle);
+    const evaluatees = allUsers.filter(isEvaluatee);
+    const upwardAssigns = getUpwardAssignments ? getUpwardAssignments() : [];
+    const peerAssigns   = getPeerAssignments   ? getPeerAssignments()   : [];
+    const pendingMap = {
+      '자기평가': evaluatees.filter(e => evaluations()[e.id]?.status?.self !== "submitted"),
+      '1차 평가': evaluatees.filter(e => e.evaluator1Id && evaluations()[e.id]?.status?.first !== "completed")
+        .map(e => allUsers.find(u => u.id === e.evaluator1Id)).filter(Boolean).filter((u,i,a) => a.findIndex(x=>x.id===u.id)===i),
+      '2차 평가': evaluatees.filter(e => e.evaluator2Id && evaluations()[e.id]?.status?.second !== "completed")
+        .map(e => allUsers.find(u => u.id === e.evaluator2Id)).filter(Boolean).filter((u,i,a) => a.findIndex(x=>x.id===u.id)===i),
+      '상향평가': upwardAssigns.filter(a => !isCompletedStatus(a.status))
+        .map(a => allUsers.find(u => u.id === a.evaluatorId)).filter(Boolean).filter((u,i,arr) => arr.findIndex(x=>x.id===u.id)===i),
+      '동료평가': peerAssigns.filter(a => !isCompletedStatus(a.status))
+        .map(a => allUsers.find(u => u.id === a.evaluatorId)).filter(Boolean).filter((u,i,arr) => arr.findIndex(x=>x.id===u.id)===i),
+    };
+    const people = pendingMap[type] || [];
+    const wrap = document.getElementById("reminder_list_wrap");
+    if (wrap) wrap.innerHTML = renderReminderListHtml(people);
+    const searchEl = document.getElementById("reminder_search");
+    if (searchEl && searchEl.value) App.filterReminderList(searchEl.value);
+  },
+  filterReminderList(query) {
+    const q = (query||"").toLowerCase();
+    document.querySelectorAll(".reminder-row").forEach(row => {
+      const text = (row.dataset.search||"").toLowerCase();
+      row.style.display = !q || text.includes(q) ? "" : "none";
+    });
+  },
+  selectAllReminderTargets(checked) {
+    document.querySelectorAll(".reminder-check").forEach(cb => { cb.checked = !!checked; });
+    const allCb = document.getElementById("reminder_check_all");
+    if (allCb) allCb.checked = !!checked;
+  },
+  sendBulkReminderFromPanel() {
+    const type = valueOf("reminder_type_select") || "평가";
+    // 체크된 행만 수집 (선택 해제한 대상은 제외)
+    const checkedIds = [...document.querySelectorAll(".reminder-check:checked")].map(cb => cb.value).filter(Boolean);
+    if (!checkedIds.length) return window.alert("발송할 대상자를 선택해 주세요. (체크박스로 선택)");
+    // 발송 전 편집 가능한 메일 작성 모달을 띄움 (선택한 대상에게만)
+    const ms = ensureMailSettings();
+    state.ui.mailComposeModal = { type, ids: checkedIds, subject: ms.bulk.subject, body: ms.bulk.body };
+    saveState();
+    render();
+  },
+  // 개인별 발송 버튼 → 해당 1명에게 보낼 메일 편집 창
+  openSingleMailCompose(id) {
+    const u = cycleUserById(id) || userById(id);
+    if (!u) return;
+    if (!u.email) return window.alert(`${u.name}님의 이메일 주소가 없습니다.`);
+    const type = valueOf("reminder_type_select") || "평가";
+    const ms = ensureMailSettings();
+    state.ui.mailComposeModal = { type, ids: [id], subject: ms.bulk.subject, body: ms.bulk.body };
+    saveState();
+    render();
+  },
+  // ── 자동 메일 설정 ──
+  openMailSettings() { state.ui.mailSettingsModal = true; saveState(); render(); },
+  closeMailSettings() { state.ui.mailSettingsModal = false; saveState(); render(); },
+  toggleMailSetting(kind, stage, on) {
+    const ms = ensureMailSettings();
+    const obj = kind === "reminder" ? ms.reminder[stage] : ms.start[stage];
+    if (obj) obj.enabled = !!on;
+    saveState();
+    // 토글만 반영 — 모달 유지를 위해 전체 재렌더 없이 클래스만 토글되도록 render 호출
+    render();
+  },
+  setMailReminderDays(stage, val) {
+    const ms = ensureMailSettings();
+    const d = parseInt(val, 10);
+    if (ms.reminder[stage] && !isNaN(d) && d > 0 && d <= 60) ms.reminder[stage].daysBefore = d;
+    saveState();
+  },
+  openMailEditor(kind, stage) { state.ui.mailEditor = { kind, stage }; saveState(); render(); },
+  closeMailEditor() { state.ui.mailEditor = null; saveState(); render(); },
+  saveMailEditor() {
+    const ed = state.ui.mailEditor || {};
+    const ms = ensureMailSettings();
+    const obj = ed.kind === "bulk" ? ms.bulk : (ms[ed.kind] && ms[ed.kind][ed.stage]);
+    if (!obj) { state.ui.mailEditor = null; return render(); }
+    const subj = valueOf("mailedit_subj").trim();
+    if (!subj) return window.alert("메일 제목을 입력해 주세요.");
+    obj.subject = subj;
+    obj.body = document.getElementById("mailedit_body")?.value ?? obj.body;
+    state.ui.mailEditor = null;
+    saveState();
+    state.ui.flash = "메일 내용을 저장했습니다.";
+    render();
+  },
+  // ── 일괄 발송 메일 작성/발송 ──
+  closeMailCompose() { state.ui.mailComposeModal = false; saveState(); render(); },
+  sendComposedMail() {
+    const m = state.ui.mailComposeModal || {};
+    const subject = valueOf("compose_subj").trim();
+    const body = document.getElementById("compose_body")?.value || "";
+    if (!subject) return window.alert("메일 제목을 입력해 주세요.");
+    const users = (m.ids || []).map(id => cycleUserById(id) || userById(id)).filter(Boolean);
+    const withEmail = users.filter(u => u.email);
+    if (!withEmail.length) return window.alert("이메일 주소가 있는 대상자가 없습니다.");
+    state.ui.mailComposeModal = false;
+    saveState();
+    render();
+    window.alert(`📧 ${withEmail.length}명에게 메일 발송 완료\n\n제목: ${subject}\n\n${withEmail.slice(0,5).map(u=>`· ${u.name} <${u.email}>`).join("\n")}${withEmail.length>5 ? `\n외 ${withEmail.length-5}명` : ""}\n\n(현재 데모 모드 — 실제 운영 환경에서는 메일이 발송됩니다.)`);
+  },
+
+  // ── 조직관리 구성원 클릭 → 우측 패널에 정보 채우기 ────────────────────
+  selectOrgMember(userId) {
+    const user = userById(userId);
+    if (!user) return;
+    state.ui.selectedOrgMemberId = userId;
+    // 정보 패널 업데이트
+    const infoPanel = document.getElementById("org-member-info-panel");
+    if (infoPanel) {
+      infoPanel.outerHTML = renderOrganizationMemberInfoPanel();
+      const newPanel = document.getElementById("org-member-info-panel");
+      if (newPanel) newPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } else {
+      render();
+    }
+  },
+  clearSelectedOrgMember() {
+    state.ui.selectedOrgMemberId = "";
+    const infoPanel = document.getElementById("org-member-info-panel");
+    if (infoPanel) infoPanel.outerHTML = renderOrganizationMemberInfoPanel();
+  },
+  saveMemberInfoPanel() {
+    const userId = state.ui.selectedOrgMemberId;
+    if (!userId) return;
+    const user = userById(userId);
+    if (!user) return;
+    const name = valueOf("mip_name").trim();
+    const empno = valueOf("mip_empno").trim();
+    const email = valueOf("mip_email").trim();
+    const phone = valueOf("mip_phone").trim();
+    const title = valueOf("mip_title").trim();
+    const role = valueOf("mip_role");
+    const orgNodeId = valueOf("mip_orgnode");
+    const active = valueOf("mip_active") !== "false";
+    const joinDate = valueOf("mip_joindate").trim();
+    const workStatus = valueOf("mip_workstatus");
+    const retired = valueOf("mip_retired") === "true";
+    const retireDate = valueOf("mip_retiredate").trim();
+    const newPassword = (document.getElementById("mip_password")?.value || "").trim();
+    if (!name) return window.alert("이름을 입력해 주세요.");
+    if (retired && !retireDate) return window.alert("퇴사일을 입력해 주세요.");
+    user.name = name;
+    user.employeeNo = empno;
+    user.email = email;
+    user.phone = phone;
+    user.title = title;
+    user.role = role;
+    user.active = active;
+    user.joinDate = joinDate;
+    user.workStatus = workStatus;
+    user.retired = retired;
+    user.retireDate = retired ? retireDate : "";
+    if (newPassword) user.password = newPassword;
+    if (orgNodeId) {
+      const tree = buildOrganizationTree();
+      const node = tree.byId[orgNodeId];
+      if (node) syncUserFieldsToOrganizationNode(user, node, tree.nodes);
+    }
+    // cycle usersSnapshot도 동기화
+    activeCycle().usersSnapshot?.forEach(u => {
+      if (u.id === userId) {
+        Object.assign(u, {name,employeeNo:empno,email,phone,title,role,active,joinDate,workStatus,retired,retireDate:retired?retireDate:"",...(newPassword?{password:newPassword}:{})});
+        if (orgNodeId) { const tree=buildOrganizationTree(); const node=tree.byId[orgNodeId]; if(node) syncUserFieldsToOrganizationNode(u,node,tree.nodes); }
+      }
+    });
+    saveState();
+    state.ui.flash = `${name}님 정보가 저장되었습니다.`;
+    render();
+  },
+  openPwChangeModal() {
+    state.ui.showPwChangeModal = true;
+    state.ui.pwChangeForced = false;
+    render();
+  },
+  closePwChangeModal() {
+    state.ui.showPwChangeModal = false;
+    state.ui.pwChangeForced = false;
+    render();
+  },
+  submitPwChange() {
+    const newPw = (document.getElementById("pw_change_new")?.value || "").trim();
+    const confirm = (document.getElementById("pw_change_confirm")?.value || "").trim();
+    const errEl = document.getElementById("pw_change_error");
+    const showErr = (msg) => { if (errEl) { errEl.textContent = msg; errEl.style.display = "block"; } };
+    if (!newPw) return showErr("새 비밀번호를 입력해 주세요.");
+    if (newPw.length < 4) return showErr("비밀번호는 4자 이상이어야 합니다.");
+    if (newPw !== confirm) return showErr("비밀번호가 일치하지 않습니다.");
+    const session = getSession();
+    const user = session?.userId ? userById(session.userId) : null;
+    if (!user) return showErr("로그인 세션을 찾을 수 없습니다.");
+    user.password = newPw;
+    // cycle usersSnapshot도 동기화
+    activeCycle().usersSnapshot?.forEach(u => { if (u.id === user.id) u.password = newPw; });
+    state.ui.showPwChangeModal = false;
+    state.ui.pwChangeForced = false;
+    saveState();
+    state.ui.flash = "비밀번호가 변경되었습니다.";
+    render();
+  },
+  toggleRetireDateField(value) {
+    const field = document.getElementById("mip_retiredate_field");
+    if (field) field.style.display = value === "true" ? "" : "none";
+  },
+  openRetireePopup(userId) {
+    state.ui.retireePopupId = userId;
+    render();
+  },
+  closeRetireePopup() {
+    state.ui.retireePopupId = "";
+    render();
+  },
+  openRetireePanel() {
+    state.ui.showRetireePanel = true;
+    state.ui.retireePanelSearch = "";
+    render();
+  },
+  closeRetireePanel() {
+    state.ui.showRetireePanel = false;
+    render();
+  },
+  setRetireePanelSearch(q) {
+    state.ui.retireePanelSearch = q;
+    const tbody = document.querySelector('.goal-modal-overlay .table-wrap tbody');
+    const emptyEl = document.querySelector('.goal-modal-overlay .empty');
+    const query = q.toLowerCase();
+    const retirees = state.users
+      .filter((u) => u.role !== "admin" && isRetired(u))
+      .filter((u) => !query || (u.name || "").toLowerCase().includes(query))
+      .sort((a, b) => String(b.retireDate || "").localeCompare(String(a.retireDate || "")));
+    if (tbody) {
+      tbody.innerHTML = retirees.map((user) => `
+        <tr>
+          <td><button class="button ghost" style="padding:0;font-weight:700;text-decoration:underline;cursor:pointer;" onclick="App.openRetireePopup('${esc(user.id)}')">${esc(user.name || "-")}</button></td>
+          <td>${esc(user.employeeNo || "-")}</td>
+          <td>${esc([user.orgRoot, user.division, user.team].filter((v) => v && v !== "미지정").join(" / ") || "-")}</td>
+          <td>${esc(user.title || "-")}</td>
+          <td>${esc(user.joinDate || "-")}</td>
+          <td>${esc(user.retireDate || "-")}</td>
+          <td><button class="button secondary" onclick="App.restoreRetiree('${esc(user.id)}')">복직</button></td>
+        </tr>`).join("");
+    } else if (emptyEl) {
+      emptyEl.textContent = query ? "검색 결과가 없습니다." : "퇴사자가 없습니다.";
+    } else {
+      render();
+    }
+  },
+  openOrgAddPopup(type) {
+    state.ui.orgAddPopup = type;
+    render();
+  },
+  closeOrgAddPopup() {
+    state.ui.orgAddPopup = null;
+    render();
+  },
+  restoreRetiree(userId) {
+    const user = userById(userId);
+    if (!user) return;
+    if (!window.confirm(`${user.name}님을 복직 처리하시겠습니까?`)) return;
+    user.retired = false;
+    user.retireDate = "";
+    activeCycle().usersSnapshot?.forEach((u) => {
+      if (u.id === userId) { u.retired = false; u.retireDate = ""; }
+    });
+    saveState();
+    state.ui.flash = `${user.name}님을 복직 처리했습니다.`;
+    render();
+  },
+
+  doApproval(role) {
+    const user = currentUser();
+    if (user.role !== role) return window.alert("권한이 없습니다.");
+    const cycle = selectedCycle();
+    cycle.resultSubmissions = cycle.resultSubmissions || {};
+    const labelMap = { president: "사장", chairman: "회장" };
+    if (!window.confirm(`${labelMap[role]} 승인을 확정하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+    cycle.resultSubmissions[`approval:${role}`] = {
+      scopeKey: `approval:${role}`,
+      scopeLabel: `${labelMap[role]} 승인`,
+      scopeType: role,
+      submitted: true,
+      submittedBy: user.id,
+      submittedAt: new Date().toISOString(),
+    };
+    // 회장 최종 승인 시 결과 공개는 어드민이 수동으로 설정
+    saveState();
+    state.ui.flash = role === "president" ? "사장 승인이 완료되었습니다. 회장 최종 확정을 기다립니다." : "회장 최종 승인이 완료되었습니다. 평가 결과가 공개됩니다.";
+    render();
+  },
+  setApprovalDetail(employeeId) {
+    state.ui.approvalDetailId = employeeId || "";
+    // 패널만 교체 (전체 re-render 없이)
+    const panel = document.getElementById("approval-detail-panel");
+    if (panel) {
+      panel.innerHTML = employeeId ? renderApprovalDetailPanel(employeeId) : `<div class="component-card" style="text-align:center;color:var(--muted);padding:32px;">구성원 이름을 클릭하면<br/>평가 상세 내용이 표시됩니다.</div>`;
+      // 선택된 행 강조
+      document.querySelectorAll("#approval-detail-panel ~ * tr, table tr").forEach(tr => tr.style.background = "");
+    } else {
+      saveState();
+      render();
+    }
+  },
+  showSubmitReason(dept, reason) {
+    if (!reason) return window.alert("기록된 사유가 없습니다.");
+    window.alert(`【종합평가 배분 사유】\n\n부서: ${dept}\n\n${reason}`);
+  },
+  // 본부 조정 이력을 새창으로: 단계(원안/조정세션)를 하나의 표에 나란히 비교
+  openDivisionHistory(division) {
+    const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(division)];
+    const hist = rec && Array.isArray(rec.history) ? rec.history : [];
+    if (!hist.length) return window.alert("조정 이력이 없습니다.");
+    const stageLabel = { divisionHead: "본부장 원안", adjustmentSession: "조정 세션" };
+    const stageHeaders = hist.map((h) => stageLabel[h.stage] || h.stage);
+
+    // 본부 등급/가이드 + 원안·조정세션 분배 차트 데이터
+    const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
+    const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
+    const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
+    const origEntry = hist.find((h) => h.stage === "divisionHead") || hist[0];
+    const sessEntry = [...hist].reverse().find((h) => h.stage === "adjustmentSession") || hist[hist.length - 1];
+    const origCounts = origEntry?.counts || {};
+    const sessCounts = sessEntry?.counts || {};
+    const total = (origEntry?.grades || []).length || Object.values(origCounts).reduce((s, v) => s + (v || 0), 0);
+    const guide = Object.fromEntries(GRADES.map((g) => [g, Math.round(total * Number(dist[g] || 0) / 100)]));
+    const gradeColor = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
+    // 가로 누적 막대: 가이드 / 본부장 원안 / 조정 세션 (등급별 색 구간)
+    const stackedBar = (label, counts) => {
+      const tot = GRADES.reduce((s, g) => s + (counts[g] || 0), 0);
+      const segs = tot
+        ? GRADES.filter((g) => (counts[g] || 0) > 0).map((g) => {
+            const v = counts[g] || 0; const pct = Math.round((v / tot) * 100);
+            return `<span class="seg" style="flex:${v};background:${gradeColor[g]}" title="${g} ${v}명 (${pct}%)">${g} ${v}</span>`;
+          }).join("")
+        : `<span class="seg empty">데이터 없음</span>`;
+      return `<div class="barrow"><div class="barlabel">${esc(label)}</div><div class="stack">${segs}</div></div>`;
+    };
+    const chart = `<div class="chart">
+      <div class="chart-head">본부장 등급 <span class="gb" style="background:${gradeColor[headGrade] || "#6b7280"}">${esc(headGrade)}</span> 기준 · 등급 분배 비교 (단위: 명)</div>
+      ${stackedBar("가이드", guide)}
+      ${stackedBar("본부장 원안", origCounts)}
+      ${stackedBar("조정 세션", sessCounts)}
+      <div class="legend">${GRADES.map((g) => `<span><i style="background:${gradeColor[g]}"></i>${g}</span>`).join("")}</div>
+    </div>`;
+
+    // 단계별 요약(처리자·사유·분배)
+    const summary = hist.map((h) => {
+      const who = userById(h.by);
+      const counts = GRADES.map((g) => `${g} ${h.counts?.[g] || 0}`).join(" · ");
+      return `<div class="sum">
+        <strong>${esc(stageLabel[h.stage] || h.stage)}</strong>
+        <span class="meta">${esc(who?.name || "")}${h.at ? " · " + esc(formatDateTime(h.at)) : ""}</span>
+        <div>등급 분배: ${esc(counts)}</div>
+        <div>사유: ${esc(h.reason || "-")}</div>
+      </div>`;
+    }).join("");
+
+    // 구성원별 단계 등급 병합 (사번+이름 기준)
+    const order = [];
+    const seen = new Set();
+    const nameBy = {}, empnoBy = {}, gradesBy = {};
+    hist.forEach((h, si) => {
+      (h.grades || []).forEach((m) => {
+        const key = `${m.employeeNo || ""}|${m.name || ""}`;
+        if (!seen.has(key)) { seen.add(key); order.push(key); nameBy[key] = m.name || ""; empnoBy[key] = m.employeeNo || ""; gradesBy[key] = new Array(hist.length).fill(""); }
+        gradesBy[key][si] = m.grade || "";
+      });
+    });
+    const bodyRows = order.map((key, idx) => {
+      const cells = gradesBy[key].map((g, si) => {
+        const prev = si > 0 ? gradesBy[key][si - 1] : "";
+        const changed = si > 0 && g && prev && g !== prev;
+        return `<td class="g${changed ? " chg" : ""}">${esc(g || "-")}${changed ? ` <span class="arrow">(${esc(prev)}→${esc(g)})</span>` : ""}</td>`;
+      }).join("");
+      return `<tr><td>${idx + 1}</td><td>${esc(nameBy[key])}</td><td>${esc(empnoBy[key])}</td>${cells}</tr>`;
+    }).join("") || `<tr><td colspan="${3 + hist.length}" class="empty">구성원 등급 스냅샷이 없습니다.</td></tr>`;
+
+    const doc = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(division)} 조정 이력</title>
+      <style>
+        body{font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;margin:24px;color:#1f2937;background:#f8fafc;}
+        h1{font-size:20px;margin:0 0 4px;}
+        .sub{color:#6b7280;font-size:13px;margin:0 0 16px;}
+        .sums{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
+        .sum{flex:1;min-width:240px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;font-size:13px;}
+        .sum strong{color:#2454c6;font-size:14px;}
+        .sum .meta{color:#6b7280;font-size:12px;margin-left:6px;}
+        .sum div{margin-top:4px;}
+        table{border-collapse:collapse;width:100%;font-size:13px;background:#fff;}
+        th,td{border:1px solid #e5e7eb;padding:6px 10px;text-align:left;}
+        th{background:#f1f5f9;text-align:center;}
+        th:nth-child(2){text-align:left;}
+        td.g{text-align:center;font-weight:700;}
+        td.g.chg{background:#fff7ed;color:#c2410c;}
+        td.g .arrow{font-size:11px;color:#c2410c;font-weight:600;}
+        td.empty{text-align:center;color:#9ca3af;}
+        .gb{display:inline-block;min-width:18px;padding:1px 6px;border-radius:5px;color:#fff;font-weight:700;text-align:center;}
+        .chart{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin-bottom:16px;}
+        .chart-head{font-size:14px;font-weight:700;margin-bottom:14px;}
+        .barrow{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+        .barlabel{width:92px;font-size:13px;font-weight:600;color:#334155;text-align:right;flex-shrink:0;}
+        .stack{flex:1;display:flex;height:34px;border-radius:6px;overflow:hidden;background:#eef2f7;}
+        .seg{display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;min-width:0;white-space:nowrap;overflow:hidden;}
+        .seg.empty{flex:1;background:#e5e9f1;color:#94a3b8;}
+        .legend{display:flex;gap:16px;justify-content:center;margin-top:12px;font-size:12px;color:#475569;}
+        .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px;vertical-align:middle;}
+      </style></head>
+      <body><h1>${esc(division)} — 종합평가 등급 조정 이력</h1>
+      <p class="sub">본부장 원안과 조정 세션 후 등급을 한 표에서 비교합니다. (변경된 등급은 주황색으로 표시)</p>
+      ${chart}
+      <div class="sums">${summary}</div>
+      <table>
+        <thead><tr><th>순위</th><th>이름</th><th>사번</th>${stageHeaders.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+      </body></html>`;
+    const w = window.open("", "_blank", "width=820,height=860,scrollbars=yes");
+    if (!w) return window.alert("팝업이 차단되었습니다. 브라우저 팝업 허용 후 다시 시도해 주세요.");
+    w.document.write(doc);
+    w.document.close();
+  },
+  // 최종 승인 탭에서 사장/회장이 등급·사유 조정 → 어드민 최종 조정에 반영
+  // 조정 등급 콤보 변경 시 사유 입력 팝업 (최종 승인 / 최종 결과·리포트 공개 공용)
+  promptAdjReason(employeeId, sel) {
+    const def = sel.getAttribute("data-default") || "";
+    const ta = document.getElementById(`adj_reason_${employeeId}`);
+    if (sel.value === def) return;   // 기본 등급으로 되돌리면 사유 불필요
+    // 1단계 초과 차단
+    if (!isGradeAdjWithinOneStep(def, sel.value)) {
+      const idx = GRADES.indexOf(def);
+      const allowed = GRADES.filter((_, i) => Math.abs(i - idx) <= 1).join(", ");
+      window.alert(`기준 등급(${def})에서 최대 1단계까지만 조정할 수 있습니다.\n선택 가능한 등급: ${allowed}`);
+      sel.value = def;
+      return;
+    }
+    const current = ta ? ta.value : "";
+    const reason = window.prompt(`등급을 ${def || "-"} → ${sel.value} (으)로 조정합니다.\n조정 사유를 입력해 주세요.`, current);
+    if (reason === null || !reason.trim()) {
+      sel.value = def;
+      return;
+    }
+    if (ta) ta.value = reason.trim();
+  },
+  saveApprovalAdjustments() {
+    const user = currentUser();
+    const cycle = selectedCycle();
+    const presidentApproved = Boolean(cycle.resultSubmissions?.["approval:president"]?.submitted);
+    const chairmanApproved  = Boolean(cycle.resultSubmissions?.["approval:chairman"]?.submitted);
+    // 본인이 조정할 차례인지 확인 (회장은 사장 승인 후에만 조정 가능)
+    if (user.role === "chairman" && !presidentApproved) return window.alert("사장 승인이 완료된 후에 등급을 조정할 수 있습니다.");
+    const myTurn = user.role === "president" ? !presidentApproved : (presidentApproved && !chairmanApproved);
+    if (!myTurn) return window.alert("이미 승인이 완료되어 등급을 조정할 수 없습니다.");
+    const scoped = cycleUsers().filter(emp => {
+      if (!isEvaluatee(emp)) return false;
+      if (user.role === "president") return true; // 범위는 화면에 보이는 대상
+      return true;
+    });
+    let changed = 0;
+    for (const employee of scoped) {
+      const sel = document.getElementById(`adj_grade_${employee.id}`);
+      if (!sel) continue;
+      const evaluation = evaluations()[employee.id];
+      if (!evaluation) continue;
+      const result = calculateFinal(employee.id);
+      const baseGrade = result.orgGrade || result.autoGrade;
+      // 콤보의 렌더 기준값(= 화면에 보였던 기본 등급)과 비교해야 "변경 안 했는데 경고" 버그가 없음
+      const openGrade = sel.getAttribute("data-default") || getAdjustmentGrade(evaluation, result);
+      const selectedGrade = sel.value;
+      const reason = valueOf(`adj_reason_${employee.id}`).trim();
+      const changedHere = GRADES.includes(selectedGrade) && selectedGrade !== openGrade;  // 이 단계에서 실제 변경
+      if (changedHere && !isGradeAdjWithinOneStep(baseGrade, selectedGrade)) {
+        const idx = GRADES.indexOf(baseGrade);
+        const allowed = GRADES.filter((_, i) => Math.abs(i - idx) <= 1).join(", ");
+        window.alert(`${employee.name}님: 기준 등급(${baseGrade})에서 최대 1단계까지만 조정할 수 있습니다.\n선택 가능한 등급: ${allowed}`);
+        return;
+      }
+      if (changedHere && !reason) {
+        window.alert(`${employee.name}님의 등급을 조정하려면 조정 사유를 입력해야 합니다.`);
+        return;
+      }
+      const hasManualGrade = GRADES.includes(selectedGrade) && selectedGrade !== baseGrade;
+      const prevGrade = evaluation.adjustment.gradeManual ? evaluation.adjustment.grade : "";
+      const prevReason = evaluation.adjustment.reason || "";
+      evaluation.adjustment.gradeManual = hasManualGrade;
+      evaluation.adjustment.grade = hasManualGrade ? selectedGrade : "";
+      evaluation.adjustment.reason = hasManualGrade ? reason : "";
+      // 단계(사장/회장)별 조정 기록 — 이 단계에서 등급을 옮긴 경우만
+      if (changedHere) {
+        evaluation.adjustment[`${user.role}Reason`] = reason;
+        evaluation.adjustment[`${user.role}From`] = openGrade;
+        evaluation.adjustment[`${user.role}To`] = selectedGrade;
+        evaluation.adjustment.history = Array.isArray(evaluation.adjustment.history) ? evaluation.adjustment.history : [];
+        evaluation.adjustment.history.push({ stage: user.role, by: user.id, at: new Date().toISOString(), fromGrade: openGrade, toGrade: selectedGrade, reason });
+      }
+      evaluation.adjustment.adjustedAt = new Date().toISOString();
+      if (prevGrade !== evaluation.adjustment.grade || prevReason !== evaluation.adjustment.reason || changedHere) changed++;
+    }
+    saveState();
+    state.ui.flash = `조정 내용을 저장했습니다. (${changed}건 변경) 어드민 최종 조정 탭에 반영됩니다.`;
+    render();
+  },
+  setResSort(field) {
+    const cur = state.ui.resSortField || "score";
+    const dir = state.ui.resSortDir   || "desc";
+    if (cur === field) state.ui.resSortDir = dir === "desc" ? "asc" : "desc";
+    else { state.ui.resSortField = field; state.ui.resSortDir = field === "score" ? "desc" : "asc"; }
+    saveState();
+    render();
+  },
+  filterResTable() {
+    const name = (document.getElementById("res_filter_name")?.value || "").trim().toLowerCase();
+    const fDiv = document.getElementById("res_filter_div")?.value || "";
+    const fTeam = document.getElementById("res_filter_team")?.value || "";
+    const fGrade2 = document.getElementById("res_filter_grade2")?.value || "";
+    const fGrade = document.getElementById("res_filter_grade")?.value || "";
+    const rows = document.querySelectorAll("#res-result-tbody tr");
+    let visible = 0, rank = 0;
+    rows.forEach(row => {
+      const ok =
+        (!name   || (row.dataset.name||"").includes(name)) &&
+        (!fDiv   || row.dataset.div   === fDiv) &&
+        (!fTeam  || row.dataset.team  === fTeam) &&
+        (!fGrade2|| row.dataset.grade2=== fGrade2) &&
+        (!fGrade || row.dataset.grade === fGrade);
+      row.style.display = ok ? "" : "none";
+      if (ok) { visible++; rank++; const rc = row.querySelector(".res-rank"); if (rc) rc.textContent = rank; }
+    });
+    const countEl = document.getElementById("res-result-count");
+    if (countEl) countEl.textContent = `${visible}명`;
+  },
+  setAdjSort(field) {
+    const cur = state.ui.adjSortField || "score";
+    const dir = state.ui.adjSortDir   || "desc";
+    if (cur === field) state.ui.adjSortDir = dir === "desc" ? "asc" : "desc";
+    else { state.ui.adjSortField = field; state.ui.adjSortDir = field === "score" ? "desc" : "asc"; }
+    saveState();
+    render();
+  },
+  filterAdjTable() {
+    const name = (document.getElementById("adj_filter_name")?.value || "").trim().toLowerCase();
+    const fDiv = document.getElementById("adj_filter_div")?.value || "";
+    const fTeam = document.getElementById("adj_filter_team")?.value || "";
+    const fGrade2 = document.getElementById("adj_filter_grade2")?.value || "";
+    const fGrade = document.getElementById("adj_filter_grade")?.value || "";
+    const rows = document.querySelectorAll("#adj-result-tbody tr");
+    let visible = 0, rank = 0;
+    rows.forEach(row => {
+      const ok =
+        (!name   || (row.dataset.name||"").includes(name)) &&
+        (!fDiv   || row.dataset.div   === fDiv) &&
+        (!fTeam  || row.dataset.team  === fTeam) &&
+        (!fGrade2|| row.dataset.grade2=== fGrade2) &&
+        (!fGrade || row.dataset.grade === fGrade);
+      row.style.display = ok ? "" : "none";
+      if (ok) { visible++; rank++; const rc = row.querySelector(".adj-rank"); if (rc) rc.textContent = rank; }
+    });
+    const countEl = document.getElementById("adj-result-count");
+    if (countEl) countEl.textContent = `${visible}명`;
+  },
+  setApprovalSort(field) {
+    const cur = state.ui.approvalSortField || "score";
+    const dir = state.ui.approvalSortDir   || "desc";
+    if (cur === field) {
+      state.ui.approvalSortDir = dir === "desc" ? "asc" : "desc";
+    } else {
+      state.ui.approvalSortField = field;
+      state.ui.approvalSortDir   = field === "score" ? "desc" : "asc"; // 점수는 높은순, 등급은 좋은순
+    }
+    saveState();
+    render();
+  },
+  setApprovalFilter(type, value) {
+    state.ui = state.ui || {};
+    if (type === "name") {
+      // 이름 검색: 전체 re-render 없이 DOM에서 직접 필터링 (빠름)
+      state.ui.approvalFilterName = value;
+      App._filterApprovalTableByName(value);
+      // 표시 인원 카운트 업데이트
+      const visible = document.querySelectorAll("#approval-result-tbody tr:not([style*='display: none'])").length;
+      const countEl = document.getElementById("approval-result-count");
+      if (countEl) countEl.textContent = `${visible} / ${state.ui._approvalTotalCount || "?"} 명`;
+      return;
+    }
+    if (type === "div")    state.ui.approvalFilterDiv    = value;
+    if (type === "grade")  state.ui.approvalFilterGrade  = value;
+    if (type === "team")   state.ui.approvalFilterTeam   = value;
+    if (type === "grade2") state.ui.approvalFilterGrade2 = value;
+    state.ui.approvalFilterName = "";
+    saveState();
+    render();
+  },
+  _filterApprovalTableByName(query) {
+    const q = (query || "").trim().toLowerCase();
+    const rows = document.querySelectorAll("#approval-result-tbody tr");
+    rows.forEach(row => {
+      const name = (row.dataset.name || "").toLowerCase();
+      row.style.display = (!q || name.includes(q)) ? "" : "none";
+    });
+    // 순위 번호 재계산
+    let rank = 0;
+    rows.forEach(row => {
+      if (row.style.display !== "none") {
+        rank++;
+        const rankCell = row.querySelector(".approval-rank");
+        if (rankCell) rankCell.textContent = rank;
+      }
+    });
+  },
+  clearApprovalFilters() {
+    state.ui.approvalFilterDiv    = "";
+    state.ui.approvalFilterGrade  = "";
+    state.ui.approvalFilterTeam   = "";
+    state.ui.approvalFilterGrade2 = "";
+    state.ui.approvalFilterName   = "";
+    saveState();
+    render();
+  },
+  saveAdjustments() {
+    if (isCycleLocked()) return window.alert("평가 완료된 사이클은 등급·사유를 수정할 수 없습니다. (결과 공개 설정만 가능)");
+    if (!isChairmanApprovalDone()) return window.alert("회장 최종 확정이 완료된 후에 등급을 조정할 수 있습니다.");
+    collectResultVisibilityFromDom();
+    for (const employee of cycleUsers().filter((user) => isEvaluatee(user) && isSubmittedForAdminAdjustment(user))) {
+      const gradeSel = document.getElementById(`adj_grade_${employee.id}`);
+      if (!gradeSel) continue;
+      const evaluation = evaluations()[employee.id];
+      const result = calculateFinal(employee.id);
+      const selectedGrade = valueOf(`adj_grade_${employee.id}`);
+      const typedFeedback = valueOf(`adj_feedback_${employee.id}`).trim();
+      const baseGrade = result.orgGrade || result.autoGrade;
+      // 콤보 렌더 기준값과 비교 (변경 안 했는데 경고 뜨는 문제 방지)
+      const openGrade = gradeSel.getAttribute("data-default") || getAdjustmentGrade(evaluation, result);
+      const hasManualGrade = GRADES.includes(selectedGrade) && selectedGrade !== baseGrade;
+      const reason = valueOf(`adj_reason_${employee.id}`).trim();
+      const changedHere = GRADES.includes(selectedGrade) && selectedGrade !== openGrade;
+      if (changedHere && !reason) {
+        window.alert(`${employee.name}님의 조정 사유를 입력해 주세요.`);
+        return;
+      }
+      evaluation.adjustment.gradeManual = hasManualGrade;
+      evaluation.adjustment.grade = hasManualGrade ? selectedGrade : "";
+      evaluation.adjustment.reason = hasManualGrade ? reason : "";
+      if (changedHere) {
+        evaluation.adjustment.adminReason = reason;        // 최종 결과/리포트 공개 단계 조정 사유
+        evaluation.adjustment.adminFrom = openGrade;
+        evaluation.adjustment.adminTo = selectedGrade;
+        evaluation.adjustment.history = Array.isArray(evaluation.adjustment.history) ? evaluation.adjustment.history : [];
+        evaluation.adjustment.history.push({ stage: "admin", by: currentUser().id, at: new Date().toISOString(), fromGrade: openGrade, toGrade: selectedGrade, reason });
+      }
+      evaluation.adjustment.feedback = typedFeedback || getEvaluatorOverallFeedback(evaluation, employee);
+      evaluation.adjustment.adjustedAt = new Date().toISOString();
+      const pubCheck = document.getElementById(`adj_pub_${employee.id}`);
+      if (canPublishFeedback() && pubCheck) evaluation.published = pubCheck.checked;
+    }
+    saveState();
+    showAdminAdjustmentMessage("조정 결과를 저장했습니다.");
+  },
+  publishAll() {
+    const chairmanApproved = Boolean(activeCycle().resultSubmissions?.["approval:chairman"]?.submitted);
+    if (!chairmanApproved) return window.alert("회장 최종 확정이 완료된 뒤 전체 공개할 수 있습니다.");
+    if (!canPublishFeedback()) return window.alert(periodMessage("feedback", activeCycle()));
+    activeCycle().resultsVisible = true;
+    const targets = cycleUsers().filter((employee) => isEvaluatee(employee) && isSubmittedForAdminAdjustment(employee));
+    if (!targets.length) return window.alert("제출 완료된 조직 결과가 없습니다.");
+    targets.forEach((employee) => {
+      evaluations()[employee.id].published = true;
+    });
+    saveState();
+    render();
+  },
+
+  // ─────────── 목표 관리 ───────────
+  switchGoalCycle(cycleId) { state.ui.activeGoalCycleId = cycleId; state.ui.goalDetailId = ""; saveState(); render(); },
+  setGoalTab(tab) { state.ui.goalTab = tab; saveState(); render(); },
+  setGoalGroupBy(mode) { state.ui.goalGroupBy = mode; saveState(); render(); },
+  clearGoalFilter() { state.ui.goalFilter = {}; saveState(); render(); },
+  toggleGoalCollapse(goalId) {
+    state.ui.goalCollapsed = state.ui.goalCollapsed || {};
+    if (state.ui.goalCollapsed[goalId]) delete state.ui.goalCollapsed[goalId];
+    else state.ui.goalCollapsed[goalId] = true;
+    saveState();
+    render();
+  },
+  collapseAllGoals(collapse) {
+    const cycle = activeGoalCycle();
+    if (collapse) {
+      const map = {};
+      state.goals.filter(g => g.cycleId === cycle.id).forEach(g => {
+        if (state.goals.some(c => c.parentGoalId === g.id)) map[g.id] = true;
+      });
+      state.ui.goalCollapsed = map;
+    } else {
+      state.ui.goalCollapsed = {};
+    }
+    saveState();
+    render();
+  },
+  filterGoalTable() {
+    const name = (document.getElementById("goal_filter_name")?.value || "").trim().toLowerCase();
+    const fDiv = document.getElementById("goal_filter_div")?.value || "";
+    const fTeam = document.getElementById("goal_filter_team")?.value || "";
+    const fOwner = document.getElementById("goal_filter_owner")?.value || "";
+    // 필터 값을 저장해 렌더링 후에도 유지
+    state.ui.goalFilter = { name, div: fDiv, team: fTeam, owner: fOwner };
+    saveState();
+    document.querySelectorAll(".goal-row").forEach(row => {
+      const ok =
+        (!name  || (row.dataset.goalSearch||"").includes(name)) &&
+        (!fDiv  || row.dataset.goalDiv === fDiv) &&
+        (!fTeam || row.dataset.goalTeam === fTeam) &&
+        (!fOwner|| row.dataset.goalOwner === fOwner);
+      row.style.display = ok ? "" : "none";
+    });
+    // 보이는 행이 없는 그룹은 접고 숨김
+    document.querySelectorAll(".goal-group").forEach(group => {
+      const rows = [...group.querySelectorAll(".goal-row")];
+      const hasVisible = rows.some(r => r.style.display !== "none");
+      group.style.display = hasVisible ? "" : "none";
+    });
+  },
+  createGoalCyclePrompt() {
+    const name = (valueOf("gc_name") || "").trim();
+    if (!name) return window.alert("사이클명을 입력해 주세요.");
+    const start = valueOf("gc_start");
+    const end = valueOf("gc_end");
+    const approvalEnabled = checked("gc_approval");
+    const memberScope = valueOf("gc_member_scope") || "team";
+    const cycle = createGoalCycle(name, start, end, approvalEnabled, memberScope);
+    state.goalCycles.unshift(cycle);
+    state.ui.activeGoalCycleId = cycle.id;
+    state.ui.goalCycleModal = false;
+    saveState();
+    state.ui.flash = `목표 사이클 '${name}'을 생성했습니다.`;
+    render();
+  },
+  openGoalCycleModal() { state.ui.goalCycleModal = true; saveState(); render(); },
+  closeGoalCycleModal() { state.ui.goalCycleModal = false; saveState(); render(); },
+  openDashboardGoalDetail(goalId) {
+    state.ui.dashboardGoalDetailId = goalId;
+    state.ui.dashboardGoalTab = "checkin";
+    render();
+  },
+  closeDashboardGoalDetail() {
+    state.ui.dashboardGoalDetailId = null;
+    render();
+  },
+  setDashboardGoalTab(tab) {
+    state.ui.dashboardGoalTab = tab;
+    render();
+  },
+  setGoalViewMode(mode) {
+    state.ui.goalViewMode = mode;
+    render();
+  },
+  openGoalCycleDetail(cycleId) {
+    state.ui.goalCycleDetailModal = { cycleId };
+    state.ui.activeGoalCycleId = cycleId;
+    saveState(); render();
+  },
+  closeGoalCycleDetail() {
+    state.ui.goalCycleDetailModal = null;
+    saveState(); render();
+  },
+  toggleGoalCycleDetailFullscreen() {
+    if (!state.ui.goalCycleDetailModal) return;
+    state.ui.goalCycleDetailModal.fullscreen = !state.ui.goalCycleDetailModal.fullscreen;
+    render();
+  },
+  openGoalCycleEdit(cycleId) {
+    state.ui.goalCycleEditModal = cycleId;
+    render();
+  },
+  closeGoalCycleEdit() {
+    state.ui.goalCycleEditModal = null;
+    render();
+  },
+  saveGoalCycleEdit(cycleId) {
+    const c = state.goalCycles.find(x => x.id === cycleId);
+    if (!c) return;
+    const name = (valueOf("gce_name") || "").trim();
+    if (!name) return window.alert("사이클명을 입력해 주세요.");
+    c.name = name;
+    c.start = valueOf("gce_start");
+    c.end = valueOf("gce_end");
+    c.approvalEnabled = checked("gce_approval");
+    c.readOnly = checked("gce_readonly");
+    c.status = valueOf("gce_status") || "active";
+    c.memberScope = valueOf("gce_member_scope") || "team";
+    state.ui.goalCycleEditModal = null;
+    saveState();
+    state.ui.flash = `'${name}' 사이클 설정을 저장했습니다.`;
+    render();
+  },
+  toggleGoalCycleReadOnly(cycleId) {
+    const c = state.goalCycles.find(x => x.id === cycleId);
+    if (c) { c.readOnly = !c.readOnly; saveState(); render(); }
+  },
+  setGoalCycleMemberScope(cycleId, scope) {
+    const c = state.goalCycles.find(x => x.id === cycleId);
+    if (!c) return;
+    c.memberScope = ["self", "teamLead", "team"].includes(scope) ? scope : "team";
+    saveState();
+    state.ui.flash = `'${c.name}' 사이클의 팀원 목표 조회 범위를 '${GOAL_MEMBER_SCOPE_LABELS[c.memberScope]}'(으)로 설정했습니다.`;
+    render();
+  },
+  deleteGoalCycle(cycleId) {
+    if (state.goalCycles.length <= 1) return window.alert("최소 1개의 사이클은 유지해야 합니다.");
+    if (!window.confirm("이 목표 사이클과 소속 목표를 모두 삭제할까요?")) return;
+    state.goalCycles = state.goalCycles.filter(c => c.id !== cycleId);
+    state.goals = state.goals.filter(g => g.cycleId !== cycleId);
+    if (state.ui.activeGoalCycleId === cycleId) state.ui.activeGoalCycleId = state.goalCycles[0].id;
+    saveState(); render();
+  },
+  injectGoalDummyData(cycleId) {
+    const cycle = cycleId ? state.goalCycles.find(c => c.id === cycleId) : activeGoalCycle();
+    if (!cycle) return window.alert("활성 목표 사이클이 없습니다.");
+    if (!window.confirm(`'${cycle.name}' 사이클에 조직도 기반 더미 목표를 생성합니다.\n이 사이클의 기존 목표는 모두 삭제됩니다. 계속할까요?`)) return;
+
+    // 기존 사이클 목표 제거
+    state.goals = state.goals.filter(g => g.cycleId !== cycle.id);
+
+    const rnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const STATUSES = ["onTrack", "onTrack", "onTrack", "atRisk", "done", "pending"];
+    const memberGoalTitles = [
+      "담당 업무 프로세스 개선", "고객 응대 만족도 향상", "데이터 정확도 제고",
+      "월간 처리 건수 향상", "업무 자동화 도입", "품질 불량률 감소",
+      "보고서 작성 리드타임 단축", "재고 정확도 향상", "교육 이수 완료",
+    ];
+    const metricNames = ["만족도 점수", "처리 건수", "정확도(%)", "리드타임(일)", "불량률(%)", "달성률(%)"];
+    const checkinComments = [
+      "계획대로 순조롭게 진행 중입니다.", "일부 지연이 있으나 만회 가능합니다.",
+      "유관 부서 협조가 필요합니다.", "목표 대비 초과 달성했습니다.",
+      "리소스 부족으로 난항을 겪고 있습니다.",
+    ];
+    const fbComments = [
+      "좋은 진행입니다. 이대로 유지해 주세요.", "리스크 요인을 미리 공유해 주세요.",
+      "필요한 지원이 있으면 말씀해 주세요.", "다음 체크인 때 수치 근거를 함께 부탁합니다.",
+    ];
+
+    const today = new Date().toISOString();
+    const makeGoal = (owner, level, parentId, title, withMetric) => {
+      const status = pick(STATUSES);
+      const startV = rnd(0, 30), targetV = rnd(70, 100);
+      let curV = status === "done" ? targetV : status === "pending" ? startV : rnd(startV, targetV);
+      const goal = {
+        id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        cycleId: cycle.id,
+        ownerId: owner.id,
+        level,
+        parentGoalId: parentId || "",
+        title,
+        description: `${title} 관련 ${cycle.name} 목표입니다.`,
+        start: cycle.start, end: cycle.end,
+        division: owner.division || "", team: owner.team || "",
+        status,
+        metric: withMetric ? { name: pick(metricNames), startValue: startV, targetValue: targetV, currentValue: curV } : null,
+        progress: 0,
+        checkins: [], feedbacks: [],
+        approvalStatus: cycle.approvalEnabled ? "approved" : "approved",
+        approverId: nextApproverForUser(owner)?.id || "",
+        approvedAt: today,
+        createdAt: today,
+      };
+      goal.progress = computeGoalProgress(goal);
+      // 체크인 1~2개
+      const ciCount = status === "pending" ? 0 : rnd(1, 2);
+      for (let i = 0; i < ciCount; i++) {
+        goal.checkins.unshift({
+          id: `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          by: owner.id, at: today, status,
+          valueText: withMetric ? `${startV} → ${curV}` : "",
+          comment: pick(checkinComments),
+        });
+      }
+      // 상위자 피드백 1개
+      const approver = nextApproverForUser(owner);
+      if (approver && Math.random() < 0.6) {
+        goal.feedbacks.push({ id: `fb-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, by: approver.id, at: today, text: pick(fbComments) });
+      }
+      state.goals.push(goal);
+      return goal;
+    };
+
+    const users = state.users.filter(u => u.role !== "admin" && u.active !== false);
+    const president = users.find(u => u.role === "president");
+    const chairman = users.find(u => u.role === "chairman");
+    const divisionHeads = users.filter(u => u.role === "divisionHead");
+    const teamLeads = users.filter(u => u.role === "teamLead");
+    const members = users.filter(u => u.role === "member");
+
+    // 회장 → 사장 → 본부장 → 팀장 → 팀원 계층 목표
+    let chairGoal = null, presGoal = null;
+    if (chairman) chairGoal = makeGoal(chairman, "company", "", "전사 비전 달성 및 지속 성장", true);
+    if (president) presGoal = makeGoal(president, "company", chairGoal?.id || "", "매출 성장 및 수익성 확보", true);
+
+    const divGoalByDivision = {};
+    divisionHeads.forEach(head => {
+      const g = makeGoal(head, "division", presGoal?.id || chairGoal?.id || "", `${head.division || "본부"} 운영 효율화`, true);
+      divGoalByDivision[head.division] = g;
+    });
+
+    const teamGoalByLeader = {};
+    teamLeads.forEach(lead => {
+      const parent = divGoalByDivision[lead.division];
+      const g = makeGoal(lead, "team", parent?.id || presGoal?.id || "", `${lead.team || lead.division || "팀"} 운영 목표 달성`, true);
+      teamGoalByLeader[lead.id] = g;
+    });
+
+    // 팀원: 본인 팀의 팀장 목표를 상위로
+    members.forEach(m => {
+      const lead = teamLeads.find(l => l.division === m.division && l.team === m.team);
+      const parent = lead ? teamGoalByLeader[lead.id] : (divGoalByDivision[m.division] || presGoal);
+      const cnt = rnd(1, 2);
+      for (let i = 0; i < cnt; i++) {
+        makeGoal(m, "individual", parent?.id || "", pick(memberGoalTitles), Math.random() < 0.8);
+      }
+    });
+
+    invalidateCycleCache();
+    saveState();
+    state.ui.flash = `목표 더미 데이터를 생성했습니다. (총 ${state.goals.filter(g => g.cycleId === cycle.id).length}개 목표)`;
+    render();
+  },
+  setGoalDetailTab(tab) { state.ui.goalDetailTab = tab; saveState(); render(); },
+  // 업적평가 ↔ 목표 연결
+  openGoalLinkPicker(prefix, index, type = "personal") {
+    state.ui.goalLinkPicker = { prefix, index, type };
+    saveState(); render();
+  },
+  closeGoalLinkPicker() { state.ui.goalLinkPicker = null; saveState(); render(); },
+  linkGoalToAchievement(prefix, index, goalId, type = "personal") {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const user = currentUser();
+    const ev = evaluations()[user.id];
+    if (!ev) return;
+    // 현재 입력 중인 내용 보존
+    const collected = collectReviewFromDom(prefix, ev[prefix] || {}, user);
+    ev[prefix] = collected;
+    const ach = ev[prefix].performance.achievements[index];
+    if (ach) {
+      if (type === "team") {
+        // 팀 목표 연결: 기여한 목표 칸에 목표 이름 입력 (항상 덮어씀)
+        ach.linkedTeamGoalId = goalId;
+        ach.goal = goal.title;
+      } else {
+        // 개인 목표 연결 (personal): 업적 이름 칸에 목표 이름 입력
+        ach.linkedGoalId = goalId;
+        ach.name = goal.title;
+        if (isLeaderRole(user)) {
+          if (goal.metric) {
+            const prog = computeGoalProgress(goal);
+            ach.goal = `${goal.metric.name}: 목표 ${goal.metric.targetValue} (시작 ${goal.metric.startValue})`;
+            ach.achievementLevel = `현재 ${goal.metric.currentValue} (${prog}% 달성)`;
+          } else {
+            if (!ach.goal) ach.goal = "";
+            if (!ach.achievementLevel) ach.achievementLevel = "";
+          }
+        }
+      }
+    }
+    state.ui.goalLinkPicker = null;
+    saveState();
+    render();
+    // 팀 목표: 체크인 숨김, 개인 목표: 체크인 표시
+    App.showGoalPanel(goalId, type === "team");
+  },
+  unlinkGoalFromAchievement(prefix, index, type = "personal") {
+    const user = currentUser();
+    const ev = evaluations()[user.id];
+    if (!ev) return;
+    const collected = collectReviewFromDom(prefix, ev[prefix] || {}, user);
+    ev[prefix] = collected;
+    const ach = ev[prefix].performance.achievements[index];
+    if (ach) {
+      if (type === "team") {
+        ach.linkedTeamGoalId = "";
+        ach.goal = "";
+      } else {
+        ach.linkedGoalId = "";
+      }
+    }
+    saveState();
+    render();
+  },
+  updateEvalWeightNotice(prefix) {
+    // 평가자 모드에서 가중치 합계를 실시간 갱신
+    let total = 0;
+    let i = 0;
+    while (true) {
+      const el = document.getElementById(`${prefix}_performance_ach_${i}_weight`);
+      if (!el) break;
+      total += Number(el.value) || 0;
+      i++;
+    }
+    const notice = document.getElementById(`${prefix}_weight_notice`);
+    const totalEl = document.getElementById(`${prefix}_weight_total`);
+    if (totalEl) totalEl.textContent = total;
+    if (notice) {
+      notice.className = `notice ${total === 100 ? "ok" : "warn"}`;
+    }
+  },
+  showGoalPanel(goalId, hideCheckins = false) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    document.getElementById("goal-ref-panel")?.remove();
+    const owner = userById(goal.ownerId);
+    const parent = goal.parentGoalId ? state.goals.find(g => g.id === goal.parentGoalId) : null;
+    const prog = goalDisplayProgress(goal, state.goals.filter(g => g.cycleId === goal.cycleId));
+    const cycle = state.goalCycles.find(c => c.id === goal.cycleId);
+    const checkins = goal.checkins || [];
+    const panel = document.createElement("div");
+    panel.id = "goal-ref-panel";
+    panel.className = "goal-side-panel";
+    panel.innerHTML = `
+      <div class="goal-side-head">
+        <h2>목표 상세 정보</h2>
+        <button onclick="document.getElementById('goal-ref-panel').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+      </div>
+      <div class="goal-side-body">
+        <div class="component-card">
+          <strong style="font-size:15px;">${esc(goal.title)}</strong>
+          <div class="goal-info-rows">
+            <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+            <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
+            <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
+            <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
+            <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
+            <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
+            ${goal.metric ? `<div><span>지표</span><b>${esc(goal.metric.name)}</b></div><div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
+            <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?"반려":"임시 저장"}</b></div>
+          </div>
+        </div>
+        <div style="margin:14px 0 8px;font-weight:700;">현재 진행 상태</div>
+        <div>${goalStatusBadge(goal.status)}</div>
+        ${goal.metric ? `
+        <div class="component-card" style="margin-top:10px;">
+          <strong>${esc(goal.metric.name)}</strong>
+          <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</div>
+        </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
+        ${hideCheckins ? "" : `
+        <div style="font-weight:700;margin:16px 0 6px;">체크인 기록</div>
+        ${checkins.length ? checkins.map(ci => { const by=userById(ci.by); return `<div class="goal-checkin-item">
+          <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
+          <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
+          ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
+          ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
+        </div>`; }).join("") : `<p class="muted" style="font-size:12px;">아직 체크인 기록이 없습니다.</p>`}
+        `}
+      </div>`;
+    document.body.appendChild(panel);
+  },
+  downloadGoalTemplate() {
+    const user = currentUser();
+    const cycle = activeGoalCycle();
+    const cycleStart = cycle?.start || "";
+    const cycleEnd = cycle?.end || "";
+    // 현재 사용자가 연결할 수 있는 상위 목표 목록 (approved만)
+    const allGoals = cycle ? state.goals.filter(g => g.cycleId === cycle.id && g.approvalStatus === "approved") : [];
+    const parentExamples = allGoals.slice(0, 3).map(g => g.title).join(" / ") || "예) 회사 매출 목표 달성";
+    const levelOptions = user.role === "member" ? "개인"
+      : user.role === "teamLead" ? "팀 / 개인"
+      : user.role === "divisionHead" ? "본부 / 팀 / 개인"
+      : "회사 / 본부 / 팀 / 개인";
+    const rows = [
+      ["# 목표 일괄 등록 양식 — 아래 안내를 참고하여 작성하세요. 이 행은 삭제해도 됩니다."],
+      ["# [목표 레벨] 입력 가능 값: " + levelOptions],
+      ["# [상위 목표 제목] 회사 레벨 목표는 비워도 됩니다. 나머지는 반드시 기존에 등록된 목표 제목과 정확히 일치해야 합니다."],
+      ["# [지표명] 입력 시 시작값, 목표값도 반드시 입력해야 합니다. 비워두면 정성 목표로 등록됩니다."],
+      [""],
+      ["목표 제목*", "목표 레벨*", "상위 목표 제목", "시작일", "종료일", "목표 설명", "지표명", "시작값", "목표값"],
+      ["예) 신규 고객 확보", "개인", parentExamples.split(" / ")[0] || "", cycleStart, cycleEnd, "신규 고객을 30명 이상 확보한다", "신규 고객 수", "0", "30"],
+      ["예) 팀 운영 목표 달성", "팀", "", cycleStart, cycleEnd, "팀 KPI 전체 달성", "", "", ""],
+    ];
+    try {
+      const data = buildXlsx(rows);
+      const blob = new Blob([data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `목표_일괄등록_양식_${todayStamp()}.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e); window.alert("양식 생성 중 오류가 발생했습니다.");
+    }
+  },
+  handleGoalBulkUpload(event) {
+    const file = event.target?.files?.[0];
+    if (!file) return;
+    const reset = () => { if (event.target) event.target.value = ""; };
+    if (!file.name.toLowerCase().endsWith(".xlsx")) {
+      window.alert(".xlsx 파일만 업로드할 수 있습니다. 내려받은 양식을 사용해 주세요."); reset(); return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const rows = parseXlsx(new Uint8Array(e.target.result));
+        const user = currentUser();
+        const cycle = activeGoalCycle();
+        if (!cycle) { window.alert("활성 목표 사이클이 없습니다."); reset(); return; }
+        if (cycle.readOnly) { window.alert("읽기 전용 사이클에는 목표를 추가할 수 없습니다."); reset(); return; }
+
+        // 헤더 행 찾기 (# 주석 행 스킵 후 '목표 제목*' 포함 행)
+        const HEADER_KEY = "목표 제목";
+        const headerIdx = rows.findIndex(r => r.some(c => String(c || "").includes(HEADER_KEY)));
+        if (headerIdx < 0) { window.alert("양식 헤더를 찾을 수 없습니다. 내려받은 목표 일괄등록 양식을 사용해 주세요."); reset(); return; }
+        const header = rows[headerIdx].map(c => String(c || "").replace("*", "").trim());
+        const col = (name) => header.findIndex(h => h.includes(name));
+        const C = {
+          title: col("목표 제목"), level: col("목표 레벨"), parent: col("상위 목표 제목"),
+          start: col("시작일"), end: col("종료일"), desc: col("목표 설명"),
+          metricName: col("지표명"), metricStart: col("시작값"), metricTarget: col("목표값"),
+        };
+
+        const LEVEL_MAP = { "회사": "company", "본부": "division", "팀": "team", "개인": "individual" };
+        const allCycleGoals = state.goals.filter(g => g.cycleId === cycle.id);
+        const approver = nextApproverForUser(user);
+
+        const dataRows = rows.slice(headerIdx + 1).filter(r => r.some(c => String(c || "").trim()));
+        if (!dataRows.length) { window.alert("등록할 목표 데이터가 없습니다. 헤더 아래 행에 목표를 작성해 주세요."); reset(); return; }
+
+        const results = { created: 0, failed: [] };
+        const now = new Date().toISOString();
+
+        dataRows.forEach((row, i) => {
+          const rowNum = i + 1;
+          const get = (c) => c >= 0 ? String(row[c] ?? "").trim() : "";
+          const title = get(C.title);
+          if (!title) { results.failed.push(`${rowNum}행: 목표 제목이 없습니다.`); return; }
+
+          const levelKo = get(C.level);
+          const level = LEVEL_MAP[levelKo];
+          if (!level) { results.failed.push(`${rowNum}행 "${title}": 목표 레벨이 올바르지 않습니다 (${levelKo || "빈칸"}). 회사/본부/팀/개인 중 입력하세요.`); return; }
+
+          const parentTitle = get(C.parent);
+          let parentGoalId = "";
+          if (level !== "company") {
+            if (!parentTitle) { results.failed.push(`${rowNum}행 "${title}": 상위 목표 제목이 없습니다.`); return; }
+            const parentGoal = allCycleGoals.find(g => g.title === parentTitle && g.approvalStatus === "approved");
+            if (!parentGoal) { results.failed.push(`${rowNum}행 "${title}": 상위 목표 "${parentTitle}"을(를) 찾을 수 없습니다. 승인된 목표 제목과 정확히 일치해야 합니다.`); return; }
+            parentGoalId = parentGoal.id;
+          }
+
+          const metricName = get(C.metricName);
+          const startValStr = get(C.metricStart);
+          const targetValStr = get(C.metricTarget);
+          const startValue = parseFloat(startValStr);
+          const targetValue = parseFloat(targetValStr);
+          let metric = null;
+          if (metricName) {
+            if (!Number.isFinite(startValue)) { results.failed.push(`${rowNum}행 "${title}": 지표명이 있으나 시작값이 올바르지 않습니다.`); return; }
+            if (!Number.isFinite(targetValue)) { results.failed.push(`${rowNum}행 "${title}": 지표명이 있으나 목표값이 올바르지 않습니다.`); return; }
+            if (startValue === targetValue) { results.failed.push(`${rowNum}행 "${title}": 시작값과 목표값이 같을 수 없습니다.`); return; }
+            metric = { name: metricName, startValue, targetValue, currentValue: startValue };
+          }
+
+          const goal = {
+            id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${rowNum}`,
+            cycleId: cycle.id,
+            ownerId: user.id,
+            level,
+            parentGoalId,
+            title,
+            description: get(C.desc),
+            start: get(C.start) || cycle.start,
+            end: get(C.end) || cycle.end,
+            division: user.division || "",
+            team: user.team || "",
+            status: "pending",
+            metric,
+            progress: 0,
+            checkins: [],
+            feedbacks: [],
+            approvalStatus: cycle.approvalEnabled ? "requested" : "approved",
+            approverId: cycle.approvalEnabled ? (approver?.id || "") : "",
+            createdAt: now,
+          };
+          state.goals.push(goal);
+          // 같은 사이클 내 새로 추가된 목표도 다음 행에서 상위 목표로 참조 가능하도록 추가
+          allCycleGoals.push(goal);
+          results.created++;
+        });
+
+        saveState();
+        reset();
+        const failMsg = results.failed.length ? `\n\n⚠ 실패 (${results.failed.length}건):\n${results.failed.join("\n")}` : "";
+        const action = cycle.approvalEnabled ? "승인 요청" : "등록";
+        state.ui.flash = `목표 일괄 ${action} 완료: ${results.created}개 성공${results.failed.length ? `, ${results.failed.length}개 실패` : ""}`;
+        render();
+        if (results.failed.length) window.alert(`일괄 등록 결과\n✅ 성공: ${results.created}건${failMsg}`);
+      } catch (err) {
+        console.error(err);
+        window.alert("파일을 읽는 중 오류가 발생했습니다. 내려받은 목표 일괄등록 양식(.xlsx)을 사용했는지 확인해 주세요.");
+        reset();
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  },
+  openGoalCreate() { state.ui.goalCreateModal = true; state.ui.goalDetailId = ""; saveState(); render(); },
+  openGoalEdit(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    if (goal.ownerId !== currentUser().id) return window.alert("본인 목표만 수정할 수 있습니다.");
+    state.ui.goalEditId = goalId;
+    state.ui.goalCreateModal = false;
+    saveState();
+    render();
+  },
+  closeGoalEdit() { state.ui.goalEditId = ""; saveState(); render(); },
+  saveGoalEdit(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const user = currentUser();
+    const cycle = activeGoalCycle();
+    const title = (valueOf("goal_title") || "").trim();
+    if (!title) return window.alert("목표를 입력해 주세요.");
+    const level = valueOf("goal_level") || goal.level;
+    const parentGoalId = valueOf("goal_parent") || "";
+    if (level !== "company" && !parentGoalId) return window.alert("개인·팀·본부 목표는 상위 목표를 반드시 선택해야 합니다.");
+    const start = valueOf("goal_start");
+    const end = valueOf("goal_end");
+    const hasMetric = checked("goal_has_metric");
+    const metricName = (valueOf("goal_metric_name") || "").trim();
+    const startValue = parseFloat(valueOf("goal_metric_start"));
+    const targetValue = parseFloat(valueOf("goal_metric_target"));
+    const description = (valueOf("goal_desc") || "").trim();
+    if (hasMetric) {
+      if (!metricName) return window.alert("정량 지표 사용 시 지표명을 입력해 주세요.");
+      if (!Number.isFinite(startValue)) return window.alert("정량 지표의 시작 값을 입력해 주세요.");
+      if (!Number.isFinite(targetValue)) return window.alert("정량 지표의 목표 값을 입력해 주세요.");
+      if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
+    }
+
+    // 변경점 수집
+    const changes = [];
+    if (goal.title !== title) changes.push(`목표명: "${goal.title}" → "${title}"`);
+    if (goal.level !== level) changes.push(`레벨: ${GOAL_LEVEL_LABELS[goal.level]} → ${GOAL_LEVEL_LABELS[level]}`);
+    if ((goal.parentGoalId||"") !== parentGoalId) {
+      const oldP = state.goals.find(g=>g.id===goal.parentGoalId)?.title || "없음";
+      const newP = state.goals.find(g=>g.id===parentGoalId)?.title || "없음";
+      changes.push(`상위 목표: ${oldP} → ${newP}`);
+    }
+    if ((goal.start||"") !== (start||"")) changes.push(`시작일: ${goal.start||"-"} → ${start||"-"}`);
+    if ((goal.end||"") !== (end||"")) changes.push(`종료일: ${goal.end||"-"} → ${end||"-"}`);
+    if ((goal.description||"") !== description) changes.push("상세 설명 변경");
+    const newMetric = hasMetric && metricName ? { name: metricName, startValue: Number.isFinite(startValue)?startValue:0, targetValue: Number.isFinite(targetValue)?targetValue:100, currentValue: goal.metric ? goal.metric.currentValue : (Number.isFinite(startValue)?startValue:0) } : null;
+    if (JSON.stringify(goal.metric||null) !== JSON.stringify(newMetric)) changes.push("정량 지표 변경");
+    const vis = collectGoalVisibilityFromDom(nextApproverForUser(user));
+    const sortedOld = (goal.visibleUserIds || []).slice().sort();
+    const sortedNew = vis.visibleUserIds.slice().sort();
+    if ((goal.visibility || "all") !== vis.visibility || JSON.stringify(sortedOld) !== JSON.stringify(sortedNew)) changes.push("공개 설정 변경");
+
+    if (!changes.length) { state.ui.goalEditId = ""; saveState(); return render(); }
+
+    goal.title = title;
+    goal.level = level;
+    goal.parentGoalId = parentGoalId;
+    goal.start = start || goal.start;
+    goal.end = end || goal.end;
+    goal.description = description;
+    goal.metric = newMetric;
+    goal.visibility = vis.visibility;
+    goal.visibleUserIds = vis.visibleUserIds;
+    goal.progress = computeGoalProgress(goal);
+
+    // 변경 이력 기록
+    goal.history = goal.history || [];
+    goal.history.push({ at: new Date().toISOString(), by: user.id, summary: "목표 수정", changes });
+
+    // 승인제 사이클이면 다시 승인 요청 상태로
+    if (cycle.approvalEnabled) {
+      const approver = nextApproverForUser(user);
+      if (approver) {
+        goal.approvalStatus = "requested";
+        goal.approverId = approver.id;
+        delete goal.approvedAt;
+        goal.history.push({ at: new Date().toISOString(), by: user.id, summary: "수정으로 재승인 요청", changes: [`승인자: ${approver.name}`] });
+      } else {
+        goal.approvalStatus = "approved";
+      }
+    }
+    state.ui.goalEditId = "";
+    saveState();
+    state.ui.flash = cycle.approvalEnabled ? "목표를 수정하고 재승인 요청했습니다." : "목표를 수정했습니다.";
+    render();
+  },
+  closeGoalCreate() { state.ui.goalCreateModal = false; saveState(); render(); },
+  switchGoalModalTab(tab) {
+    document.querySelectorAll(".goal-modal-tab").forEach(b => b.classList.toggle("active", b.dataset.goaltab === tab));
+    document.querySelectorAll(".goal-tab-pane").forEach(p => { p.style.display = p.dataset.goalpane === tab ? "" : "none"; });
+  },
+  onGoalVisibilityChange(mode) {
+    const box = document.getElementById("goal_visible_box");
+    if (box) box.style.display = mode === "partial" ? "" : "none";
+  },
+  addGoalVisibleTarget() {
+    const input = document.getElementById("goal_visible_search");
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) return;
+    const target = state.users.find(u => u.role !== "admin" && userOptionLabel(u) === val);
+    if (!target) return window.alert("목록에서 구성원을 선택해 주세요.");
+    const chips = document.getElementById("goal_visible_chips");
+    if (!chips) return;
+    if (chips.querySelector(`[data-id="${target.id}"]`)) { input.value = ""; return window.alert("이미 추가된 구성원입니다."); }
+    chips.insertAdjacentHTML("beforeend", goalVisibleChipHtml(target, false));
+    input.value = "";
+  },
+  saveGoal(submitForApproval) {
+    const user = currentUser();
+    const cycle = activeGoalCycle();
+    if (!cycle) return window.alert("활성 목표 사이클이 없습니다.");
+    if (cycle.readOnly) return window.alert("읽기 전용 사이클에는 목표를 추가할 수 없습니다.");
+    const title = (valueOf("goal_title") || "").trim();
+    if (!title) return window.alert("목표를 입력해 주세요.");
+    const level = valueOf("goal_level") || (user.role === "member" ? "individual" : user.role === "teamLead" ? "team" : user.role === "divisionHead" ? "division" : "company");
+    const start = valueOf("goal_start");
+    const end = valueOf("goal_end");
+    const parentGoalId = valueOf("goal_parent") || "";
+    // 개인·팀·본부 레벨은 상위 목표 필수 (회사 레벨만 상위 없이 허용)
+    if (level !== "company" && !parentGoalId) {
+      return window.alert("개인·팀·본부 목표는 차상위 조직장의 상위 목표를 반드시 선택해야 합니다.");
+    }
+    const hasMetric = checked("goal_has_metric");
+    const metricName = (valueOf("goal_metric_name") || "").trim();
+    const startValue = parseFloat(valueOf("goal_metric_start"));
+    const targetValue = parseFloat(valueOf("goal_metric_target"));
+    const description = (valueOf("goal_desc") || "").trim();
+    // 정량 지표 사용 시 지표명·시작값·목표값 필수
+    if (hasMetric) {
+      if (!metricName) return window.alert("정량 지표 사용 시 지표명을 입력해 주세요.");
+      if (!Number.isFinite(startValue)) return window.alert("정량 지표의 시작 값을 입력해 주세요.");
+      if (!Number.isFinite(targetValue)) return window.alert("정량 지표의 목표 값을 입력해 주세요.");
+      if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
+    }
+    const goal = {
+      id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      cycleId: cycle.id,
+      ownerId: user.id,
+      level,
+      parentGoalId,
+      title,
+      description,
+      start: start || cycle.start,
+      end: end || cycle.end,
+      division: user.division || "",
+      team: user.team || "",
+      status: "pending",
+      metric: hasMetric && metricName ? {
+        name: metricName,
+        startValue: Number.isFinite(startValue) ? startValue : 0,
+        targetValue: Number.isFinite(targetValue) ? targetValue : 100,
+        currentValue: Number.isFinite(startValue) ? startValue : 0,
+      } : null,
+      progress: 0,
+      checkins: [],
+      feedbacks: [],
+      approvalStatus: cycle.approvalEnabled ? (submitForApproval ? "requested" : "draft") : "approved",
+      approverId: cycle.approvalEnabled && submitForApproval ? (nextApproverForUser(user)?.id || "") : "",
+      ...collectGoalVisibilityFromDom(nextApproverForUser(user)),
+      createdAt: new Date().toISOString(),
+    };
+    state.goals.push(goal);
+    state.ui.goalCreateModal = false;
+    saveState();
+    state.ui.flash = cycle.approvalEnabled
+      ? (submitForApproval ? "목표를 승인 요청했습니다." : "목표를 임시 저장했습니다.")
+      : "목표를 등록했습니다.";
+    render();
+  },
+  requestGoalApproval(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const owner = userById(goal.ownerId);
+    const approver = nextApproverForUser(owner);
+    if (!approver) return window.alert("승인할 차상위 조직장을 찾을 수 없습니다. 바로 승인됩니다.") || (goal.approvalStatus = "approved", saveState(), render());
+    goal.approvalStatus = "requested";
+    goal.approverId = approver.id;
+    saveState();
+    state.ui.flash = `${approver.name}님에게 승인 요청했습니다.`;
+    render();
+  },
+  approveGoal(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    goal.approvalStatus = "approved";
+    goal.approvedAt = new Date().toISOString();
+    saveState();
+    state.ui.flash = "목표를 승인했습니다.";
+    render();
+  },
+  rejectGoal(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const reason = window.prompt("반려 사유를 입력해 주세요.", "");
+    if (reason === null) return;
+    goal.approvalStatus = "rejected";
+    goal.rejectReason = reason.trim();
+    saveState();
+    state.ui.flash = "목표를 반려했습니다.";
+    render();
+  },
+  openGoalDetail(goalId) { state.ui.goalDetailId = goalId; state.ui.goalCheckinMode = false; saveState(); render(); },
+  closeGoalDetail() { state.ui.goalDetailId = ""; state.ui.goalCheckinMode = false; saveState(); render(); },
+  openGoalCheckin(goalId) { state.ui.goalDetailId = goalId; state.ui.goalCheckinMode = true; saveState(); render(); },
+  saveGoalCheckin(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const status = valueOf("checkin_status") || goal.status;
+    const comment = (valueOf("checkin_comment") || "").trim();
+    let valueText = "";
+    if (goal.metric) {
+      const v = parseFloat(valueOf("checkin_value"));
+      if (Number.isFinite(v)) {
+        valueText = `${goal.metric.currentValue} → ${v}`;
+        goal.metric.currentValue = v;
+      }
+    }
+    goal.status = status;
+    goal.progress = computeGoalProgress(goal);
+    goal.checkins.unshift({
+      id: `ci-${Date.now()}`,
+      by: currentUser().id,
+      at: new Date().toISOString(),
+      status,
+      valueText,
+      comment,
+    });
+    state.ui.goalCheckinMode = false;
+    saveState();
+    state.ui.flash = "체크인을 기록했습니다.";
+    render();
+  },
+  addGoalFeedback(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const text = (valueOf(`goal_fb_input_${goalId}`) || "").trim();
+    if (!text) return window.alert("피드백 내용을 입력해 주세요.");
+    goal.feedbacks = goal.feedbacks || [];
+    goal.feedbacks.push({ id: `fb-${Date.now()}`, by: currentUser().id, at: new Date().toISOString(), text });
+    saveState();
+    render();
+  },
+  deleteGoal(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const user = currentUser();
+    if (goal.ownerId !== user.id && user.role !== "admin") return window.alert("본인 목표만 삭제할 수 있습니다.");
+    const cycle = state.goalCycles.find(c => c.id === goal.cycleId);
+    // 승인제 + 이미 승인된 목표 → 즉시 삭제 불가, 삭제 승인 요청
+    if (cycle?.approvalEnabled && goal.approvalStatus === "approved" && user.role !== "admin") {
+      const approver = nextApproverForUser(user);
+      if (!approver) {
+        if (!window.confirm("승인할 상위 조직장이 없어 바로 삭제합니다. 계속할까요?")) return;
+      } else {
+        if (!window.confirm(`이 목표는 승인된 목표입니다.\n${approver.name}님에게 삭제 승인을 요청할까요?`)) return;
+        goal.deleteRequest = { by: user.id, at: new Date().toISOString(), approverId: approver.id, status: "requested" };
+        goal.history = goal.history || [];
+        goal.history.push({ at: new Date().toISOString(), by: user.id, summary: "삭제 승인 요청", changes: [`승인자: ${approver.name}`] });
+        saveState();
+        state.ui.flash = `${approver.name}님에게 삭제 승인을 요청했습니다.`;
+        render();
+        return;
+      }
+    }
+    // 미승인(임시저장/반려) 또는 어드민 또는 승인자 없음 → 즉시 삭제
+    if (!window.confirm("이 목표를 삭제할까요? 하위 목표 연결도 해제됩니다.")) return;
+    state.goals.forEach(g => { if (g.parentGoalId === goalId) g.parentGoalId = ""; });
+    state.goals = state.goals.filter(g => g.id !== goalId);
+    state.ui.goalDetailId = "";
+    saveState(); render();
+  },
+  cancelDeleteRequest(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal || !goal.deleteRequest) return;
+    delete goal.deleteRequest;
+    saveState();
+    state.ui.flash = "삭제 요청을 취소했습니다.";
+    render();
+  },
+  approveGoalDelete(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal || !goal.deleteRequest) return;
+    if (!window.confirm(`'${goal.title}' 목표 삭제를 승인할까요? 되돌릴 수 없습니다.`)) return;
+    state.goals.forEach(g => { if (g.parentGoalId === goalId) g.parentGoalId = ""; });
+    state.goals = state.goals.filter(g => g.id !== goalId);
+    if (state.ui.goalDetailId === goalId) state.ui.goalDetailId = "";
+    saveState();
+    state.ui.flash = "목표 삭제를 승인했습니다.";
+    render();
+  },
+  rejectGoalDelete(goalId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal || !goal.deleteRequest) return;
+    const reason = window.prompt("삭제 반려 사유를 입력해 주세요.", "");
+    if (reason === null) return;
+    goal.history = goal.history || [];
+    goal.history.push({ at: new Date().toISOString(), by: currentUser().id, summary: "삭제 요청 반려", changes: reason.trim()?[reason.trim()]:[] });
+    delete goal.deleteRequest;
+    saveState();
+    state.ui.flash = "삭제 요청을 반려했습니다.";
+    render();
+  },
+};
+
+function getReviewByPrefix(prefix) {
+  if (prefix === "self") return evaluations()[currentUser().id].self;
+  const [employeeId] = state.ui.selectedTaskKey.split(":");
+  return evaluations()[employeeId][prefix];
+}
+
+function getEmployeeByPrefix(prefix) {
+  if (prefix === "self") return currentUser();
+  const [employeeId] = state.ui.selectedTaskKey.split(":");
+  return userById(employeeId) || currentUser();
+}
+
+function hasMissingScores(review, employee = currentUser()) {
+  const performanceMissing = (review.performance.achievements || []).some((item) => item.score === "" || item.score === undefined || item.score === null);
+  const scaleMissing = ["competency", "attitude"].some((component) => {
+    const itemCount = templateFor(employee, component).items.length;
+    return Array.from({ length: itemCount }).some((_, index) => {
+      const value = review[component].itemScores?.[index];
+      return value === "" || value === undefined || value === null;
+    });
+  });
+  return performanceMissing || scaleMissing;
+}
+
+function missingReviewCommentLabels(review) {
+  const missing = [];
+  if (!String(review.performance?.comment || "").trim()) missing.push("업적평가 평가 의견");
+  if (!String(review.competency?.comment || "").trim()) missing.push("역량평가 평가 의견");
+  if (!String(review.attitude?.comment || "").trim()) missing.push("자세·태도평가 평가 의견");
+  return missing;
+}
+
+function missingSelfResponseLabels(review, employee = currentUser()) {
+  const missing = [];
+  const leader = isLeaderRole(employee);
+  (review.performance?.achievements || []).forEach((item, index) => {
+    if (!String(item.name || "").trim()) missing.push(leader ? `업적 ${index + 1} 사업목표` : `업적 ${index + 1} 이름`);
+    if (!String(item.detail || "").trim()) missing.push(leader ? `업적 ${index + 1} 달성내용` : `업적 ${index + 1} 주요 업무 실적 및 상세 내용`);
+  });
+  if (!String(review.competency?.comment || "").trim()) missing.push("역량평가 종합 의견");
+  if (!String(review.attitude?.comment || "").trim()) missing.push("자세·태도평가 종합 의견");
+  return missing;
+}
+
+function hasInvalidPerformanceWeightTotal(review, employee = currentUser()) {
+  if (!templateFor(employee, "performance").useWeight) return false;
+  const achievements = review.performance.achievements || [];
+  if (!achievements.length) return false;
+  const total = achievements.reduce((sum, item) => sum + Number(item.weight || 0), 0);
+  return total !== 100;
+}
+
+function pickEvaluatorByRolePriority(candidates = [], rolePriority = ["president", "chairman", "divisionHead", "teamLead", "member"]) {
+  const order = new Map(rolePriority.map((role, index) => [role, index]));
+  return [...candidates].sort(
+    (a, b) =>
+      (order.get(a.role) ?? rolePriority.length + 1) - (order.get(b.role) ?? rolePriority.length + 1) || compareEmployeesForDisplay(a, b),
+  )[0] || null;
+}
+
+function ancestorsFromUserNode(user, tree = buildOrganizationTree(), includeSelf = true) {
+  if (!user?.orgNodeId) return [];
+  const path = organizationNodePathFromNodes(user.orgNodeId, tree.nodes);
+  if (!path.length) return [];
+  return includeSelf ? [...path].reverse() : [...path.slice(0, -1)].reverse();
+}
+
+function findNearestEvaluatorInAncestors(user, roles = [], options = {}) {
+  const tree = options.tree || buildOrganizationTree();
+  const users = options.users || state.users;
+  const nodes = ancestorsFromUserNode(user, tree, options.includeSelf !== false);
+  for (const node of nodes) {
+    const found = users.filter(
+      (candidate) =>
+        candidate.id !== user.id &&
+        candidate.orgNodeId === node.id &&
+        roles.includes(candidate.role) &&
+        isEvaluatorCandidate(candidate),
+    );
+    if (found.length) return pickEvaluatorByRolePriority(found, roles);
+  }
+  return null;
+}
+
+function isExecutiveEvaluatorCandidate(user) {
+  const title = String(user?.title || user?.position || user?.jobTitle || "");
+  return isEvaluatorCandidate(user) && (["president", "chairman"].includes(user?.role) || title.includes("대표이사"));
+}
+
+function findExecutiveEvaluator(user, options = {}) {
+  const tree = options.tree || buildOrganizationTree();
+  const users = options.users || state.users;
+  const nodes = ancestorsFromUserNode(user, tree, true);
+  for (const node of nodes) {
+    const found = users.filter(
+      (candidate) =>
+        candidate.id !== user.id &&
+        candidate.orgNodeId === node.id &&
+        isExecutiveEvaluatorCandidate(candidate),
+    );
+    if (found.length) return pickEvaluatorByRolePriority(found, ["president", "chairman"]);
+  }
+  const globalExecutives = users.filter(
+    (candidate) => candidate.id !== user.id && isExecutiveEvaluatorCandidate(candidate),
+  );
+  return pickEvaluatorByRolePriority(globalExecutives, ["president", "chairman"]);
+}
+
+function autoAssignEvaluatorsForState() {
+  autoAssignEvaluatorsForUsers(state.users);
+}
+
+function autoAssignEvaluatorsForUsers(users = state.users) {
+  normalizeUserRoles(users);
+  const tree = buildOrganizationTree();
+  users.forEach((employee) => {
+    if (!isEvaluatee(employee)) return;
+    const firstLead = findNearestEvaluatorInAncestors(employee, ["teamLead"], { tree, users, includeSelf: true });
+    const upperDivisionHead = findNearestEvaluatorInAncestors(employee, ["divisionHead"], { tree, users, includeSelf: true });
+    const executive = findExecutiveEvaluator(employee, { tree, users });
+
+    if (employee.role === "member") {
+      const fallbackFirst = firstLead || upperDivisionHead;
+      employee.evaluator1Id = fallbackFirst?.id || "";
+      employee.evaluator2Id = firstLead ? upperDivisionHead?.id || "" : "";
+    } else if (employee.role === "teamLead") {
+      if (upperDivisionHead) {
+        employee.evaluator1Id = upperDivisionHead.id;
+        employee.evaluator2Id = executive?.id || "";
+      } else {
+        // 본부장 없음: 사장·회장을 1차 평가자로 직접 배정
+        employee.evaluator1Id = executive?.id || "";
+        employee.evaluator2Id = "";
+      }
+    } else if (employee.role === "divisionHead") {
+      employee.evaluator1Id = executive?.id || "";
+      employee.evaluator2Id = "";
+    }
+    delete employee.finalEvaluatorId;
+  });
+}
+
+// ═══════════════════ 목표 관리 모듈 ═══════════════════
+
+function activeGoalCycle() {
+  return state.goalCycles.find(c => c.id === state.ui.activeGoalCycleId) || state.goalCycles[0];
+}
+
+// 차상위 조직장 (승인자)
+function nextApproverForUser(user) {
+  if (!user) return null;
+  const tree = buildOrganizationTree();
+  const users = state.users;
+  if (user.role === "member") {
+    // 팀원의 팀장은 같은 팀(자기 노드)에 있으므로 includeSelf:true 로 탐색해야 함.
+    // 팀장 부재 → 본부장 → (부재 시) 사장/회장 순으로 승인권자 결정
+    return findNearestEvaluatorInAncestors(user, ["teamLead"], { tree, users, includeSelf: true })
+      || findNearestEvaluatorInAncestors(user, ["divisionHead"], { tree, users, includeSelf: true })
+      || findExecutiveEvaluator(user, { tree, users });
+  }
+  if (user.role === "teamLead") {
+    return findNearestEvaluatorInAncestors(user, ["divisionHead"], { tree, users, includeSelf: true })
+      || findExecutiveEvaluator(user, { tree, users });
+  }
+  if (user.role === "divisionHead") {
+    return users.find(u => u.role === "president") || users.find(u => u.role === "chairman") || null;
+  }
+  if (user.role === "president") {
+    return users.find(u => u.role === "chairman") || null;
+  }
+  return null; // chairman: 승인 불필요
+}
+
+// 진행률 계산: 지표 있으면 (현재-시작)/(목표-시작), 없으면 상태 기반
+function computeGoalProgress(goal) {
+  if (goal.status === "done") return 100;
+  if (goal.metric && goal.metric.targetValue !== goal.metric.startValue) {
+    const { startValue, targetValue, currentValue } = goal.metric;
+    const pct = ((currentValue - startValue) / (targetValue - startValue)) * 100;
+    return Math.max(0, Math.min(100, Math.round(pct * 100) / 100));
+  }
+  // 지표 없으면 마지막 체크인의 수동 진행률 또는 상태 기반 추정
+  if (typeof goal.progress === "number" && goal.progress > 0) return goal.progress;
+  return goal.status === "onTrack" ? 0 : 0;
+}
+
+// 부모 목표는 자식 평균 진행률
+function goalDisplayProgress(goal, allGoals) {
+  const children = allGoals.filter(g => g.parentGoalId === goal.id);
+  if (children.length) {
+    const avg = children.reduce((s, c) => s + goalDisplayProgress(c, allGoals), 0) / children.length;
+    return Math.round(avg * 100) / 100;
+  }
+  return computeGoalProgress(goal);
+}
+
+// 뷰어가 볼 수 있는 구성원 id 집합 (본인 + 하위 조직)
+function goalScopeUserIds(user) {
+  // 본부장·사장·회장·어드민: 전사 전체
+  if (["admin", "president", "chairman", "divisionHead"].includes(user.role)) {
+    return new Set(state.users.map(u => u.id));
+  }
+  // 팀장: 우리 팀(본인 팀원) + 우리 본부의 다른 팀장들 + 본부장
+  if (user.role === "teamLead") {
+    const ids = new Set();
+    state.users.forEach(u => {
+      if (u.division !== user.division) return;
+      if (u.team === user.team) ids.add(u.id);            // 우리 팀 전원
+      else if (u.role === "teamLead") ids.add(u.id);       // 본부 내 다른 팀장
+      else if (u.role === "divisionHead") ids.add(u.id);   // 본부장
+    });
+    return ids;
+  }
+  // 팀원: 활성 목표 사이클의 조회 범위 설정(memberScope)에 따라 결정
+  const cycle = activeGoalCycle();
+  const scope = cycle?.memberScope || "team";
+  const ids = new Set([user.id]); // 본인 목표는 항상 포함
+  if (scope === "self") return ids;
+  const teamLeads = state.users.filter(u => u.role === "teamLead" && u.division === user.division && u.team === user.team);
+  if (scope === "teamLead") {
+    teamLeads.forEach(u => ids.add(u.id));
+    // 팀장이 없으면 본부장까지 노출
+    if (!teamLeads.length) state.users.filter(u => u.role === "divisionHead" && u.division === user.division).forEach(u => ids.add(u.id));
+    return ids;
+  }
+  // "team": 같은 팀 전체 (다른 팀원 + 팀장)
+  state.users.filter(u => u.division === user.division && u.team === user.team).forEach(u => ids.add(u.id));
+  // 팀장이 없는 팀이면 본부장도 포함
+  if (!teamLeads.length) {
+    state.users.filter(u => u.role === "divisionHead" && u.division === user.division).forEach(u => ids.add(u.id));
+  }
+  return ids;
+}
+
+function goalStatusBadge(status) {
+  const label = GOAL_STATUS_LABELS[status] || status;
+  const color = GOAL_STATUS_COLORS[status] || "#6b7280";
+  return `<span class="pill" style="background:${color}1a;color:${color};border:1px solid ${color}55;">${label}</span>`;
+}
+
+function goalOwnerLabel(goal) {
+  const owner = userById(goal.ownerId);
+  return owner ? `${owner.name}${owner.title ? " " + owner.title : ""}` : "-";
+}
+
+// 역할 서열 (상위 목표 표시 상한 판단용)
+const GOAL_ROLE_RANK = { member: 1, teamLead: 2, divisionHead: 3, president: 4, chairman: 5, admin: 9 };
+
+// 내가 연결한 상위 목표 체인을, 역할 상한까지 보이도록 확장
+function expandGoalsWithAncestors(visibleGoals, user, cycle) {
+  // 뷰어별 상위 목표 표시 상한 (소유자 역할 기준)
+  let cap;
+  if (user.role === "member") {
+    const hasTeamLead = state.users.some(u => u.role === "teamLead" && u.division === user.division && u.team === user.team);
+    cap = hasTeamLead ? GOAL_ROLE_RANK.teamLead : GOAL_ROLE_RANK.divisionHead; // 팀장 없으면 본부장까지
+  } else if (user.role === "teamLead") {
+    const hasDivHead = state.users.some(u => u.role === "divisionHead" && u.division === user.division);
+    cap = hasDivHead ? GOAL_ROLE_RANK.divisionHead : GOAL_ROLE_RANK.president; // 본부장 없으면 사장까지
+  } else {
+    cap = 99; // 본부장·사장·회장·어드민은 기존 범위 그대로(상한 없음)
+  }
+  const byId = Object.fromEntries(state.goals.filter(g => g.cycleId === cycle.id).map(g => [g.id, g]));
+  const result = new Map(visibleGoals.map(g => [g.id, g]));
+  visibleGoals.forEach(g => {
+    let cur = g.parentGoalId ? byId[g.parentGoalId] : null;
+    const guard = new Set();
+    while (cur && !guard.has(cur.id)) {
+      guard.add(cur.id);
+      const ownerRole = userById(cur.ownerId)?.role || "member";
+      const rank = GOAL_ROLE_RANK[ownerRole] || 1;
+      if (rank > cap) break;                 // 상한 초과 시 중단
+      if (cur.approvalStatus === "approved") result.set(cur.id, cur);
+      cur = cur.parentGoalId ? byId[cur.parentGoalId] : null;
+    }
+  });
+  return [...result.values()];
+}
+
+// 목표 트리 구성 (parentGoalId 기준 계층)
+function buildGoalTreeRows(goals) {
+  const byId = Object.fromEntries(goals.map(g => [g.id, g]));
+  const childrenOf = {};
+  goals.forEach(g => {
+    const pid = (g.parentGoalId && byId[g.parentGoalId]) ? g.parentGoalId : "__root__";
+    (childrenOf[pid] = childrenOf[pid] || []).push(g);
+  });
+  const rows = [];
+  const walk = (pid, depth) => {
+    (childrenOf[pid] || []).forEach(g => {
+      rows.push({ goal: g, depth });
+      walk(g.id, depth + 1);
+    });
+  };
+  walk("__root__", 0);
+  return rows;
+}
+
+function renderGoalsList(user) {
+  const isAdmin = user.role === "admin";
+  const cycleRows = state.goalCycles.map(c => {
+    const goalCount = state.goals.filter(g => g.cycleId === c.id).length;
+    const statusColor = c.status === "active" ? "var(--success,#22c55e)" : "var(--muted)";
+    const statusLabel = c.status === "active" ? "진행중" : "종료";
+    return `
+      <div class="cycle-list-row" style="border-left:4px solid ${statusColor};cursor:pointer;" onclick="App.openGoalCycleDetail('${c.id}')">
+        <div class="cycle-list-main">
+          <div class="cycle-list-name">
+            <strong>${esc(c.name)}</strong>
+            <span class="pill" style="background:${statusColor};color:#fff;font-size:11px;">● ${statusLabel}</span>
+            ${c.readOnly ? `<span class="pill" style="background:var(--muted);color:#fff;font-size:11px;">읽기전용</span>` : ""}
+          </div>
+          <div class="cycle-list-meta muted" style="font-size:12px;margin-top:4px;">
+            기간: ${esc(c.start||"미설정")} ~ ${esc(c.end||"미설정")} &nbsp;·&nbsp; 목표 ${goalCount}개 &nbsp;·&nbsp; ${c.approvalEnabled ? "승인제" : "승인 없음"}
+          </div>
+        </div>
+        ${isAdmin ? `<div class="cycle-list-actions" onclick="event.stopPropagation()">
+          <button class="button ghost sm" onclick="App.injectGoalDummyData('${c.id}')" title="이 사이클에 더미 목표 데이터를 채웁니다.">🎲 더미 데이터</button>
+          <button class="button secondary sm" onclick="App.openGoalCycleEdit('${c.id}')">사이클 설정</button>
+          <button class="button danger sm" onclick="App.deleteGoalCycle('${c.id}')">삭제</button>
+        </div>` : ""}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>목표 관리</h2></div>
+          <div class="toolbar">
+            ${isAdmin ? `<button class="button" onclick="App.openGoalCycleModal()">+ 새로운 사이클</button>` : ""}
+          </div>
+        </div>
+        <div class="panel-body">
+          ${state.goalCycles.length
+            ? `<div class="cycle-list">${cycleRows}</div>`
+            : `<div class="empty" style="padding:32px 0;">${isAdmin ? "목표 사이클이 없습니다. 새 사이클을 만들어 주세요." : "목표 사이클이 없습니다. 어드민이 사이클을 생성해야 합니다."}</div>`}
+        </div>
+      </section>
+    </div>
+    ${state.ui.goalCycleDetailModal ? renderGoalCycleDetailModal(user) : ""}
+    ${state.ui.goalCycleModal ? renderGoalCycleModal() : ""}
+    ${state.ui.goalCycleEditModal ? renderGoalCycleEditModal() : ""}
+  `;
+}
+
+function renderGoalCycleDetailModal(user) {
+  const cycleId = state.ui.goalCycleDetailModal?.cycleId;
+  if (!cycleId) return "";
+  // 이 모달 내에서 해당 사이클을 활성으로 사용
+  const prevActive = state.ui.activeGoalCycleId;
+  state.ui.activeGoalCycleId = cycleId;
+  const cycle = activeGoalCycle();
+  const isActive = cycle?.status === "active";
+  const isAdmin = user.role === "admin";
+  const content = !cycle
+    ? `<div class="empty" style="padding:40px 0;">사이클을 찾을 수 없습니다.</div>`
+    : (!isActive && isAdmin)
+      ? `<div class="empty" style="padding:40px 0;">이 사이클은 종료되었습니다.<br><span style="font-size:13px;color:var(--muted);">목표 내용을 조회하려면 사이클 설정에서 상태를 진행중으로 변경해 주세요.</span></div>`
+      : renderGoalCycleContent(user, true);
+  state.ui.activeGoalCycleId = prevActive;
+  const fullscreen = !!state.ui.goalCycleDetailModal?.fullscreen;
+  const modalStyle = fullscreen
+    ? "width:100%;height:100%;max-width:100%;max-height:100%;border-radius:0;"
+    : "max-width:1200px;width:98%;max-height:95vh;";
+  return `
+    <div class="goal-modal-overlay" style="z-index:520;padding:${fullscreen?"0":"20px 0"};" onclick="if(event.target===this)App.closeGoalCycleDetail()">
+      <div class="goal-modal" style="${modalStyle}display:flex;flex-direction:column;overflow:hidden;">
+        <div class="goal-modal-head" style="flex-shrink:0;display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line);">
+          <h2 style="flex:1;margin:0;">📌 ${esc(cycle?.name || "목표 관리")}</h2>
+          <button class="button ghost sm" onclick="App.toggleGoalCycleDetailFullscreen()" title="전체화면">⛶</button>
+          <button class="modal-x" onclick="App.closeGoalCycleDetail()">×</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:20px;">
+          ${content}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderGoalCycleListForUser(user, noActiveCycle) {
+  const cycleRows = state.goalCycles.map(c => {
+    const goalCount = state.goals.filter(g => g.cycleId === c.id).length;
+    const isActive = c.status === "active";
+    const statusColor = isActive ? "var(--success,#22c55e)" : "var(--muted)";
+    const statusLabel = isActive ? "진행중" : "종료";
+    return `
+      <div class="cycle-list-row" style="border-left:4px solid ${statusColor};cursor:pointer;" onclick="App.openGoalCycleDetail('${c.id}')">
+        <div class="cycle-list-main">
+          <div class="cycle-list-name">
+            <strong>${esc(c.name)}</strong>
+            <span class="pill" style="background:${statusColor};color:#fff;font-size:11px;">● ${statusLabel}</span>
+            ${c.readOnly ? `<span class="pill" style="background:var(--muted);color:#fff;font-size:11px;">읽기전용</span>` : ""}
+          </div>
+          <div class="cycle-list-meta muted" style="font-size:12px;margin-top:4px;">
+            기간: ${esc(c.start||"미설정")} ~ ${esc(c.end||"미설정")} &nbsp;·&nbsp; 목표 ${goalCount}개 &nbsp;·&nbsp; ${c.approvalEnabled ? "승인제" : "승인 없음"}
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>목표 사이클 목록</h2>
+            ${noActiveCycle ? `<p class="muted" style="margin-top:4px;">현재 진행 중인 목표 사이클이 없습니다. 과거 사이클을 조회할 수 있습니다.</p>` : ""}
+          </div>
+          ${!noActiveCycle ? `<div class="toolbar"><button class="button secondary" onclick="App.setGoalViewMode('goals')">← 목표 보기</button></div>` : ""}
+        </div>
+        <div class="panel-body">
+          ${state.goalCycles.length
+            ? `<div class="cycle-list">${cycleRows}</div>`
+            : `<div class="empty" style="padding:32px 0;">목표 사이클이 없습니다.</div>`}
+        </div>
+      </section>
+    </div>
+    ${state.ui.goalCycleDetailModal ? renderGoalCycleDetailModal(user) : ""}
+  `;
+}
+
+function renderGoalCycleContent(user, inModal = false) {
+  const isAdmin = user.role === "admin";
+
+  // ── 비어드민 분기 (모달 내부에서는 건너뜀) ──
+  if (!isAdmin && !inModal) {
+    const activeCycles = state.goalCycles.filter(c => c.status === "active");
+    const viewMode = state.ui.goalViewMode || "goals"; // "goals" | "list"
+
+    // 사이클 목록 뷰 (명시적 요청 or 진행중 사이클 없음)
+    if (viewMode === "list" || !activeCycles.length) {
+      return renderGoalCycleListForUser(user, !activeCycles.length);
+    }
+
+    // 진행중 사이클 있음 → 목표 목록 뷰 (기본)
+    const cur = activeGoalCycle();
+    if (!cur || cur.status !== "active") state.ui.activeGoalCycleId = activeCycles[0].id;
+  }
+
+  const cycle = activeGoalCycle();
+  if (!cycle) return `<div class="empty">목표 사이클이 없습니다. 어드민이 사이클을 생성해야 합니다.</div>`;
+  const scopeIds = goalScopeUserIds(user);
+  // 이 사이클의, 내가 볼 수 있는 목표 (조직 범위 내 + 일부 공개 대상으로 지정된 목표 + 내 목표)
+  let goals = state.goals.filter(g => g.cycleId === cycle.id && (
+    g.ownerId === user.id ||
+    (g.visibility === "partial" ? canViewGoal(g, user) : scopeIds.has(g.ownerId))
+  ));
+  // 탭 필터: 나 / 팀 / 전체
+  const goalTab = state.ui.goalTab || "all";
+  if (goalTab === "mine") goals = goals.filter(g => g.ownerId === user.id);
+  else if (goalTab === "team") {
+    const teamIds = new Set(state.users.filter(u => u.division === user.division && (user.role === "teamLead" ? u.team === user.team : true)).map(u => u.id));
+    goals = goals.filter(g => teamIds.has(g.ownerId));
+  }
+  // 목표도에는 승인된 것 + 본인 것만
+  let visibleGoals = goals.filter(g => g.approvalStatus === "approved" || g.ownerId === user.id);
+  // 상위 목표 체인 확장: 내가 연결한 상위 목표를 역할 상한까지 보여줌
+  visibleGoals = expandGoalsWithAncestors(visibleGoals, user, cycle);
+  // 일부 공개 목표 접근 제어: 공개 대상자(승인권자 포함)·소유자·어드민만 열람
+  visibleGoals = visibleGoals.filter(g => canViewGoal(g, user));
+  const allForProgress = state.goals.filter(g => g.cycleId === cycle.id);
+
+  const canCreate = !cycle.readOnly;
+  const visibleCycles = isAdmin ? state.goalCycles : state.goalCycles.filter(c => c.status === "active");
+  const cycleSelector = visibleCycles.length > 1
+    ? `<select onchange="App.switchGoalCycle(this.value)" style="font-size:15px;font-weight:700;border:none;background:transparent;cursor:pointer;">
+        ${visibleCycles.map(c => `<option value="${c.id}" ${c.id === cycle.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+      </select>`
+    : `<span style="font-size:15px;font-weight:700;">${esc(cycle.name)}</span>`;
+
+  const detail = state.ui.goalDetailId ? renderGoalDetailPanel(state.ui.goalDetailId, user) : "";
+
+  // 필터 옵션
+  const divOptions  = [...new Set(visibleGoals.map(g => g.division || (userById(g.ownerId)?.division) || "미지정"))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const teamOptions = [...new Set(visibleGoals.map(g => g.team || "").filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ko"));
+  const ownerOptions = [...new Set(visibleGoals.map(g => g.ownerId))].map(id => userById(id)).filter(Boolean)
+    .sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
+
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>${cycleSelector}<p class="muted">${esc(cycle.start || "")} ~ ${esc(cycle.end || "")} · ${cycle.approvalEnabled ? "승인제" : "승인 없음"}${cycle.readOnly ? " · 읽기전용" : ""}</p></div>
+        <div class="toolbar">
+          ${!isAdmin ? `<button class="button secondary sm" onclick="App.setGoalViewMode('list')">사이클 목록 보기</button>` : ""}
+          <button class="button ghost sm" onclick="App.collapseAllGoals(true)">전체 접기</button>
+          <button class="button ghost sm" onclick="App.collapseAllGoals(false)">전체 펼치기</button>
+          ${canCreate ? `
+            <input type="file" id="goal_bulk_upload_input" accept=".xlsx" style="display:none;" onchange="App.handleGoalBulkUpload(event)" />
+            <button class="button secondary" onclick="App.downloadGoalTemplate()">📥 엑셀 양식 다운로드</button>
+            <button class="button secondary" onclick="document.getElementById('goal_bulk_upload_input').click()">📤 엑셀로 일괄 등록</button>
+            <button class="button" onclick="App.openGoalCreate()">+ 새로운 목표</button>
+          ` : ""}
+        </div>
+      </div>
+      <div class="panel-body">
+        <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);">
+          ${[["all","전체"],["team","우리 팀"],["mine","나"]].map(([k,l]) => `
+            <button onclick="App.setGoalTab('${k}')" style="padding:8px 16px;border:none;background:none;cursor:pointer;font-weight:600;font-size:13px;
+              color:${goalTab===k?"var(--primary)":"var(--muted)"};border-bottom:2px solid ${goalTab===k?"var(--primary)":"transparent"};">${l}</button>`).join("")}
+        </div>
+
+        <!-- 필터 + 그룹 기준 -->
+        ${(() => { const flt = state.ui.goalFilter || {}; return `
+        <div class="approval-filter-bar">
+          <div class="approval-filter-search">
+            <span class="filter-icon">🔍</span>
+            <input id="goal_filter_name" placeholder="목표·담당자 검색…" oninput="App.filterGoalTable()" value="${esc(flt.name||"")}"
+              style="border:none;background:transparent;outline:none;width:150px;font-size:13px;" />
+          </div>
+          <div class="approval-filter-selects">
+            <div class="af-select-wrap ${flt.div?"active":""}"><label>본부</label>
+              <select id="goal_filter_div" onchange="App.filterGoalTable()"><option value="">전체</option>${divOptions.map(d=>`<option value="${esc(d)}" ${flt.div===d?"selected":""}>${esc(d)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap ${flt.team?"active":""}"><label>팀</label>
+              <select id="goal_filter_team" onchange="App.filterGoalTable()"><option value="">전체</option>${teamOptions.map(t=>`<option value="${esc(t)}" ${flt.team===t?"selected":""}>${esc(t)}</option>`).join("")}</select>
+            </div>
+            <div class="af-select-wrap ${flt.owner?"active":""}"><label>담당자</label>
+              <select id="goal_filter_owner" onchange="App.filterGoalTable()"><option value="">전체</option>${ownerOptions.map(o=>`<option value="${esc(o.id)}" ${flt.owner===o.id?"selected":""}>${esc(o.name)}</option>`).join("")}</select>
+            </div>
+            ${(flt.name||flt.div||flt.team||flt.owner) ? `<button class="button ghost" onclick="App.clearGoalFilter()" style="font-size:12px;padding:4px 10px;">필터 초기화</button>` : ""}
+          </div>
+        </div>`; })()}
+
+        <div id="goal-groups">
+          ${visibleGoals.length ? goalTableShell(goalRowsHtml(visibleGoals, allForProgress, user)) : `<div class="empty" style="padding:30px;">표시할 목표가 없습니다.</div>`}
+        </div>
+      </div>
+    </section>
+    ${state.ui.goalCreateModal ? renderGoalCreateModal(user) : ""}
+    ${state.ui.goalEditId ? renderGoalEditModal(user, state.ui.goalEditId) : ""}
+    ${detail}
+  `;
+}
+
+// 목표 표의 tbody 행 HTML (list 내에서 계층 구성)
+function goalRowsHtml(list, allForProgress, user) {
+  const collapsed = state.ui.goalCollapsed || {};
+  const rows = buildGoalTreeRows(list);
+  const gById = Object.fromEntries(list.map(x => [x.id, x]));
+  const childCount = {};
+  list.forEach(x => { if (x.parentGoalId && gById[x.parentGoalId]) childCount[x.parentGoalId] = (childCount[x.parentGoalId] || 0) + 1; });
+  const isHidden = (g) => {
+    let p = g.parentGoalId, guard = new Set();
+    while (p && gById[p] && !guard.has(p)) { guard.add(p); if (collapsed[p]) return true; p = gById[p].parentGoalId; }
+    return false;
+  };
+  const flt = state.ui.goalFilter || {};
+  const matchesFilter = (g, ownerObj) => {
+    if (flt.name) { const s = `${g.title} ${ownerObj?.name||""} ${g.team||""} ${g.division||""}`.toLowerCase(); if (!s.includes(flt.name)) return false; }
+    if (flt.div && (g.division || ownerObj?.division || "미지정") !== flt.div) return false;
+    if (flt.team && (g.team || ownerObj?.team || "") !== flt.team) return false;
+    if (flt.owner && g.ownerId !== flt.owner) return false;
+    return true;
+  };
+  return rows.map(({goal, depth}) => {
+    const owner = userById(goal.ownerId);
+    const prog = goalDisplayProgress(goal, allForProgress);
+    const pending = goal.approvalStatus && goal.approvalStatus !== "approved";
+    const search = `${goal.title} ${owner?.name||""} ${goal.team||""} ${goal.division||""}`.toLowerCase();
+    const indent = depth * 40;
+    const hasChildren = childCount[goal.id] > 0;
+    const isColl = collapsed[goal.id];
+    const chevron = hasChildren
+      ? `<button onclick="event.stopPropagation();App.toggleGoalCollapse('${goal.id}')" title="${isColl?"펼치기":"접기"}" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:11px;width:18px;padding:0;margin-right:2px;">${isColl?"▶":"▼"}</button>`
+      : `<span style="display:inline-block;width:18px;"></span>`;
+    const hiddenStyle = (isHidden(goal) || !matchesFilter(goal, owner)) ? "display:none;" : "";
+    return `<tr class="goal-row" data-goal-search="${esc(search)}" data-goal-div="${esc(goal.division||owner?.division||"미지정")}" data-goal-team="${esc(goal.team||owner?.team||"")}" data-goal-owner="${esc(goal.ownerId)}" style="${hiddenStyle}${state.ui.goalDetailId===goal.id?"background:var(--primary-lt);":""}">
+      <td style="padding-left:${12 + indent}px;border-left:${depth>0?`3px solid var(--primary-lt)`:"none"};">
+        ${chevron}
+        <button onclick="App.openGoalDetail('${goal.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+          <strong style="color:var(--primary);${depth===0?"font-size:14.5px;":""}">${esc(goal.title)}</strong>
+        </button>
+        ${hasChildren ? `<span class="muted" style="font-size:11px;margin-left:6px;">(${childCount[goal.id]})</span>` : ""}
+        ${pending ? `<span class="pill amber" style="margin-left:6px;font-size:10px;">${goal.approvalStatus==="requested"?"승인대기":goal.approvalStatus==="rejected"?"반려":"임시저장"}</span>` : ""}
+        <span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">${GOAL_LEVEL_LABELS[goal.level]||""}</span>
+      </td>
+      <td>${goalStatusBadge(goal.status)}</td>
+      <td style="text-align:right;font-weight:700;">${prog}%</td>
+      <td>${esc(goal.team || goal.division || (owner?.division) || "-")}</td>
+      <td>${esc(owner?.name || "-")}</td>
+      <td><span class="muted" style="font-size:12px;">${esc((goal.start||"").replaceAll("-",".").slice(2))}~${esc((goal.end||"").replaceAll("-",".").slice(2))}</span></td>
+      <td>${goal.ownerId===user.id?`<button class="button sm ghost" onclick="App.openGoalCheckin('${goal.id}')">체크인</button>`:""}</td>
+    </tr>`;
+  }).join("");
+}
+
+function goalTableShell(bodyHtml) {
+  return `<div class="table-wrap" style="margin:6px 0 4px;"><table>
+    <thead><tr><th>목표</th><th>상태</th><th style="text-align:right;">진행률</th><th>담당 조직</th><th>담당자</th><th>기간</th><th></th></tr></thead>
+    <tbody>${bodyHtml}</tbody></table></div>`;
+}
+
+function renderGoalGroups(visibleGoals, allForProgress, groupBy, user) {
+  if (!visibleGoals.length) return `<div class="empty" style="padding:30px;">표시할 목표가 없습니다.</div>`;
+
+  // 단일 트리: 회사→본부→팀→개인 전체를 하나의 목록으로
+  if (!groupBy || groupBy === "none") {
+    return goalTableShell(goalRowsHtml(visibleGoals, allForProgress, user));
+  }
+
+  const groupKeyFns = {
+    division: g => g.division || (userById(g.ownerId)?.division) || "미지정",
+    team:     g => g.team || (userById(g.ownerId)?.team) || g.division || "미지정",
+    owner:    g => userById(g.ownerId)?.name || "미지정",
+  };
+  const keyFn = groupKeyFns[groupBy] || groupKeyFns.division;
+  const groups = {};
+  visibleGoals.forEach(g => { const k = keyFn(g); (groups[k] = groups[k] || []).push(g); });
+  const sortedKeys = Object.keys(groups).sort((a,b)=>a.localeCompare(b,"ko"));
+  return sortedKeys.map(key => `
+      <details class="org-group goal-group" open data-goal-group="${esc(key.toLowerCase())}">
+        <summary>${esc(key)} <span>${groups[key].length}개 목표</span></summary>
+        ${goalTableShell(goalRowsHtml(groups[key], allForProgress, user))}
+      </details>`).join("");
+}
+
+// 공개 설정 탭 (전체 공개 / 일부 공개 + 대상자 검색 추가)
+function renderGoalVisibilitySettings(user, approver, selectedIds = [], visibility = "all") {
+  const candidates = state.users.filter(u => u.role !== "admin").sort(compareEmployeesForDisplay);
+  // 승인권자는 필수 대상 (제거 불가)
+  const fixedIds = approver ? [approver.id] : [];
+  const chips = [];
+  fixedIds.forEach(id => {
+    const u = userById(id);
+    if (u) chips.push(goalVisibleChipHtml(u, true));
+  });
+  selectedIds.filter(id => !fixedIds.includes(id)).forEach(id => {
+    const u = userById(id);
+    if (u) chips.push(goalVisibleChipHtml(u, false));
+  });
+  return `
+    <div class="field"><label style="font-weight:700;">공개 범위</label></div>
+    <label class="goal-vis-radio">
+      <input type="radio" name="goal_visibility" value="all" ${visibility!=="partial"?"checked":""} onchange="App.onGoalVisibilityChange('all')" />
+      <span><strong>전체 공개</strong><small>전체 구성원에게 목표가 공개돼요.</small></span>
+    </label>
+    <label class="goal-vis-radio">
+      <input type="radio" name="goal_visibility" value="partial" ${visibility==="partial"?"checked":""} onchange="App.onGoalVisibilityChange('partial')" />
+      <span><strong>일부 공개</strong><small>권한 설정에 따라 일부 구성원에게만 목표가 공개돼요.</small></span>
+    </label>
+    <div id="goal_visible_box" style="${visibility==="partial"?"":"display:none;"}margin-top:12px;">
+      <div class="component-card">
+        ${approver ? `<p class="muted" style="font-size:12px;margin-bottom:8px;">승인권자 <strong>${esc(approver.name)}</strong>님은 공개 대상에 필수로 포함됩니다.</p>` : ""}
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+          <div class="field" style="flex:1;min-width:220px;margin:0;">
+            <label>공개 대상자 검색</label>
+            <input id="goal_visible_search" list="goal_visible_options" placeholder="이름·사번 검색 후 선택" />
+            <datalist id="goal_visible_options">
+              ${candidates.map(u => `<option value="${esc(userOptionLabel(u))}"></option>`).join("")}
+            </datalist>
+          </div>
+          <button type="button" class="button secondary" onclick="App.addGoalVisibleTarget()">추가</button>
+        </div>
+        <div id="goal_visible_chips" class="goal-visible-chips" style="margin-top:10px;">
+          ${chips.join("")}
+        </div>
+      </div>
+    </div>`;
+}
+
+// 모달 DOM에서 공개 설정을 수집. 일부 공개면 승인권자 필수 포함.
+function collectGoalVisibilityFromDom(approver) {
+  const radio = document.querySelector('input[name="goal_visibility"]:checked');
+  const mode = radio ? radio.value : "all";
+  if (mode !== "partial") return { visibility: "all", visibleUserIds: [] };
+  const ids = new Set();
+  if (approver) ids.add(approver.id);
+  document.querySelectorAll("#goal_visible_chips .goal-visible-chip").forEach(chip => {
+    if (chip.dataset.id) ids.add(chip.dataset.id);
+  });
+  return { visibility: "partial", visibleUserIds: [...ids] };
+}
+
+// 일부 공개 목표의 대상자 이름 목록
+function goalVisibleNames(goal) {
+  if (goal.visibility !== "partial") return "";
+  return (goal.visibleUserIds || [])
+    .map(id => userById(id))
+    .filter(Boolean)
+    .map(u => u.name)
+    .join(", ");
+}
+
+// 뷰어가 해당 목표를 볼 수 있는지 (일부 공개 목표 접근 제어)
+function canViewGoal(goal, user) {
+  if (!goal) return false;
+  if (user.role === "admin") return true;
+  if (goal.ownerId === user.id) return true;
+  if (goal.visibility === "partial") {
+    return Array.isArray(goal.visibleUserIds) && goal.visibleUserIds.includes(user.id);
+  }
+  return true;
+}
+
+function goalVisibleChipHtml(u, fixed) {
+  return `<span class="goal-visible-chip ${fixed?"fixed":""}" data-id="${esc(u.id)}">
+    ${esc(u.name)}<small>${esc(ROLE_LABELS[u.role]||u.role)}</small>
+    ${fixed ? `<em title="승인권자(필수)">필수</em>` : `<button type="button" onclick="this.closest('.goal-visible-chip').remove()">×</button>`}
+  </span>`;
+}
+
+function renderGoalCreateModal(user) {
+  const cycle = activeGoalCycle();
+  // 상위 목표 후보: 차상위 조직장(승인자)이 소유한 같은 사이클의 승인된 목표만
+  const approver = nextApproverForUser(user);
+  const parentCandidates = approver
+    ? state.goals.filter(g => g.cycleId === cycle.id && g.approvalStatus === "approved" && g.ownerId === approver.id)
+    : [];
+  const defaultLevel = user.role === "member" ? "individual" : user.role === "teamLead" ? "team" : user.role === "divisionHead" ? "division" : "company";
+  const levelOptions = user.role === "admin" ? GOAL_LEVELS : (
+    user.role === "member" ? ["individual"] :
+    user.role === "teamLead" ? ["team","individual"] :
+    user.role === "divisionHead" ? ["division","team"] : ["company","division"]
+  );
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeGoalCreate()">
+      <div class="goal-modal">
+        <div class="goal-modal-head">
+          <h2>목표 만들기</h2>
+          <button onclick="App.closeGoalCreate()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+        </div>
+        <div class="goal-modal-tabs">
+          <button type="button" class="goal-modal-tab active" data-goaltab="info" onclick="App.switchGoalModalTab('info')">목표 정보</button>
+          <button type="button" class="goal-modal-tab" data-goaltab="visibility" onclick="App.switchGoalModalTab('visibility')">공개 설정</button>
+        </div>
+        <div class="goal-modal-body">
+          <div class="goal-tab-pane" data-goalpane="info">
+          <div class="field"><label>목표 레벨</label>
+            <select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===defaultLevel?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>
+          </div>
+          <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
+          <div class="field"><label>상위 목표 <span style="color:var(--red)">*</span></label>
+            <select id="goal_parent">
+              <option value="">${approver ? `상위 목표를 선택하세요 (${esc(approver.name)})` : "선택 가능한 상위 목표 없음"}</option>
+              ${parentCandidates.map(g => `<option value="${g.id}">${esc(goalOwnerLabel(g))} · ${esc(g.title)}</option>`).join("")}
+            </select>
+            <span class="muted" style="font-size:11px;">${approver ? `차상위 조직장(${esc(approver.name)})의 목표 중 선택합니다.` : "회사 최상위 목표는 상위 목표 없이 등록됩니다."}</span>
+          </div>
+          <div class="field"><label>목표 <span style="color:var(--red)">*</span></label><textarea id="goal_title" rows="2" placeholder="예) 고객 만족도 평균 5점 달성"></textarea></div>
+          <div class="form-grid">
+            <div class="field"><label>시작일</label><input type="date" id="goal_start" value="${esc(cycle.start||"")}" /></div>
+            <div class="field"><label>종료일</label><input type="date" id="goal_end" value="${esc(cycle.end||"")}" /></div>
+          </div>
+          <label class="goal-metric-toggle on">
+            <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다.</small></span>
+            <input type="checkbox" id="goal_has_metric" checked onchange="document.getElementById('goal_metric_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
+            <span class="goal-metric-switch"></span>
+          </label>
+          <div id="goal_metric_box" class="component-card" style="margin-top:10px;">
+            <div class="field"><label>지표명</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수" /></div>
+            <div class="form-grid">
+              <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="0" /></div>
+              <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="100" /></div>
+            </div>
+          </div>
+          <div class="field"><label>(선택) 상세 설명</label><textarea id="goal_desc" rows="3" placeholder="내용을 입력해 주세요."></textarea></div>
+          </div>
+          <div class="goal-tab-pane" data-goalpane="visibility" style="display:none;">
+            ${renderGoalVisibilitySettings(user, approver, [])}
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeGoalCreate()">취소</button>
+          ${cycle.approvalEnabled
+            ? `<button class="button ghost" onclick="App.saveGoal(false)">임시 등록</button><button class="button" onclick="App.saveGoal(true)">승인 요청 및 등록</button>`
+            : `<button class="button" onclick="App.saveGoal(false)">등록</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderGoalEditModal(user, goalId) {
+  const goal = state.goals.find(g => g.id === goalId);
+  if (!goal) return "";
+  const cycle = activeGoalCycle();
+  const approver = nextApproverForUser(user);
+  const parentCandidates = approver
+    ? state.goals.filter(g => g.cycleId === cycle.id && g.approvalStatus === "approved" && g.ownerId === approver.id && g.id !== goal.id)
+    : [];
+  const levelOptions = user.role === "admin" ? GOAL_LEVELS : (
+    user.role === "member" ? ["individual"] :
+    user.role === "teamLead" ? ["team","individual"] :
+    user.role === "divisionHead" ? ["division","team"] : ["company","division"]
+  );
+  const m = goal.metric;
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeGoalEdit()">
+      <div class="goal-modal">
+        <div class="goal-modal-head">
+          <h2>목표 수정</h2>
+          <button onclick="App.closeGoalEdit()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+        </div>
+        <div class="goal-modal-tabs">
+          <button type="button" class="goal-modal-tab active" data-goaltab="info" onclick="App.switchGoalModalTab('info')">목표 정보</button>
+          <button type="button" class="goal-modal-tab" data-goaltab="visibility" onclick="App.switchGoalModalTab('visibility')">공개 설정</button>
+        </div>
+        <div class="goal-modal-body">
+          <div class="goal-tab-pane" data-goalpane="info">
+          ${cycle.approvalEnabled ? `<div class="notice warn" style="font-size:12px;">수정 후 저장하면 차상위 조직장의 <strong>재승인</strong>이 필요합니다.</div>` : ""}
+          <div class="field"><label>목표 레벨</label>
+            <select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===goal.level?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>
+          </div>
+          <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
+          <div class="field"><label>상위 목표 <span style="color:var(--red)">*</span></label>
+            <select id="goal_parent">
+              <option value="">${approver ? `상위 목표를 선택하세요 (${esc(approver.name)})` : "선택 가능한 상위 목표 없음"}</option>
+              ${parentCandidates.map(g => `<option value="${g.id}" ${g.id===goal.parentGoalId?"selected":""}>${esc(goalOwnerLabel(g))} · ${esc(g.title)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><label>목표 <span style="color:var(--red)">*</span></label><textarea id="goal_title" rows="2">${esc(goal.title)}</textarea></div>
+          <div class="form-grid">
+            <div class="field"><label>시작일</label><input type="date" id="goal_start" value="${esc(goal.start||"")}" /></div>
+            <div class="field"><label>종료일</label><input type="date" id="goal_end" value="${esc(goal.end||"")}" /></div>
+          </div>
+          <label class="goal-metric-toggle ${m?"on":""}">
+            <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다.</small></span>
+            <input type="checkbox" id="goal_has_metric" ${m?"checked":""} onchange="document.getElementById('goal_metric_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
+            <span class="goal-metric-switch"></span>
+          </label>
+          <div id="goal_metric_box" class="component-card" style="margin-top:10px;${m?"":"display:none;"}">
+            <div class="field"><label>지표명</label><input id="goal_metric_name" value="${esc(m?.name||"")}" placeholder="예) 매출액(억), 만족도 점수" /></div>
+            <div class="form-grid">
+              <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="${esc(m?.startValue ?? 0)}" /></div>
+              <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="${esc(m?.targetValue ?? 100)}" /></div>
+            </div>
+          </div>
+          <div class="field"><label>(선택) 상세 설명</label><textarea id="goal_desc" rows="3">${esc(goal.description||"")}</textarea></div>
+          </div>
+          <div class="goal-tab-pane" data-goalpane="visibility" style="display:none;">
+            ${renderGoalVisibilitySettings(user, approver, goal.visibleUserIds || [], goal.visibility || "all")}
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeGoalEdit()">취소</button>
+          <button class="button" onclick="App.saveGoalEdit('${goal.id}')">${cycle.approvalEnabled ? "수정 및 재승인 요청" : "수정 저장"}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderGoalDetailPanel(goalId, user) {
+  const goal = state.goals.find(g => g.id === goalId);
+  if (!goal) return "";
+  const owner = userById(goal.ownerId);
+  const parent = goal.parentGoalId ? state.goals.find(g => g.id === goal.parentGoalId) : null;
+  const prog = goalDisplayProgress(goal, state.goals.filter(g => g.cycleId === goal.cycleId));
+  const isOwner = goal.ownerId === user.id;
+  const canFeedback = !isOwner && (["teamLead","divisionHead","president","chairman","admin"].includes(user.role));
+  // 체크인 기록·피드백은 본인 또는 조직장(피드백 권한자)만 열람 가능 (팀원은 타인 목표의 활동 비공개)
+  const canViewActivity = isOwner || canFeedback;
+  const cycle = state.goalCycles.find(c => c.id === goal.cycleId);
+
+  if (state.ui.goalCheckinMode && isOwner) {
+    return `
+    <div class="goal-side-panel">
+      <div class="goal-side-head">
+        <h2>체크인하기</h2>
+        <button onclick="App.closeGoalDetail()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+      </div>
+      <div class="goal-side-body">
+        <div class="component-card">
+          <strong>${esc(goal.title)}</strong>
+          <p class="muted" style="font-size:12px;margin-top:4px;">${GOAL_LEVEL_LABELS[goal.level]} · ${esc(owner?.name||"")}</p>
+        </div>
+        <div class="field"><label>상태 *</label>
+          <select id="checkin_status">${GOAL_STATUSES.map(s => `<option value="${s}" ${goal.status===s?"selected":""}>${GOAL_STATUS_LABELS[s]}</option>`).join("")}</select>
+        </div>
+        ${goal.metric ? `
+          <div class="field"><label>${esc(goal.metric.name)} (현재 값)</label>
+            <input type="number" id="checkin_value" value="${esc(goal.metric.currentValue)}" />
+            <span class="muted" style="font-size:11px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</span>
+          </div>` : ""}
+        <div class="field"><label>(선택) 코멘트</label><textarea id="checkin_comment" rows="4" placeholder="아무리 작은 일, 고민거리라도 기록해 주세요."></textarea></div>
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.closeGoalDetail()">취소</button>
+          <button class="button" onclick="App.saveGoalCheckin('${goal.id}')">제출하기</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="goal-side-panel">
+      <div class="goal-side-head">
+        <h2>목표 상세 정보</h2>
+        <button onclick="App.closeGoalDetail()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
+      </div>
+      <div class="goal-side-body">
+        ${goal.deleteRequest ? `<div class="notice warn" style="margin-bottom:12px;font-size:12px;">🗑️ 삭제 승인 대기 중입니다. (승인자: ${esc(userById(goal.deleteRequest.approverId)?.name||"-")})${isOwner?` <button class="button sm ghost" style="margin-left:6px;" onclick="App.cancelDeleteRequest('${goal.id}')">요청 취소</button>`:""}${(goal.deleteRequest.approverId===user.id)?` <button class="button sm danger" onclick="App.approveGoalDelete('${goal.id}')">삭제 승인</button> <button class="button sm secondary" onclick="App.rejectGoalDelete('${goal.id}')">반려</button>`:""}</div>` : ""}
+        <div class="component-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <strong style="font-size:15px;">${esc(goal.title)}</strong>
+            ${isOwner && !goal.deleteRequest ? `<div class="toolbar"><button class="button sm secondary" onclick="App.openGoalEdit('${goal.id}')">수정</button><button class="button sm danger" onclick="App.deleteGoal('${goal.id}')">삭제</button></div>` : ""}
+          </div>
+          <div class="goal-info-rows">
+            <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+            <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
+            <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
+            <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
+            <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
+            <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
+            ${goal.metric ? `<div><span>지표</span><b>${esc(goal.metric.name)}</b></div><div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
+            <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?("반려"+(goal.rejectReason?` (${esc(goal.rejectReason)})`:"")):"임시 저장"}</b></div>
+            <div><span>공개 범위</span><b>${goal.visibility==="partial"?`일부 공개${goalVisibleNames(goal)?` · ${esc(goalVisibleNames(goal))}`:""}`:"전체 공개"}</b></div>
+          </div>
+        </div>
+
+        <div style="margin:14px 0 8px;font-weight:700;">현재 진행 상태</div>
+        <div>${goalStatusBadge(goal.status)}</div>
+        ${goal.metric ? `
+        <div class="component-card" style="margin-top:10px;">
+          <strong>${esc(goal.metric.name)}</strong>
+          <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);">
+            <span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</div>
+        </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
+
+        <div class="toolbar" style="margin:12px 0;">
+          ${isOwner && !cycle?.readOnly ? `<button class="button" onclick="App.openGoalCheckin('${goal.id}')">✓ 체크인하기</button>` : ""}
+          ${goal.approvalStatus==="draft" && isOwner ? `<button class="button ghost" onclick="App.requestGoalApproval('${goal.id}')">승인 요청</button>` : ""}
+        </div>
+
+        <!-- 체크인 / 피드백 / 변경 이력 (본인 또는 조직장만 열람) -->
+        ${!canViewActivity ? `<div class="notice" style="margin-top:14px;font-size:12px;color:var(--muted);">체크인 기록과 피드백은 목표 담당자와 조직장만 확인할 수 있습니다.</div>` : (() => {
+          const activeTab = state.ui.goalDetailTab || "checkin";
+          const tabBtn = (k, label, count) => `<button onclick="App.setGoalDetailTab('${k}')" class="goal-detail-tab ${activeTab===k?"active":""}">${label}${count!=null?` <span class="goal-tab-count">${count}</span>`:""}</button>`;
+          const checkins = goal.checkins || [];
+          const feedbacks = goal.feedbacks || [];
+          const history = goal.history || [];
+          let body = "";
+          if (activeTab === "checkin") {
+            body = checkins.length ? checkins.map(ci => {
+              const by = userById(ci.by);
+              return `<div class="goal-checkin-item">
+                <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
+                <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
+                ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
+                ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
+              </div>`;
+            }).join("") : `<p class="muted" style="font-size:12px;">아직 체크인 기록이 없습니다.</p>`;
+          } else if (activeTab === "feedback") {
+            body = (feedbacks.length ? feedbacks.map(fb => {
+              const by = userById(fb.by);
+              return `<div class="goal-feedback-item">
+                <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(fb.at))}</span></div>
+                <div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(fb.text)}</div>
+              </div>`;
+            }).join("") : `<p class="muted" style="font-size:12px;">아직 피드백이 없습니다.</p>`)
+            + (canFeedback ? `
+              <div class="field" style="margin-top:10px;">
+                <textarea id="goal_fb_input_${goal.id}" rows="2" placeholder="구성원에게 피드백을 남겨보세요."></textarea>
+              </div>
+              <button class="button secondary" onclick="App.addGoalFeedback('${goal.id}')">피드백 등록</button>` : "");
+          } else {
+            body = history.length ? history.slice().reverse().map(h => {
+              const by = userById(h.by);
+              return `<div class="goal-checkin-item">
+                <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(h.at))}</span></div>
+                <div style="font-size:12px;margin-top:4px;">${esc(h.summary||"목표 수정")}</div>
+                ${(h.changes||[]).map(c => `<div style="font-size:11.5px;margin-top:3px;color:var(--muted);">· ${esc(c)}</div>`).join("")}
+              </div>`;
+            }).join("") : `<p class="muted" style="font-size:12px;">변경 이력이 없습니다.</p>`;
+          }
+          return `
+          <div class="goal-detail-tabs">
+            ${tabBtn("checkin","체크인",checkins.length)}
+            ${tabBtn("feedback","피드백",feedbacks.length)}
+            ${tabBtn("history","변경 이력",history.length)}
+          </div>
+          <div class="goal-detail-tab-body">${body}</div>`;
+        })()}
+      </div>
+    </div>`;
+}
+
+function renderGoalApproval(user) {
+  const activeCycles = state.goalCycles.filter(c => c.status === "active");
+  if (!activeCycles.length) return `<div class="empty" style="padding:40px 0;">현재 진행 중인 목표 사이클이 없습니다.</div>`;
+  const pending = state.goals.filter(g => g.approvalStatus === "requested" && g.approverId === user.id);
+  const history = state.goals.filter(g => ["approved","rejected"].includes(g.approvalStatus) && g.approverId === user.id);
+  const deletePending = state.goals.filter(g => g.deleteRequest && g.deleteRequest.approverId === user.id);
+  const row = (g, showActions) => {
+    const owner = userById(g.ownerId);
+    const names = goalVisibleNames(g);
+    const visCell = g.visibility === "partial"
+      ? `<span class="pill blue" title="${esc(names)}">일부 공개</span><div class="muted goal-vis-names" style="font-size:11px;margin-top:2px;">${esc(names || "-")}</div>`
+      : `<span class="pill green">전체 공개</span>`;
+    return `<tr>
+      <td>${g.approvalStatus==="requested"?'<span class="pill amber">대기</span>':g.approvalStatus==="approved"?'<span class="pill green">승인</span>':'<span class="pill red">반려</span>'}</td>
+      <td><button onclick="App.openGoalDetail('${g.id}')" style="background:none;border:none;padding:0;cursor:pointer;"><strong style="color:var(--primary);">${esc(g.title)}</strong></button></td>
+      <td>${GOAL_LEVEL_LABELS[g.level]||"-"}</td>
+      <td>${esc(g.team||g.division||"-")}</td>
+      <td>${esc(owner?.name||"-")}</td>
+      <td>${visCell}</td>
+      <td>${showActions?`<div class="toolbar"><button class="button sm" onclick="App.approveGoal('${g.id}')">승인</button><button class="button sm danger" onclick="App.rejectGoal('${g.id}')">반려</button></div>`:`<span class="muted" style="font-size:12px;">${esc(formatDateTime(g.approvedAt||g.createdAt))}</span>`}</td>
+    </tr>`;
+  };
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>승인 대기 목표</h2></div><span class="pill ${pending.length?"amber":"green"}">${pending.length}건 대기</span></div>
+      <div class="panel-body">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>승인 상태</th><th>목표</th><th>레벨</th><th>담당 조직</th><th>담당자</th><th>공개 범위</th><th>처리</th></tr></thead>
+            <tbody>${pending.length ? pending.map(g => row(g, true)).join("") : `<tr><td colspan="7"><div class="empty" style="padding:24px;">승인 대기 중인 목표가 없습니다.</div></td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    ${deletePending.length ? `<section class="panel"><div class="panel-head"><div><h2>삭제 승인 대기</h2><p class="muted">구성원이 요청한 목표 삭제를 검토합니다.</p></div><span class="pill amber">${deletePending.length}건</span></div>
+      <div class="panel-body"><div class="table-wrap"><table>
+        <thead><tr><th>목표</th><th>레벨</th><th>담당 조직</th><th>담당자</th><th>요청일</th><th>처리</th></tr></thead>
+        <tbody>${deletePending.map(g => { const owner=userById(g.ownerId); return `<tr>
+          <td><button onclick="App.openGoalDetail('${g.id}')" style="background:none;border:none;padding:0;cursor:pointer;"><strong style="color:var(--primary);">${esc(g.title)}</strong></button></td>
+          <td>${GOAL_LEVEL_LABELS[g.level]||"-"}</td><td>${esc(g.team||g.division||"-")}</td><td>${esc(owner?.name||"-")}</td>
+          <td><span class="muted" style="font-size:12px;">${esc(formatDateTime(g.deleteRequest.at))}</span></td>
+          <td><div class="toolbar"><button class="button sm danger" onclick="App.approveGoalDelete('${g.id}')">삭제 승인</button><button class="button sm secondary" onclick="App.rejectGoalDelete('${g.id}')">반려</button></div></td>
+        </tr>`; }).join("")}</tbody></table></div></div></section>` : ""}
+    ${history.length ? `<section class="panel"><div class="panel-head"><h2>처리 완료 이력</h2></div><div class="panel-body"><div class="table-wrap"><table>
+      <thead><tr><th>승인 상태</th><th>목표</th><th>레벨</th><th>담당 조직</th><th>담당자</th><th>공개 범위</th><th>처리일</th></tr></thead>
+      <tbody>${history.map(g => row(g, false)).join("")}</tbody></table></div></div></section>` : ""}
+    ${state.ui.goalDetailId ? renderGoalDetailPanel(state.ui.goalDetailId, user) : ""}
+  `;
+}
+
+// ───────────────────────── 성장 기록 조회 ─────────────────────────
+// 뷰어가 볼 수 있는 구성원 (팀장→팀원 / 본부장→본부 / 사장·회장·어드민→전원)
+function dashboardViewableUsers(viewer) {
+  const all = state.users.filter((u) => u.role !== "admin" && !isRetired(u) && u.id !== viewer.id);
+  if (["president", "chairman", "admin"].includes(viewer.role)) return all.sort(compareEmployeesForDisplay);
+  if (viewer.role === "divisionHead") return all.filter((u) => (u.division || "") === (viewer.division || "")).sort(compareEmployeesForDisplay);
+  if (viewer.role === "teamLead") return all.filter((u) => (u.division || "") === (viewer.division || "") && (u.team || "") === (viewer.team || "")).sort(compareEmployeesForDisplay);
+  return [];
+}
+
+function dashboardAvatar(u) {
+  const ROLE_COLORS = { president: "#d97706", chairman: "#7c3aed", divisionHead: "#059669", teamLead: "#2563eb", member: "#374151" };
+  return `<div class="dash-avatar" style="background:${ROLE_COLORS[u.role] || "#374151"}">${esc((u.name || "?").slice(0, 2))}</div>`;
+}
+
+// 목표 상태 도넛
+function goalStatusDonut(goals) {
+  const total = goals.length;
+  const counts = Object.fromEntries(GOAL_STATUSES.map((s) => [s, 0]));
+  goals.forEach((g) => { counts[g.status] = (counts[g.status] || 0) + 1; });
+  let acc = 0;
+  const stops = [];
+  GOAL_STATUSES.forEach((s) => {
+    const c = counts[s];
+    if (!c) return;
+    const start = (acc / total) * 100;
+    acc += c;
+    const end = (acc / total) * 100;
+    stops.push(`${GOAL_STATUS_COLORS[s]} ${start}% ${end}%`);
+  });
+  const grad = stops.length ? `conic-gradient(${stops.join(",")})` : "var(--line)";
+  const legend = GOAL_STATUSES.filter((s) => counts[s]).map((s) =>
+    `<span class="dash-legend"><i style="background:${GOAL_STATUS_COLORS[s]}"></i>${GOAL_STATUS_LABELS[s]} ${counts[s]}</span>`).join("");
+  return `
+    <div class="dash-donut-wrap">
+      <div class="dash-donut" style="background:${grad}"><div class="dash-donut-hole"><span>총 ${total}개</span></div></div>
+      <div class="dash-legend-row">${legend || `<span class="muted">데이터 없음</span>`}</div>
+    </div>`;
+}
+
+// 대시보드 - 목표 섹션
+function renderDashboardGoalModal(user) {
+  const goalId = state.ui.dashboardGoalDetailId;
+  const goal = state.goals.find(g => g.id === goalId);
+  if (!goal) return "";
+  const owner = userById(goal.ownerId);
+  const parent = goal.parentGoalId ? state.goals.find(g => g.id === goal.parentGoalId) : null;
+  const prog = goalDisplayProgress(goal, state.goals.filter(g => g.cycleId === goal.cycleId));
+  const cycle = state.goalCycles.find(c => c.id === goal.cycleId);
+  const activeTab = state.ui.dashboardGoalTab || "checkin";
+  const tabBtn = (k, label, count) => `<button onclick="App.setDashboardGoalTab('${k}')" class="goal-detail-tab ${activeTab===k?"active":""}">${label}${count!=null?` <span class="goal-tab-count">${count}</span>`:""}</button>`;
+  const checkins = goal.checkins || [];
+  const feedbacks = goal.feedbacks || [];
+  const history = goal.history || [];
+
+  let tabBody = "";
+  if (activeTab === "checkin") {
+    tabBody = checkins.length ? checkins.map(ci => {
+      const by = userById(ci.by);
+      return `<div class="goal-checkin-item">
+        <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
+        <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
+        ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
+        ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
+      </div>`;
+    }).join("") : `<p class="muted" style="font-size:12px;">아직 체크인 기록이 없습니다.</p>`;
+  } else if (activeTab === "feedback") {
+    tabBody = feedbacks.length ? feedbacks.map(fb => {
+      const by = userById(fb.by);
+      return `<div class="goal-feedback-item">
+        <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(fb.at))}</span></div>
+        <div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(fb.text)}</div>
+      </div>`;
+    }).join("") : `<p class="muted" style="font-size:12px;">아직 피드백이 없습니다.</p>`;
+  } else {
+    tabBody = history.length ? history.slice().reverse().map(h => {
+      const by = userById(h.by);
+      return `<div class="goal-checkin-item">
+        <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(h.at))}</span></div>
+        <div style="font-size:12px;margin-top:4px;">${esc(h.summary||"목표 수정")}</div>
+        ${(h.changes||[]).map(c=>`<div style="font-size:11.5px;margin-top:3px;color:var(--muted);">· ${esc(c)}</div>`).join("")}
+      </div>`;
+    }).join("") : `<p class="muted" style="font-size:12px;">변경 이력이 없습니다.</p>`;
+  }
+
+  return `
+    <div class="goal-modal-overlay" style="z-index:600;" onclick="if(event.target===this)App.closeDashboardGoalDetail()">
+      <div class="goal-modal" style="max-width:480px;width:96%;max-height:92vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>목표 상세 정보</h2>
+          <button class="modal-x" onclick="App.closeDashboardGoalDetail()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:16px;">
+          <div class="component-card">
+            <strong style="font-size:15px;">${esc(goal.title)}</strong>
+            <div class="goal-info-rows">
+              <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+              <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
+              <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
+              <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
+              <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
+              <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
+              ${goal.metric ? `<div><span>지표</span><b>${esc(goal.metric.name)}</b></div><div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+              <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
+              <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?("반려"+(goal.rejectReason?` (${esc(goal.rejectReason)})`:"")):"임시 저장"}</b></div>
+              <div><span>공개 범위</span><b>${goal.visibility==="partial"?`일부 공개${goalVisibleNames(goal)?` · ${esc(goalVisibleNames(goal))}`:""}`:"전체 공개"}</b></div>
+            </div>
+          </div>
+
+          <div style="margin:14px 0 8px;font-weight:700;">현재 진행 상태</div>
+          <div>${goalStatusBadge(goal.status)}</div>
+          ${goal.metric ? `
+          <div class="component-card" style="margin-top:10px;">
+            <strong>${esc(goal.metric.name)}</strong>
+            <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);">
+              <span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</div>
+          </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
+
+          <div class="goal-detail-tabs" style="margin-top:16px;">
+            ${tabBtn("checkin","체크인",checkins.length)}
+            ${tabBtn("feedback","피드백",feedbacks.length)}
+            ${tabBtn("history","변경 이력",history.length)}
+          </div>
+          <div class="goal-detail-tab-body">${tabBody}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderDashboardGoalsSection(target) {
+  const goals = state.goals.filter((g) => g.ownerId === target.id);
+  const allForProgress = state.goals;
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>🎯 목표</h2></div></div>
+      <div class="panel-body">
+        ${!goals.length ? `<div class="empty" style="padding:24px;">담당 목표가 없습니다.</div>` : `
+          ${goalStatusDonut(goals)}
+          <div class="table-wrap" style="margin-top:14px;">
+            <table>
+              <thead><tr><th>목표</th><th>진행률</th><th>상태</th><th>체크인</th><th>레벨</th><th>사이클</th></tr></thead>
+              <tbody>
+                ${goals.map((g) => {
+                  const prog = goalDisplayProgress(g, allForProgress);
+                  const cycle = state.goalCycles.find(c => c.id === g.cycleId);
+                  const cycleInfo = cycle
+                    ? `<div style="font-size:12px;font-weight:600;">${esc(cycle.name)}</div><div style="font-size:11px;color:var(--muted);">${esc(cycle.start||"")} ~ ${esc(cycle.end||"")}</div>`
+                    : `<span class="muted">-</span>`;
+                  return `<tr style="cursor:pointer;" onclick="App.openDashboardGoalDetail('${g.id}')" title="클릭하여 목표 상세 보기">
+                    <td><strong style="color:var(--primary);">${esc(g.title)}</strong></td>
+                    <td><div class="bar" style="min-width:90px;"><span style="width:${prog}%;"></span></div><span class="muted" style="font-size:11px;">${prog}%</span></td>
+                    <td>${goalStatusBadge(g.status)}</td>
+                    <td>${(g.checkins || []).length}개</td>
+                    <td>${GOAL_LEVEL_LABELS[g.level] || "-"}</td>
+                    <td>${cycleInfo}</td>
+                  </tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>`}
+      </div>
+    </section>`;
+}
+
+// 한 사이클의 평가 결과 카드 (활성 컨텍스트가 해당 사이클로 설정된 상태에서 호출)
+// ignorePublished=true: 멤버 대시보드(관리자)는 미공개 AI 피드백·성향분석도 표시
+function dashboardEvalCardHtml(target, cycle, evaluation, published, ignorePublished) {
+  const result = calculateFinal(target.id);
+  const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const showCoverResult = visibility.finalGrade || visibility.finalScore;
+
+  const summaryComponents = [
+    ...(visibility.summary ? COMPONENTS : []),
+    ...(visibility.upwardSummary ? ["upward"] : []),
+    ...(visibility.peerSummary ? ["peer"] : []),
+  ];
+
+  const feedback = getPublishedFeedback(evaluation, target, visibility);
+  const hasFeedback = visibility.finalFeedback !== false && feedback;
+  const hasAIFeedback = !!(evaluation?.aiFeedback?.generatedAt);
+
+  return `
+    <div style="border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--line);">
+        <strong style="font-size:16px;">${esc(cycle.name)}</strong>
+        ${published ? `<span class="pill green">공개</span>` : `<span class="pill amber">미공개</span>`}
+      </div>
+
+      ${showCoverResult ? `
+      <div class="dash-eval-grid" style="margin-bottom:16px;">
+        ${visibility.finalGrade ? `<div class="dash-eval-card"><span>최종 등급</span><strong class="grade-text grade-${result.finalGrade}">${esc(result.finalGrade || "-")}</strong></div>` : ""}
+        ${visibility.finalScore ? `<div class="dash-eval-card"><span>종합 점수</span><strong>${esc(result.scoreText || "-")}</strong></div>` : ""}
+      </div>` : ""}
+
+      ${summaryComponents.length ? `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:700;margin-bottom:10px;">평가 요약</div>
+        <div class="grid" style="gap:8px;">
+          ${summaryComponents.map((component) => {
+            const item = result.componentScores[component];
+            return `<div>
+              <div class="toolbar" style="justify-content:space-between;">
+                <strong style="font-size:13px;">${WEIGHT_COMPONENT_LABELS[component]}</strong>
+                <span class="score" style="font-size:13px;">${item?.text || "-"}</span>
+              </div>
+              <div class="bar"><span style="width:${Math.max(0, Math.min(100, item?.value || 0))}%;"></span></div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>` : ""}
+
+      ${renderAIFeedbackPanels(evaluation, visibility, ignorePublished)}
+      ${renderEvaluatorTendencyPanel(target, visibility, ignorePublished)}
+
+      ${!showCoverResult && !summaryComponents.length && !hasAIFeedback ? `
+      <div class="empty" style="padding:12px 0;">현재 공개된 리포트 항목이 없습니다.</div>` : ""}
+    </div>`;
+}
+
+// 대시보드 - 평가 결과/피드백 섹션 (모든 사이클 이력)
+// requirePublished=true (나의 대시보드): 어드민이 공개한 결과만 노출
+// requirePublished=false (멤버 대시보드): 평가자 권한으로 미공개 포함 노출
+function renderDashboardEvalSection(target, requirePublished) {
+  // 최근 사이클 순으로 정렬
+  const cycles = [...(state.cycles || [])].sort((a, b) =>
+    String(b.createdAt || b.id).localeCompare(String(a.createdAt || a.id)));
+  const cards = [];
+  cycles.forEach((c) => {
+    const evaluation = c.evaluations?.[target.id];
+    if (!evaluation) return;
+    const targetInCycle = (c.usersSnapshot || []).find((u) => u.id === target.id) || target;
+    if (!isEvaluatee(targetInCycle)) return;
+    const published = Boolean(c.resultsVisible && evaluation.published);
+    if (requirePublished && !published) return; // 공개되지 않은 평가는 제외
+    // 해당 사이클 컨텍스트에서 결과 계산
+    const card = withCycle(c.id, () => {
+      const ev = c.evaluations?.[target.id];
+      if (!ev) return "";
+      return dashboardEvalCardHtml(targetInCycle, c, ev, published, !requirePublished);
+    });
+    if (card) cards.push(card);
+  });
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>📝 평가 결과</h2></div>
+      </div>
+      <div class="panel-body">
+        ${cards.length ? cards.join("") : `<div class="empty" style="padding:24px;">${requirePublished ? "공개된 평가 결과가 없습니다." : "평가 결과 데이터가 없습니다."}</div>`}
+      </div>
+    </section>`;
+}
+
+function renderDashboardHeader(target, showExcel = false) {
+  const orgText = [target.orgRoot, target.division, target.team].filter((v) => v && v !== "미지정").join(" / ") || "조직 없음";
+  return `
+    <section class="panel">
+      <div class="panel-body" style="display:flex;align-items:center;gap:16px;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:16px;">
+          ${dashboardAvatar(target)}
+          <div>
+            <h2 style="margin:0;">${esc(target.name)} <span class="pill blue" style="margin-left:6px;">${ROLE_LABELS[target.role] || target.role}</span></h2>
+            <p class="muted" style="margin:4px 0 0;">${esc(target.email || "-")} · ${esc(orgText)}</p>
+          </div>
+        </div>
+        ${showExcel ? `<button class="button secondary" onclick="App.exportMyDashboard()">📥 엑셀 다운로드</button>` : ""}
+      </div>
+    </section>`;
+}
+
+// 나의 대시보드
+function renderMyDashboard(user) {
+  return `
+    <div class="grid">
+      ${renderDashboardHeader(user, true)}
+      ${renderDashboardGoalsSection(user)}
+      ${renderDashboardEvalSection(user, true)}
+    </div>
+    ${state.ui.dashboardGoalDetailId ? renderDashboardGoalModal(user) : ""}`;
+}
+
+// 멤버 대시보드 (목록 → 상세)
+function renderMemberDashboard(viewer) {
+  const viewable = dashboardViewableUsers(viewer);
+  const targetId = state.ui.dashboardMemberId || "";
+  const target = targetId ? viewable.find((u) => u.id === targetId) : null;
+  if (target) {
+    return `
+      <div class="grid">
+        <div class="dash-breadcrumb" style="justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <button class="button ghost sm" onclick="App.clearDashboardMember()">← 목록으로</button>
+            <span class="muted" style="font-size:13px;">멤버 대시보드 / ${esc(target.name)}</span>
+          </div>
+          <button class="button secondary" onclick="App.exportMemberDashboard('${esc(target.id)}')">📥 엑셀 다운로드</button>
+        </div>
+        ${renderDashboardHeader(target)}
+        ${renderDashboardGoalsSection(target)}
+        ${renderDashboardEvalSection(target, false)}
+      </div>
+      ${state.ui.dashboardGoalDetailId ? renderDashboardGoalModal(viewer) : ""}`;
+  }
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>구성원</h2></div></div>
+      <div class="panel-body">
+        <div class="field" style="max-width:360px;">
+          <input id="dash_member_search" placeholder="이름·이메일로 검색" oninput="App.filterDashboardMembers(this.value)" />
+        </div>
+        <div style="font-weight:700;margin:14px 0 8px;">전체 (${viewable.length})</div>
+        ${!viewable.length ? `<div class="empty" style="padding:24px;">조회 가능한 구성원이 없습니다.</div>` : `
+          <div class="dash-member-list">
+            ${viewable.map((u) => {
+              const orgText = [u.division, u.team].filter((v) => v && v !== "미지정").join(" · ") || "조직 없음";
+              return `<button class="dash-member-row" data-search="${esc(((u.name || "") + " " + (u.email || "")).toLowerCase())}" onclick="App.openDashboardMember('${u.id}')">
+                ${dashboardAvatar(u)}
+                <div class="dash-member-info">
+                  <strong>${esc(u.name)}</strong>
+                  <span class="muted">${esc(u.email || "-")}</span>
+                  <span class="muted">${esc(orgText)}</span>
+                </div>
+                <span class="pill blue">${ROLE_LABELS[u.role] || u.role}</span>
+              </button>`;
+            }).join("")}
+          </div>`}
+      </div>
+    </section>`;
+}
+
+function renderGoalCycles(user) {
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>사이클 운영 관리</h2><p class="muted">관리자만 목표 사이클을 만들고 운영할 수 있어요.</p></div>
+        <div class="toolbar">
+          <button class="button secondary" onclick="App.injectGoalDummyData()" title="현재 사이클에 조직도 기반 더미 목표를 생성합니다.">🎲 목표 더미 데이터 주입</button>
+          <button class="button" onclick="App.openGoalCycleModal()">+ 새로운 사이클</button>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        ${state.goalCycles.map(c => {
+          const goalCount = state.goals.filter(g => g.cycleId === c.id).length;
+          return `<div class="component-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div>
+                <strong style="font-size:15px;">📌 ${esc(c.name)}</strong>
+                <p class="muted" style="font-size:12px;margin-top:2px;">${esc(c.start||"")} ~ ${esc(c.end||"")}</p>
+              </div>
+              <button class="button sm danger" onclick="App.deleteGoalCycle('${c.id}')">삭제</button>
+            </div>
+            <div style="display:flex;gap:24px;margin-top:14px;flex-wrap:wrap;font-size:13px;">
+              <div><div class="muted" style="font-size:11px;">읽기 전용</div>
+                <label class="result-open-toggle" style="margin-top:4px;"><input type="checkbox" ${c.readOnly?"checked":""} onchange="App.toggleGoalCycleReadOnly('${c.id}')"/> ${c.readOnly?"켜짐":"꺼짐"}</label>
+              </div>
+              <div><div class="muted" style="font-size:11px;">승인 기능</div><div style="margin-top:6px;font-weight:700;">${c.approvalEnabled?"✓ 사용":"미사용"}</div></div>
+              <div><div class="muted" style="font-size:11px;">등록된 목표</div><div style="margin-top:6px;font-weight:700;">${goalCount}개</div></div>
+              <div><div class="muted" style="font-size:11px;">상태</div><div style="margin-top:6px;font-weight:700;">${c.status==="active"?"진행중":"종료"}</div></div>
+            </div>
+            <div class="field" style="margin-top:12px;max-width:280px;">
+              <label style="font-size:11px;" class="muted">팀원 목표 조회 범위</label>
+              <select onchange="App.setGoalCycleMemberScope('${c.id}', this.value)">
+                ${Object.entries(GOAL_MEMBER_SCOPE_LABELS).map(([k, v]) => `<option value="${k}" ${(c.memberScope || "team") === k ? "selected" : ""}>${v}</option>`).join("")}
+              </select>
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+    </section>
+    ${state.ui.goalCycleModal ? renderGoalCycleModal() : ""}
+  `;
+}
+
+function renderGoalCycleModal() {
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeGoalCycleModal()">
+      <div class="goal-modal">
+        <div class="goal-modal-head"><h2>사이클 정보를 입력해 주세요</h2><button onclick="App.closeGoalCycleModal()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button></div>
+        <div class="goal-modal-body">
+          <div class="field"><label>사이클명 *</label><input id="gc_name" placeholder="예) 26년 상반기, 1분기" /></div>
+          <div class="form-grid">
+            <div class="field"><label>시작일</label><input type="date" id="gc_start" value="2026-01-01" /></div>
+            <div class="field"><label>종료일</label><input type="date" id="gc_end" value="2026-12-31" /></div>
+          </div>
+          <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="gc_approval" checked /> 승인 기능 사용 (목표를 차상위 조직장이 승인)</label></div>
+          <div class="field"><label for="gc_member_scope">팀원 목표 조회 범위</label>
+            <select id="gc_member_scope">
+              ${Object.entries(GOAL_MEMBER_SCOPE_LABELS).map(([k, v]) => `<option value="${k}" ${k === "team" ? "selected" : ""}>${v}</option>`).join("")}
+            </select>
+            <span class="muted" style="font-size:11px;">팀원(구성원)이 목표 관리에서 어디까지 다른 사람의 목표를 볼 수 있는지 설정합니다.</span>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeGoalCycleModal()">취소</button>
+          <button class="button" onclick="App.createGoalCyclePrompt()">만들기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderGoalCycleEditModal() {
+  const cycleId = state.ui.goalCycleEditModal;
+  const c = state.goalCycles.find(x => x.id === cycleId);
+  if (!c) return "";
+  return `
+    <div class="goal-modal-overlay" style="z-index:530;" onclick="if(event.target===this)App.closeGoalCycleEdit()">
+      <div class="goal-modal" style="max-width:480px;width:96%;">
+        <div class="goal-modal-head"><h2>사이클 설정 편집</h2><button onclick="App.closeGoalCycleEdit()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button></div>
+        <div class="goal-modal-body">
+          <div class="field"><label>사이클명</label><input id="gce_name" value="${esc(c.name)}" /></div>
+          <div class="form-grid">
+            <div class="field"><label>시작일</label><input type="date" id="gce_start" value="${esc(c.start||"")}" /></div>
+            <div class="field"><label>종료일</label><input type="date" id="gce_end" value="${esc(c.end||"")}" /></div>
+          </div>
+          <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="gce_approval" ${c.approvalEnabled?"checked":""} /> 승인 기능 사용
+          </label></div>
+          <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="gce_readonly" ${c.readOnly?"checked":""} /> 읽기 전용
+          </label></div>
+          <div class="field"><label for="gce_status">상태</label>
+            <select id="gce_status">
+              <option value="active" ${c.status==="active"?"selected":""}>진행중</option>
+              <option value="ended" ${c.status!=="active"?"selected":""}>종료</option>
+            </select>
+          </div>
+          <div class="field"><label for="gce_member_scope">팀원 목표 조회 범위</label>
+            <select id="gce_member_scope">
+              ${Object.entries(GOAL_MEMBER_SCOPE_LABELS).map(([k,v]) => `<option value="${k}" ${(c.memberScope||"team")===k?"selected":""}>${v}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeGoalCycleEdit()">취소</button>
+          <button class="button" onclick="App.saveGoalCycleEdit('${c.id}')">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+window.App = App;
+try {
+  render();
+} catch(e) {
+  console.error("render() 오류:", e);
+  document.getElementById("app").innerHTML = `<div style="padding:40px;color:red;font-family:monospace;white-space:pre-wrap;"><strong>초기 렌더링 오류</strong>\n\n${e.stack || e.message}</div>`;
+}
+
+// 앱 시작 시: stuck된 pending AI 평가를 초기화하고 미완료 AI 평가 자동 재시작
+(function resumePendingAIEvals() {
+  let needsSave = false;
+  (state.cycles || []).forEach(cycle => {
+    if (!cycle.useAIEval) return;
+    const evals = cycle.evaluations || {};
+    Object.keys(evals).forEach(uid => {
+      const ev = evals[uid];
+      // pending 상태 → null로 초기화 (이전 세션에서 중단된 것)
+      if (ev?.aiEval?.status === "pending") {
+        ev.aiEval = null;
+        needsSave = true;
+      }
+    });
+  });
+  if (needsSave) saveState();
+
+  // 미완료 AI 평가 비동기로 재시작 (3개 병렬 처리)
+  (async () => {
+    const pending = [];
+    for (const cycle of (state.cycles || [])) {
+      if (!cycle.useAIEval) continue;
+      const evals = cycle.evaluations || {};
+      for (const uid of Object.keys(evals)) {
+        const ev = evals[uid];
+        if (ev?.status?.self !== "submitted") continue;
+        if (ev?.aiEval?.status === "done") continue;
+        pending.push({ cycle, uid });
+      }
+    }
+    const queue = [...pending];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        // cycleId를 직접 전달 — state.activeCycleId를 건드리지 않음
+        try { await callAIPerformanceEval(item.uid, true, item.cycle.id); } catch (_) {}
+        saveState();
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    render();
+  })();
+})();
