@@ -1,0 +1,6 @@
+node_modules/
+database/state.json
+database/state.json.tmp
+.env
+*.log
+.claude/
