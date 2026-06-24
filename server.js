@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Supabase 설정 (환경변수로 주입) ─────────────────────────────────────────
-const SUPABASE_URL   = process.env.SUPABASE_URL;   // https://xxxx.supabase.co
+const SUPABASE_URL   = (process.env.SUPABASE_URL || "").replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "") || undefined;   // https://xxxx.supabase.co
 const SUPABASE_KEY   = process.env.SUPABASE_KEY;   // anon public key
 const TABLE          = "app_state";
 const STATE_KEY      = "main";
