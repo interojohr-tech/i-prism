@@ -31,11 +31,16 @@ async function dbGet() {
 
 async function dbSet(data) {
   if (!SUPABASE_URL) return writeLocalFile(data);
-  await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
     method: "POST",
     headers: { ...supaHeaders(), "Prefer": "resolution=merge-duplicates" },
     body: JSON.stringify({ key: STATE_KEY, value: data }),
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Supabase 저장 실패 [${res.status}]: ${body}`);
+  }
+  console.log("Supabase 저장 성공");
 }
 
 function supaHeaders() {
