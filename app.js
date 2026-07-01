@@ -136,7 +136,69 @@ const TAB_LABELS = {
   myDashboard: "나의 성장 기록",
   memberDashboard: "구성원 성장 기록",
   evalDashboard: "평가 운영 현황",
+  notices: "공지사항 관리",
 };
+
+// 탭별 아이콘 매핑
+const TAB_ICONS = {
+  home: "🏠", cycleDashboard: "📊", self: "✏️", tasks: "📋", resultSubmit: "⚖️",
+  results: "📈", approval: "✅", report: "📄",
+  admin: "⚙️", finalAdjust: "🛠️", feedbackMgmt: "💬", organization: "🏢",
+  goals: "🎯", goalApproval: "🗂️", goalCycles: "🔄",
+  myDashboard: "📒", memberDashboard: "📊",
+  evalDashboard: "📊",
+  notices: "📢",
+};
+
+// ── 사이트맵(어드민 전용): 계정 유형별 메뉴 구조 안내 ──
+// 역할 표시 순서 (조직 위계 순): 어드민 · 회장 · 사장 · 본부장 · 팀장 · 팀원
+const SITEMAP_ROLES = ["admin", "chairman", "president", "divisionHead", "teamLead", "member"];
+
+// 화면별 한 줄 설명
+const SITEMAP_TAB_DESC = {
+  home:            "로그인 후 첫 화면. 나의 평가 현황과 할 일을 요약해서 보여줍니다.",
+  self:            "본인의 업적·역량·자세태도 항목을 스스로 작성하는 자기평가 화면입니다.",
+  tasks:           "내가 처리해야 할 평가(1차·2차·상향·동료 평가 등)를 모아서 보여줍니다.",
+  resultSubmit:    "본부장이 소속 조직의 평가 결과를 종합하여 제출하는 화면입니다.",
+  results:         "확정된 최종 평가 결과를 조회하는 화면입니다.",
+  approval:        "사장·회장이 최종 평가 결과를 승인하는 화면입니다.",
+  report:          "본인의 평가 리포트(등급·피드백 등)를 확인하는 화면입니다.",
+  goals:           "개인·팀·본부·회사 목표를 등록하고 진행 상황을 관리합니다.",
+  goalApproval:    "하위 구성원이 등록한 목표를 검토·승인하는 화면입니다.",
+  myDashboard:     "나의 과거 평가·성장 이력을 시계열로 조회합니다.",
+  memberDashboard: "소속 구성원들의 평가·성장 이력을 조회합니다.",
+  admin:           "평가 사이클을 생성·설정하고 진행 전반을 관리하는 어드민 전용 화면입니다.",
+  organization:    "조직도·계정·발령 등 조직 정보를 관리하는 어드민 전용 화면입니다.",
+  evalDashboard:   "전체 평가 진행 현황과 통계를 모아보는 어드민 전용 화면입니다.",
+  notices:         "전 직원 대상 공지사항을 작성·관리하는 어드민 전용 화면입니다.",
+};
+
+// 전체 구조 매트릭스에서 사용하는 섹션 순서 (실제 사이드바 그룹핑 기준)
+const SITEMAP_SECTIONS = [
+  { label: "나의 평가",      tabs: ["home", "self", "report"] },
+  { label: "평가 관리",      tabs: ["tasks", "resultSubmit", "approval", "results", "admin", "evalDashboard"] },
+  { label: "목표 관리",      tabs: ["goals", "goalApproval"] },
+  { label: "성장 기록 조회", tabs: ["myDashboard", "memberDashboard"] },
+  { label: "시스템 관리",    tabs: ["organization", "notices"] },
+];
+
+// 역할별 노출 메뉴 목록. getVisibleTabs()와 동일한 규칙을 따르되,
+// 사이클 진행 상태·개인별 배정 현황 등 유동적인 조건은 "구조상 노출 가능"으로 간주해 항상 포함한다.
+function getSiteMapTabs(role) {
+  const tabs = role === "admin" ? [] : ["home"];
+  if (EVALUATEE_ROLES.includes(role)) tabs.push("self");
+  if (["president", "chairman", "divisionHead", "teamLead", "member"].includes(role)) tabs.push("tasks");
+  if (role === "divisionHead") tabs.push("resultSubmit");
+  if (["president", "chairman", "divisionHead", "teamLead"].includes(role)) tabs.push("results");
+  if (["president", "chairman"].includes(role)) tabs.push("approval");
+  if (EVALUATEE_ROLES.includes(role)) tabs.push("report");
+  tabs.push("goals");
+  if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("goalApproval");
+  tabs.push("myDashboard");
+  if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
+  if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices");
+  return tabs;
+}
 
 // 목표 상태
 const GOAL_STATUSES = ["pending", "onTrack", "atRisk", "done", "stopped"];
@@ -401,6 +463,8 @@ function createDefaultState() {
     mailSettings: defaultMailSettings(),
     goalCycles: [createGoalCycle("2026년", "2026-01-01", "2026-12-31", true)],
     goals: [],
+    notices: [],
+    noticeReads: {},
     dataSource: null,
     ui: {
       tab: "home",
@@ -417,6 +481,10 @@ function createDefaultState() {
       activeGoalCycleId: "",
       goalDetailId: "",
       goalTab: "all",
+      noticeEditId: null,
+      noticeDetailId: null,
+      noticeListModal: false,
+      noticeListPage: 0,
     },
   };
 }
@@ -551,7 +619,11 @@ function makeEmptyEvaluation(userId) {
       grade: "",
       comment: "",
       itemScores: {},
-      achievements: [{ name: "", goal: "", detail: "", weight: 100, score: "", grade: "" }],
+      achievements: [
+        { name: "", goal: "", detail: "", weight: 30, score: "", grade: "" },
+        { name: "", goal: "", detail: "", weight: 30, score: "", grade: "" },
+        { name: "", goal: "", detail: "", weight: 40, score: "", grade: "" },
+      ],
     },
     competency: { score: "", grade: "", comment: "", itemScores: {} },
     attitude: { score: "", grade: "", comment: "", itemScores: {} },
@@ -697,6 +769,8 @@ function normalizeState(nextState) {
   nextState.peerCount = Number.isInteger(nextState.peerCount) && nextState.peerCount > 0 ? nextState.peerCount : 3;
   nextState.goalCycles = Array.isArray(nextState.goalCycles) && nextState.goalCycles.length ? nextState.goalCycles : defaults.goalCycles;
   nextState.goals = Array.isArray(nextState.goals) ? nextState.goals : [];
+  nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
+  nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
   nextState.ui = { ...defaults.ui, ...(nextState.ui || {}) };
   if (!nextState.ui.activeGoalCycleId || !nextState.goalCycles.some(c => c.id === nextState.ui.activeGoalCycleId)) {
     nextState.ui.activeGoalCycleId = nextState.goalCycles[0].id;
@@ -1335,7 +1409,7 @@ function buildNavSections(tabs, user) {
   // ── 어드민 전용 메뉴 순서: 나의 평가 → 시스템 관리 → 평가 관리 → 목표 관리 ──
   if (user.role === "admin") {
     const myTabs   = tabs.filter((t) => ["home"].includes(t));
-    const sysTabs  = tabs.filter((t) => ["organization"].includes(t));
+    const sysTabs  = tabs.filter((t) => ["organization", "notices"].includes(t));
     const setOrder = ["admin", "evalDashboard"];
     const setTabs  = setOrder.filter((t) => tabs.includes(t));
     const goalTabs = tabs.filter((t) => ["goals","goalCycles"].includes(t));
@@ -1360,6 +1434,134 @@ function buildNavSections(tabs, user) {
   if (dashTabs.length)    sections.push({ label: "성장 기록 조회", items: dashTabs });
   if (adminTabs.length)   sections.push({ label: "시스템 관리", items: adminTabs });
   return sections;
+}
+
+function renderSiteMapModal() {
+  const active = state.ui.siteMapRole || "overview";
+  return `
+    <div class="goal-modal-overlay" style="z-index:600;" onclick="if(event.target===this)App.closeSiteMapModal()">
+      <div class="goal-modal" style="max-width:820px;width:100%;max-height:88vh;">
+        <div class="goal-modal-head">
+          <h2>🗺️ 시스템 사이트맵</h2>
+          <button class="modal-x" onclick="App.closeSiteMapModal()">×</button>
+        </div>
+        <div class="goal-modal-tabs" style="flex-wrap:wrap;height:auto;">
+          <button type="button" class="goal-modal-tab ${active === "overview" ? "active" : ""}" onclick="App.setSiteMapRole('overview')">전체 구조</button>
+          ${SITEMAP_ROLES.map((r) => `<button type="button" class="goal-modal-tab ${active === r ? "active" : ""}" onclick="App.setSiteMapRole('${r}')">${ROLE_LABELS[r]} 예시</button>`).join("")}
+        </div>
+        <div class="goal-modal-body" style="overflow-y:auto;">
+          <p class="muted" style="font-size:12px;margin:0 0 14px;line-height:1.6;">
+            ${active === "overview"
+              ? "계정 유형(역할)별로 좌측 메뉴에 어떤 화면이 노출되는지 한눈에 정리한 구조도입니다. 실제 화면은 평가 사이클 진행 상태나 개인별 배정 현황에 따라 일부 달라질 수 있습니다."
+              : `'${ROLE_LABELS[active]}' 계정으로 로그인했을 때 좌측 메뉴에 노출되는 화면 구성 예시입니다. 실제로는 배정 현황에 따라 일부 메뉴가 늘거나 줄 수 있습니다.`}
+          </p>
+          ${active === "overview" ? renderSiteMapOverview() : renderSiteMapRolePreview(active)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderSiteMapOverview() {
+  const rows = SITEMAP_SECTIONS.map(({ label, tabs }) => `
+    <tr><td colspan="${SITEMAP_ROLES.length + 1}" style="background:var(--surface-2);font-weight:700;font-size:11.5px;color:var(--muted);">${esc(label)}</td></tr>
+    ${tabs.map((tab) => `
+      <tr>
+        <td>
+          <div style="font-weight:600;">${TAB_ICONS[tab] || "·"} ${esc(TAB_LABELS[tab] || tab)}</div>
+          <div class="muted" style="font-size:11.5px;margin-top:2px;">${esc(SITEMAP_TAB_DESC[tab] || "")}</div>
+        </td>
+        ${SITEMAP_ROLES.map((r) => `<td style="text-align:center;">${getSiteMapTabs(r).includes(tab) ? "✅" : `<span class="muted">–</span>`}</td>`).join("")}
+      </tr>`).join("")}
+  `).join("");
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>화면</th>
+            ${SITEMAP_ROLES.map((r) => `<th style="text-align:center;">${ROLE_LABELS[r]}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderSiteMapRolePreview(role) {
+  const sections = buildNavSections(getSiteMapTabs(role), { role });
+  return `
+    <div>
+      ${sections.map(({ label, items }, idx) => `
+        <div class="nav-section-label" style="margin:${idx === 0 ? "0" : "18px"} 0 0;">${esc(label)}</div>
+        <div style="display:grid;gap:6px;padding:8px 2px;">
+          ${items.map((tab) => `
+            <div class="sitemap-tab-card" style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);"
+              onclick="App.openSiteMapPagePreview('${role}','${tab}')" title="클릭하면 예시 화면을 볼 수 있습니다">
+              <span style="font-size:16px;">${TAB_ICONS[tab] || "·"}</span>
+              <div style="flex:1;">
+                <div style="font-weight:700;font-size:13px;">${esc(TAB_LABELS[tab] || tab)}</div>
+                <div class="muted" style="font-size:11.5px;margin-top:2px;">${esc(SITEMAP_TAB_DESC[tab] || "")}</div>
+              </div>
+              <span class="muted" style="font-size:15px;align-self:center;">›</span>
+            </div>
+          `).join("")}
+        </div>
+      `).join("")}
+      ${role === "admin" ? `
+        <div class="notice info" style="margin-top:14px;font-size:12px;">
+          ℹ️ 이 외에도 어드민은 <strong>평가 관리</strong> 목록에서 사이클을 클릭하면 <strong>진행 현황 · 최종 결과/리포트 공개 · 피드백 관리</strong> 등 세부 화면으로 들어갈 수 있습니다.
+        </div>` : ""}
+    </div>`;
+}
+
+// 역할별 예시 화면에 사용할 실제 계정 하나를 선정 (재직 중인 계정 우선)
+function pickSiteMapPreviewUser(role) {
+  const active = state.users.filter((u) => u.role === role && u.active !== false && !isRetired(u));
+  return active[0] || state.users.find((u) => u.role === role) || null;
+}
+
+// 메뉴 카드 클릭 시: 해당 역할의 실제 계정 기준으로 그 화면을 그대로 렌더링해 미리보기로 보여준다.
+// 렌더링 중 발생할 수 있는 부수효과(ui 상태 변경 등)는 즉시 원복하며, 사이클 세부 모달처럼
+// 데이터를 변경/저장하는 하위 화면은 미리보기에서 열리지 않도록 차단한다.
+function renderSiteMapPagePreviewModal() {
+  const { role, tab } = state.ui.siteMapPreviewPage || {};
+  const previewUser = pickSiteMapPreviewUser(role);
+
+  let content = `<div class="empty">이 역할에 해당하는 계정이 없어 예시를 표시할 수 없습니다.</div>`;
+  if (previewUser) {
+    const uiSnapshot = JSON.parse(JSON.stringify(state.ui));
+    const prevUserId = state.currentUserId;
+    try {
+      state.ui = { ...state.ui, tab, cycleDetailModal: null, cycleSettingsModal: null };
+      state.currentUserId = previewUser.id;
+      content = renderRoute(previewUser);
+    } catch (err) {
+      console.warn("사이트맵 미리보기 렌더링 실패", err);
+      content = `<div class="empty">이 화면은 예시로 표시할 수 없습니다.</div>`;
+    } finally {
+      state.ui = uiSnapshot;
+      state.currentUserId = prevUserId;
+    }
+  }
+
+  return `
+    <div class="goal-modal-overlay" style="z-index:650;" onclick="if(event.target===this)App.closeSiteMapPagePreview()">
+      <div class="goal-modal" style="max-width:1000px;width:100%;max-height:92vh;">
+        <div class="goal-modal-head">
+          <div>
+            <h2>${TAB_ICONS[tab] || ""} ${esc(TAB_LABELS[tab] || tab)}</h2>
+            <div class="muted" style="font-size:12px;margin-top:2px;">
+              '${esc(ROLE_LABELS[role] || role)}' 계정(${esc(previewUser?.name || "-")}) 기준 예시 화면입니다 · 이 미리보기에서는 버튼/입력이 동작하지 않습니다
+            </div>
+          </div>
+          <button class="modal-x" onclick="App.closeSiteMapPagePreview()">×</button>
+        </div>
+        <div class="goal-modal-body" style="overflow-y:auto;background:var(--surface-2);">
+          <div class="sitemap-preview-frame">${content}</div>
+        </div>
+      </div>
+    </div>`;
 }
 
 function buildAccountSwitcherOptions(currentUser, searchQuery = "") {
@@ -1405,16 +1607,6 @@ function render(loginError = "") {
   if (!tabs.includes(state.ui.tab)) state.ui.tab = (user.role === "admin" ? "admin" : (tabs[0] || "home"));
   const cycle = selectedCycle();
 
-  // 탭별 아이콘 매핑
-  const TAB_ICONS = {
-    home: "🏠", cycleDashboard: "📊", self: "✏️", tasks: "📋", resultSubmit: "⚖️",
-    results: "📈", approval: "✅", report: "📄",
-    admin: "⚙️", finalAdjust: "🛠️", feedbackMgmt: "💬", organization: "🏢",
-    goals: "🎯", goalApproval: "🗂️", goalCycles: "🔄",
-    myDashboard: "📒", memberDashboard: "📊",
-    evalDashboard: "📊",
-  };
-
   // 역할별 색상 배지
   const ROLE_COLORS = {
     admin: "#6b7280", president: "#d97706", chairman: "#7c3aed",
@@ -1428,6 +1620,10 @@ function render(loginError = "") {
 
   // 미완료 작업 수
   const pendingCount = getTasksForUser(user).filter((t) => !isCompletedStatus(t.status)).length;
+
+  // 로그인한 세션이 어드민인지 확인 (타 계정으로 전환 중이어도 어드민이면 사이트맵 아이콘 표시)
+  const sessionUserForTopbar = session?.userId ? (userById(session.userId) || state.users.find(u => u.role === "admin" && u.id === session.userId)) : null;
+  const isAdminSession = sessionUserForTopbar?.role === "admin";
 
   document.getElementById("app").innerHTML = `
     <div class="shell">
@@ -1478,6 +1674,7 @@ function render(loginError = "") {
                 <span style="font-size:12px;color:var(--muted);">${ROLE_LABELS[user.role]||""}</span>
               </div>`;
           })()}
+          ${isAdminSession ? `<button class="topbar-bell" onclick="App.openSiteMapModal()" title="시스템 사이트맵 (계정별 메뉴 구조 보기)">🗺️</button>` : ""}
           ${pendingCount > 0 ? `<button class="topbar-bell" onclick="App.setTab('tasks')" title="할 일 ${pendingCount}건">🔔<span class="topbar-bell-badge">${pendingCount}</span></button>` : ""}
           <button class="button secondary logout-btn" onclick="App.doLogout()" title="로그아웃">↩ 로그아웃</button>
         </div>
@@ -1532,9 +1729,26 @@ function render(loginError = "") {
     ${renderAIEvaluatorTendencyModal()}
     ${renderOrgSubmitGuideModal()}
     ${state.ui.showPwChangeModal ? renderPwChangeModal() : ""}
+    ${state.ui.showSiteMapModal ? renderSiteMapModal() : ""}
+    ${state.ui.siteMapPreviewPage ? renderSiteMapPagePreviewModal() : ""}
     ${state.ui.adjustmentSessionDivision && !state.ui.cycleDetailModal ? renderAdjustmentSessionModal(state.ui.adjustmentSessionDivision) : ""}
   `;
 
+  // 공지사항 리치텍스트 에디터 초기화 (contenteditable)
+  requestAnimationFrame(() => {
+    const el = document.getElementById("notice_richtext");
+    if (!el) return;
+    if (window._noticeEditorInitContent) {
+      el.innerHTML = window._noticeEditorInitContent;
+      window._noticeEditorInitContent = null;
+    }
+    // 붙여넣기 시 plain text만 허용 (서식 제거)
+    el.addEventListener("paste", function(e) {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData).getData("text/plain");
+      document.execCommand("insertText", false, text);
+    });
+  });
 }
 
 function getVisibleTabs(user) {
@@ -1554,7 +1768,7 @@ function getVisibleTabs(user) {
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
-  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard");
+  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices");
   return tabs;
 }
 
@@ -1582,6 +1796,7 @@ function getPageDescription(tab, user) {
     goalCycles:     "목표 사이클을 생성하고 승인 기능 등 운영 옵션을 설정합니다.",
     myDashboard:    "",
     memberDashboard:"",
+    notices:        "공지사항을 등록하고 관리합니다.",
   };
   return descriptions[tab] || "";
 }
@@ -1598,6 +1813,7 @@ function renderRoute(user) {
   if (state.ui.tab === "feedbackMgmt") return user.role === "admin" ? renderFeedbackMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "admin") return renderAdmin(user);
   if (state.ui.tab === "organization") return user.role === "admin" ? renderAdminOrganization() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "notices") return user.role === "admin" ? renderNoticesMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "evalDashboard") return user.role === "admin" ? renderEvalDashboard() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "goals") return user.role === "admin" ? renderGoalsList(user) : renderGoalCycleContent(user);
   if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
@@ -1612,37 +1828,32 @@ function renderHome(user) {
   const progress = getProgressStats(scopedUsers);
   const tasks = getTasksForUser(user);
   const showMetrics = !["member"].includes(user.role);
-  const cycle = selectedCycle();
-  const stages = [
-    { key:"self",   label:"자기평가",  start:cycle.selfStart,     end:cycle.selfEnd },
-    { key:"first",  label:"1차 평가",  start:cycle.firstStart,    end:cycle.firstEnd },
-    { key:"second", label:"2차 평가",  start:cycle.secondStart,   end:cycle.secondEnd },
-    { key:"grade",  label:"등급 확정", start:cycle.gradeStart,    end:cycle.gradeEnd },
-    { key:"feed",   label:"피드백",    start:cycle.feedbackStart, end:cycle.feedbackEnd },
-  ];
-  const today = new Date().toISOString().slice(0,10);
-  const stageBar = stages.map((s,i) => {
-    const active = isDateInRange(s.start, s.end);
-    const past   = s.end && s.end < today;
-    const cls = active ? "active" : past ? "done" : "wait";
-    return `<div class="step-chip ${cls}">${s.label}</div>${i < stages.length-1 ? '<span class="step-arrow">→</span>' : ""}`;
-  }).join("");
+  const hasActiveCycle = Boolean(runningCycle());
   return `
-    ${showMetrics ? renderDashboardProgressMetrics(user, progress, scopedUsers) : ""}
+    ${hasActiveCycle && showMetrics ? renderDashboardProgressMetrics(user, progress, scopedUsers) : ""}
     <div class="grid two">
       <section class="panel">
         <div class="panel-head">
           <div><h2>내 할 일</h2></div>
           <span class="pill blue">${ROLE_LABELS[user.role]}</span>
         </div>
-        <div class="panel-body">${renderDashboardTodos(user, tasks)}</div>
+        <div class="panel-body">${renderDashboardTodos(user, tasks, hasActiveCycle)}</div>
       </section>
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2>평가 일정</h2></div>
-        </div>
-        <div class="panel-body grid">${renderDashboardSchedule(user)}</div>
-      </section>
+      <div style="display:flex;flex-direction:column;gap:16px;">
+        <section class="panel">
+          <div class="panel-head">
+            <div><h2>평가 일정</h2></div>
+          </div>
+          <div class="panel-body grid">${hasActiveCycle ? renderDashboardSchedule(user) : '<div class="empty" style="padding:12px 0;">진행 중인 평가 일정이 없습니다.</div>'}</div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <div><h2>공지사항</h2></div>
+            ${(state.notices||[]).length > 0 ? `<button class="button ghost" style="padding:4px 10px;font-size:13px;font-weight:700;" onclick="App.openNoticeListModal()" title="전체 공지사항 보기">+</button>` : ""}
+          </div>
+          <div class="panel-body">${renderNoticesPanel(user)}</div>
+        </section>
+      </div>
     </div>
   `;
 }
@@ -2043,32 +2254,44 @@ function getDashboardScopeLabel(user) {
   return "전체 평가 대상 기준";
 }
 
-function renderDashboardTodos(user, tasks) {
-  const notices = [];
+function renderDashboardTodos(user, tasks, hasActiveCycle) {
+  const alerts = [];
   const ownEvaluation = evaluations()[user.id];
   const cycle = selectedCycle();
-  if (isEvaluatee(user) && ownEvaluation) {
-    if (ownEvaluation.status.self === "submitted") {
-      notices.push(`<div class="notice ok">자기평가 제출을 완료했습니다.</div>`);
-    } else if (canEditStage("self")) {
-      notices.push(`<button class="task-row alert" onclick="App.setTab('self')"><strong>자기평가를 작성해야 합니다.</strong><span>${esc(cycle.selfEnd)}까지 제출해 주세요.</span></button>`);
-    } else {
-      notices.push(`<div class="notice">자기평가 가능 기간은 ${esc(cycle.selfStart)} ~ ${esc(cycle.selfEnd)}입니다.</div>`);
+
+  // 공지사항 알림 (활성 사이클 여부와 무관하게 표시)
+  const allNotices = state.notices || [];
+  const readIds = new Set((state.noticeReads || {})[user.id] || []);
+  const unreadCount = allNotices.filter(n => !readIds.has(n.id)).length;
+  if (unreadCount > 0) {
+    alerts.push(`<button class="task-row alert" onclick="App.viewNotices()"><strong>읽지 않은 공지사항 ${unreadCount}건이 있습니다.</strong><span>클릭하여 확인하세요.</span></button>`);
+  }
+
+  if (hasActiveCycle) {
+    if (isEvaluatee(user) && ownEvaluation) {
+      if (ownEvaluation.status.self !== "submitted" && canEditStage("self")) {
+        alerts.push(`<button class="task-row alert" onclick="App.setTab('self')"><strong>자기평가를 작성해야 합니다.</strong><span>${esc(cycle.selfEnd)}까지 제출해 주세요.</span></button>`);
+      } else if (ownEvaluation.status.self !== "submitted" && cycle.selfStart) {
+        alerts.push(`<div class="notice">자기평가 가능 기간은 ${esc(cycle.selfStart)} ~ ${esc(cycle.selfEnd)}입니다.</div>`);
+      }
+      if (canPublishFeedback() && canShowReleasedResults() && ownEvaluation.published) {
+        alerts.push(`<button class="task-row alert" onclick="App.setTab('report')"><strong>평가 리포트를 확인해 주세요.</strong><span>피드백 공개 기간입니다.</span></button>`);
+      }
     }
-    if (canPublishFeedback() && canShowReleasedResults() && ownEvaluation.published) {
-      notices.push(`<button class="task-row alert" onclick="App.setTab('report')"><strong>평가 리포트를 확인해 주세요.</strong><span>피드백 공개 기간입니다.</span></button>`);
+    dashboardTaskAlerts(tasks).forEach((item) => alerts.push(item));
+    if (user.role === "divisionHead") {
+      const submission = cycle.resultSubmissions?.[resultSubmissionScopeKey(user)];
+      if (!submission?.submitted && isDateInRange(cycle.gradeStart, cycle.gradeEnd)) {
+        alerts.push(`<button class="task-row alert" onclick="App.setTab('resultSubmit')"><strong>종합평가를 진행해야 합니다.</strong><span>${esc(cycle.gradeEnd)}까지 완료해 주세요.</span></button>`);
+      }
     }
   }
-  dashboardTaskAlerts(tasks).forEach((item) => notices.push(item));
-  if (user.role === "divisionHead") {
-    const submission = cycle.resultSubmissions?.[resultSubmissionScopeKey(user)];
-    if (!submission?.submitted && isDateInRange(cycle.gradeStart, cycle.gradeEnd)) {
-      notices.push(`<button class="task-row alert" onclick="App.setTab('resultSubmit')"><strong>종합평가를 진행해야 합니다.</strong><span>${esc(cycle.gradeEnd)}까지 완료해 주세요.</span></button>`);
-    }
-  }
-  const taskMarkup = tasks.length ? `<div class="task-list">${tasks.slice(0, 8).map((task) => renderTaskButton(task, "")).join("")}</div>` : "";
-  if (!notices.length && !taskMarkup) return `<div class="empty">현재 처리할 일이 없습니다.</div>`;
-  return `<div class="grid">${notices.join("")}${taskMarkup}</div>`;
+
+  // 미완료 task만 표시 (완료된 항목은 목록에서 제거)
+  const pendingTasks = hasActiveCycle ? tasks.filter(t => !isCompletedStatus(t.status)) : [];
+  const taskMarkup = pendingTasks.length ? `<div class="task-list">${pendingTasks.slice(0, 8).map((task) => renderTaskButton(task, "")).join("")}</div>` : "";
+  if (!alerts.length && !taskMarkup) return `<div class="empty">현재 처리할 일이 없습니다.</div>`;
+  return `<div class="grid">${alerts.join("")}${taskMarkup}</div>`;
 }
 
 function dashboardTaskAlerts(tasks) {
@@ -2143,6 +2366,272 @@ function renderDashboardSchedule(user) {
         .join("")}
     </div>
   `;
+}
+
+// ── 공지사항 패널 (HOME 우측) ─────────────────────────────────────────
+function renderNoticesPanel(user) {
+  const notices = (state.notices || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const readIds = new Set((state.noticeReads || {})[user.id] || []);
+  const detailId = state.ui.noticeDetailId;
+  const detailNotice = detailId ? notices.find(n => n.id === detailId) : null;
+
+  // ── 5개 미리보기 목록 ──
+  const noticeItemHtml = (n) => {
+    const isUnread = !readIds.has(n.id);
+    return `<div style="padding:10px 12px;border-radius:8px;background:var(--surface-2);cursor:pointer;" onclick="App.viewNoticeDetail('${n.id}')">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${isUnread ? "var(--primary)" : "transparent"};flex-shrink:0;"></span>
+        <span style="font-size:13px;font-weight:${isUnread ? 700 : 500};color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(n.title)}</span>
+        <span style="font-size:11px;color:var(--muted);flex-shrink:0;">${esc(n.createdAt.slice(0, 10))}</span>
+      </div>
+    </div>`;
+  };
+
+  const listHtml = !notices.length
+    ? `<div class="empty" style="padding:8px 0;">등록된 공지사항이 없습니다.</div>`
+    : `<div style="display:flex;flex-direction:column;gap:6px;">${notices.slice(0, 5).map(noticeItemHtml).join("")}</div>`;
+
+  // ── 전체 목록 모달 (10개씩 페이지네이션) ──
+  const PAGE_SIZE = 10;
+  const showListModal = state.ui.noticeListModal;
+  const curPage = state.ui.noticeListPage || 0;
+  const totalPages = Math.ceil(notices.length / PAGE_SIZE);
+  const pageNotices = notices.slice(curPage * PAGE_SIZE, (curPage + 1) * PAGE_SIZE);
+
+  const listModalHtml = showListModal ? `
+    <div class="goal-modal-overlay" style="z-index:410;" onclick="if(event.target===this)App.closeNoticeListModal()">
+      <div class="goal-modal" style="max-width:720px;width:92%;max-height:88vh;display:flex;flex-direction:column;">
+        <div class="goal-modal-head" style="flex-shrink:0;">
+          <div><h2 style="margin:0;">공지사항</h2></div>
+          <button class="modal-x" onclick="App.closeNoticeListModal()">×</button>
+        </div>
+        <div style="padding:16px 20px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px;">
+          ${pageNotices.map(noticeItemHtml).join("")}
+          ${!pageNotices.length ? `<div class="empty">공지사항이 없습니다.</div>` : ""}
+        </div>
+        ${totalPages > 1 ? `
+        <div style="flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:6px;padding:12px 20px;border-top:1px solid var(--line);">
+          <button class="button secondary sm" onclick="App.setNoticeListPage(${curPage - 1})" ${curPage === 0 ? "disabled" : ""}>&#8249; 이전</button>
+          ${Array.from({length: totalPages}, (_, i) =>
+            `<button class="button ${i === curPage ? "primary" : "secondary"} sm" onclick="App.setNoticeListPage(${i})">${i + 1}</button>`
+          ).join("")}
+          <button class="button secondary sm" onclick="App.setNoticeListPage(${curPage + 1})" ${curPage >= totalPages - 1 ? "disabled" : ""}>다음 &#8250;</button>
+        </div>` : ""}
+      </div>
+    </div>` : "";
+  const modalHtml = detailNotice ? `
+    <div class="goal-modal-overlay" style="z-index:420;" onclick="if(event.target===this)App.closeNoticeDetail()">
+      <div class="goal-modal" style="max-width:860px;width:92%;max-height:88vh;display:flex;flex-direction:column;">
+        <div class="goal-modal-head" style="flex-shrink:0;">
+          <div>
+            <h2 style="margin:0;">${esc(detailNotice.title)}</h2>
+            <p class="muted" style="margin:4px 0 0;font-size:12px;">${esc(detailNotice.createdAt.slice(0, 10))} 등록</p>
+          </div>
+          <button class="modal-x" onclick="App.closeNoticeDetail()">×</button>
+        </div>
+        <div style="padding:20px 24px;overflow-y:auto;flex:1;">
+          <div style="font-size:14px;line-height:1.8;word-break:break-word;">
+            <style>#notice-detail-content img{max-width:100%;height:auto;border-radius:4px;}#notice-detail-content table{border-collapse:collapse;width:100%;}#notice-detail-content td,#notice-detail-content th{border:1px solid #cbd5e1;padding:6px 10px;}</style>
+            <div id="notice-detail-content">${detailNotice.content || ""}</div>
+          </div>
+          ${(detailNotice.attachments||[]).length ? `
+            <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--line);">
+              <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:10px;">첨부파일</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                ${(detailNotice.attachments||[]).map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;font-size:13px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}
+              </div>
+            </div>` : ""}
+        </div>
+      </div>
+    </div>` : "";
+  return listHtml + modalHtml + listModalHtml;
+}
+
+// ── 공지사항 관리 (어드민) ────────────────────────────────────────────
+function renderNoticesMgmt() {
+  const notices = (state.notices || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const editId = state.ui.noticeEditId;
+
+  // ── 등록 / 수정 폼 ──
+  if (editId !== undefined && editId !== null) {
+    const isNew = editId === "new";
+    const n = isNew ? { id: "", title: "", content: "", attachments: [] } : (notices.find(x => x.id === editId) || { id: "", title: "", content: "", attachments: [] });
+    // 편집 시 기존 내용을 SunEditor에 주입하기 위해 전역 변수 세팅
+    window._noticeEditorInitContent = n.content || "";
+    window._pendingAttachments = (n.attachments || []).map(a => ({ ...a }));
+    const attachHtml = (window._pendingAttachments || []).map((a, i) =>
+      `<div id="attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
+        <span style="font-size:13px;flex:1;">📎 ${esc(a.name)}</span>
+        <span style="font-size:11px;color:var(--muted);">${(a.size/1024).toFixed(1)} KB</span>
+        <button class="btn secondary" style="font-size:11px;padding:2px 8px;" onclick="App.removeNoticeAttachment(${i})">삭제</button>
+      </div>`).join("");
+    return `
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div><h2>${isNew ? "공지사항 등록" : "공지사항 수정"}</h2></div>
+            <div style="display:flex;gap:8px;">
+              <button class="button ghost" onclick="App.cancelNoticeEdit()">취소</button>
+              <button class="button primary" onclick="App.saveNotice('${isNew ? "new" : n.id}')">저장</button>
+              ${!isNew ? `<button class="button danger" onclick="App.deleteNotice('${n.id}')">삭제</button>` : ""}
+            </div>
+          </div>
+          <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
+            <div class="field">
+              <label>제목</label>
+              <input id="notice_title" type="text" value="${esc(n.title)}" placeholder="공지사항 제목을 입력하세요" style="width:100%;" />
+            </div>
+            <div class="field">
+              <label>내용</label>
+              <div class="rte-wrap">
+                <div class="rte-toolbar">
+                  <div class="rte-group">
+                    <select class="rte-sel" title="글자체" onchange="App.rteExec('fontName',this.value);this.selectedIndex=0;">
+                      <option value="">글자체</option>
+                      <option value="'Pretendard',sans-serif">기본</option>
+                      <option value="'Malgun Gothic',sans-serif">맑은 고딕</option>
+                      <option value="'Nanum Gothic',sans-serif">나눔고딕</option>
+                      <option value="'Courier New',monospace">고정폭</option>
+                    </select>
+                    <select class="rte-sel" title="크기" onchange="App.rteExec('fontSize',this.value);this.selectedIndex=0;">
+                      <option value="">크기</option>
+                      <option value="1">10pt</option>
+                      <option value="2">12pt</option>
+                      <option value="3">14pt</option>
+                      <option value="4">16pt</option>
+                      <option value="5">18pt</option>
+                      <option value="6">24pt</option>
+                      <option value="7">32pt</option>
+                    </select>
+                  </div>
+                  <div class="rte-sep"></div>
+                  <div class="rte-group">
+                    <button class="rte-btn" onclick="App.rteExec('bold')" title="굵게"><b>B</b></button>
+                    <button class="rte-btn" onclick="App.rteExec('italic')" title="기울기"><i>I</i></button>
+                    <button class="rte-btn" onclick="App.rteExec('underline')" title="밑줄"><u>U</u></button>
+                    <button class="rte-btn" onclick="App.rteExec('strikeThrough')" title="취소선"><s>S</s></button>
+                  </div>
+                  <div class="rte-sep"></div>
+                  <div class="rte-group">
+                    <label class="rte-btn rte-color-btn" title="글자색">
+                      <span style="border-bottom:3px solid #e74c3c;padding:0 2px;font-weight:700;font-size:13px;">A</span>
+                      <input type="color" value="#e74c3c" onchange="App.rteExec('foreColor',this.value)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;" />
+                    </label>
+                    <label class="rte-btn rte-color-btn" title="배경색">
+                      <span style="background:#ffe066;padding:0 3px;font-size:12px;">가</span>
+                      <input type="color" value="#ffe066" onchange="App.rteExec('hiliteColor',this.value)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;" />
+                    </label>
+                  </div>
+                  <div class="rte-sep"></div>
+                  <div class="rte-group">
+                    <button class="rte-btn" onclick="App.rteExec('justifyLeft')" title="왼쪽 정렬">&#8676;</button>
+                    <button class="rte-btn" onclick="App.rteExec('justifyCenter')" title="가운데 정렬">&#8652;</button>
+                    <button class="rte-btn" onclick="App.rteExec('justifyRight')" title="오른쪽 정렬">&#8677;</button>
+                  </div>
+                  <div class="rte-sep"></div>
+                  <div class="rte-group">
+                    <button class="rte-btn" onclick="App.rteExec('insertUnorderedList')" title="글머리 기호">&#8226; 목록</button>
+                    <button class="rte-btn" onclick="App.rteExec('insertOrderedList')" title="번호 목록">1. 목록</button>
+                  </div>
+                  <div class="rte-sep"></div>
+                  <div class="rte-group">
+                    <button class="rte-btn" onclick="App.rteInsertLink()" title="링크">🔗</button>
+                    <button class="rte-btn" onclick="App.rteInsertTable()" title="표 삽입">⊞ 표</button>
+                    <label class="rte-btn" title="이미지 삽입" style="cursor:pointer;">
+                      🖼 이미지
+                      <input type="file" accept="image/*" style="display:none;" onchange="App.rteInsertImage(this)" />
+                    </label>
+                  </div>
+                  <div class="rte-sep"></div>
+                  <div class="rte-group">
+                    <button class="rte-btn" onclick="App.rteExec('removeFormat')" title="서식 제거" style="font-size:11px;">Tx 지우기</button>
+                  </div>
+                </div>
+                <div id="notice_richtext" contenteditable="true" class="rte-editor" data-placeholder="공지사항 내용을 입력하세요..."></div>
+              </div>
+            </div>
+            <div class="field">
+              <label>첨부파일</label>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <div id="attach_list" style="display:flex;flex-direction:column;gap:6px;">${attachHtml}</div>
+                <label class="button ghost" style="width:fit-content;cursor:pointer;margin-top:4px;">
+                  📎 파일 추가
+                  <input type="file" multiple style="display:none;" onchange="App.handleNoticeFileSelect(this)" />
+                </label>
+                <p class="muted" style="font-size:11px;margin-top:2px;">파일 1개당 최대 5MB</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>`;
+  }
+
+  // ── 상세 보기 ──
+  const detailId = state.ui.noticeDetailId;
+  if (detailId) {
+    const n = notices.find(x => x.id === detailId);
+    if (n) {
+      const attachItems = (n.attachments || []).map(a =>
+        `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface-2);border-radius:6px;font-size:13px;color:var(--text);text-decoration:none;margin-right:8px;margin-bottom:6px;">
+          📎 ${esc(a.name)} <span style="color:var(--muted);font-size:11px;">(${(a.size/1024).toFixed(1)} KB)</span>
+        </a>`).join("");
+      return `
+        <div class="grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>${esc(n.title)}</h2>
+                <p class="muted">${esc(n.createdAt.slice(0, 10))} 등록</p>
+              </div>
+              <div style="display:flex;gap:8px;">
+                <button class="button ghost" onclick="App.editNotice('${n.id}')">수정</button>
+                <button class="button secondary" onclick="App.closeNoticeDetail()">목록으로</button>
+              </div>
+            </div>
+            <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
+              <div class="sun-editor-editable" style="padding:0;min-height:80px;font-size:14px;line-height:1.7;">${n.content || ""}</div>
+              ${attachItems ? `<div><div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:8px;">첨부파일</div>${attachItems}</div>` : ""}
+            </div>
+          </section>
+        </div>`;
+    }
+    state.ui.noticeDetailId = null;
+  }
+
+  // ── 목록 ──
+  const noticeRows = notices.map(n => {
+    const date = n.createdAt.slice(0, 10);
+    const hasAttach = (n.attachments || []).length > 0;
+    return `
+      <div class="cycle-list-row" style="border-left:4px solid var(--primary);cursor:pointer;" onclick="App.viewAdminNoticeDetail('${n.id}')">
+        <div class="cycle-list-main">
+          <div class="cycle-list-name">
+            <strong>${esc(n.title)}</strong>
+            ${hasAttach ? `<span class="pill" style="background:var(--surface-2);color:var(--muted);font-size:11px;">📎 ${(n.attachments||[]).length}</span>` : ""}
+          </div>
+          <div class="cycle-list-meta muted" style="font-size:12px;margin-top:4px;">등록일: ${esc(date)}</div>
+        </div>
+        <div class="cycle-list-actions" onclick="event.stopPropagation()">
+          <button class="button secondary sm" onclick="App.editNotice('${n.id}')">수정</button>
+          <button class="button danger sm" onclick="App.deleteNotice('${n.id}')">삭제</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>공지사항 관리</h2></div>
+          <button class="button ghost" onclick="App.newNotice()">+ 공지사항 등록</button>
+        </div>
+        <div class="panel-body">
+          ${!notices.length
+            ? `<div class="empty" style="padding:32px 0;">등록된 공지사항이 없습니다.</div>`
+            : `<div class="cycle-list">${noticeRows}</div>`}
+        </div>
+      </section>
+    </div>`;
 }
 
 function renderGoalLinkPickerModal(user) {
@@ -2388,7 +2877,7 @@ function renderPerformanceForm(prefix, data, template, mode, employee) {
               `}
               ${
                 template.useWeight
-                  ? `<div class="field compact-field"><label for="${prefix}_performance_ach_${index}_weight">업적 가중치</label><input id="${prefix}_performance_ach_${index}_weight" type="number" min="0" max="100" value="${esc(item.weight ?? 100)}" onchange="App.updateEvalWeightNotice('${prefix}')" /></div>`
+                  ? `<div class="field compact-field"><label for="${prefix}_performance_ach_${index}_weight">업적 가중치</label><input id="${prefix}_performance_ach_${index}_weight" type="number" min="5" max="40" value="${esc(item.weight ?? 33)}" onchange="App.updateEvalWeightNotice('${prefix}')" /></div>`
                   : ""
               }
               ${renderGradePicker(scoreId, item.score, template.grades)}
@@ -2467,27 +2956,23 @@ function renderTasks(user) {
   const selected = tasks.find((task) => task.key === state.ui.selectedTaskKey) || tasks[0];
   state.ui.selectedTaskKey = selected.key;
   const mode = state.ui.taskViewMode || "person";
+  const finalLocked = hasEvaluatorFinalSubmitted(user.id);
   return `
     <div class="grid">
       <section class="panel">
         <div class="panel-body">
-          <div class="segmented">
+          ${finalLocked ? `<div class="notice ok" style="margin-bottom:0;">✅ 평가 최종 제출이 완료되었습니다. 모든 평가 내용이 잠겨 있습니다.</div>` : `<div class="segmented">
             <button class="${mode === "person" ? "active" : ""}" onclick="App.setTaskViewMode('person')">한 명씩 평가</button>
             <button class="${mode === "question" ? "active" : ""}" onclick="App.setTaskViewMode('question')">문항별 일괄 평가</button>
-          </div>
+          </div>`}
         </div>
       </section>
       ${
-        mode === "question"
+        !finalLocked && mode === "question"
           ? renderBatchTaskEvaluation(user, tasks)
           : `<div class="split">
               <section class="panel">
-                <div class="panel-head">
-                  <div>
-                    <h2>평가 대상</h2>
-                    <p class="muted">${tasks.length}건의 평가 작업</p>
-                  </div>
-                </div>
+                ${renderEvalTaskPanelHead(user, tasks)}
                 <div class="panel-body">
                   ${renderTaskList(user, tasks, selected.key)}
                 </div>
@@ -2729,6 +3214,8 @@ function renderTaskDetail(task) {
   if (task.stage !== "self") alignPerformanceAchievements(evaluation[task.stage], evaluation.self, task.stage, evaluation.first);
   const showSelfReference = task.stage === "first" || task.stage === "second";
   const lockedByNext = task.stage === "first" && evaluation.status.second === "completed";
+  const finalSubmitted = hasEvaluatorFinalSubmitted(currentUser().id);
+  const lockedByFinal = finalSubmitted;
   return `
     <section class="panel">
       <div class="panel-head">
@@ -2737,21 +3224,21 @@ function renderTaskDetail(task) {
           <p class="muted">${esc(task.employee.title)} · ${esc(task.employee.division)} / ${esc(task.employee.team)}</p>
         </div>
         <div class="toolbar">
-          ${showSelfReference ? `<button class="button secondary" onclick="App.openMemberDetail('${task.employee.id}', { hideGrades: true, stages: ${task.stage === 'first' ? "['self']" : "['self','first']"}, scoreStage: '${task.stage === 'first' ? "self" : "first"}', scoreLabel: '${task.stage === 'first' ? "자기평가 점수" : "1차 평가 점수"}' })">📋 평가 현황 보기</button>` : ""}
+          ${showSelfReference ? `<button class="button secondary" onclick="App.openMemberDetailWindow('${task.employee.id}', { hideGrades: true, stages: ${task.stage === 'first' ? "['self']" : "['self','first']"}, scoreStage: '${task.stage === 'first' ? "self" : "first"}', scoreLabel: '${task.stage === 'first' ? "자기평가 점수" : "1차 평가 점수"}' })">${task.stage === 'first' ? "📋 자기평가 점수 보기" : "📋 1차 평가 점수 보기"}</button>` : ""}
           ${statusPill(task.status, allowed)}
         </div>
       </div>
       <div class="panel-body grid">
-        ${lockedByNext
-          ? `<div class="notice warn">2차 평가가 완료되어 1차 평가 내용을 변경할 수 없습니다.</div>`
+        ${lockedByFinal ? `<div class="notice ok">✅ 평가 최종 제출이 완료되어 수정할 수 없습니다.</div>` :
+          lockedByNext ? `<div class="notice warn">2차 평가가 완료되어 1차 평가 내용을 변경할 수 없습니다.</div>`
           : allowed ? "" : `<div class="notice warn">${esc(task.ready ? periodMessage(task.stage, cycle) : "이전 차수 평가 또는 자기평가 제출이 완료되어야 평가할 수 있습니다.")}</div>`}
-        <fieldset ${lockedByNext ? "disabled" : ""} style="border:none;padding:0;margin:0;">
+        <fieldset ${lockedByNext || lockedByFinal ? "disabled" : ""} style="border:none;padding:0;margin:0;">
           ${renderEvaluationForm(task.stage, evaluation[task.stage], task.employee, task.stage)}
         </fieldset>
         <div class="toolbar">
-          <button class="button secondary" ${lockedByNext ? "disabled" : ""} onclick="App.saveStage('${task.employee.id}', '${task.stage}', false)">임시 저장</button>
-          <button class="button" ${allowed && !lockedByNext ? "" : "disabled"} onclick="App.saveStage('${task.employee.id}', '${task.stage}', true)">평가 제출</button>
-          ${evaluation.status[task.stage] === "completed" ? '<span class="pill green">제출완료</span>' : ""}
+          <button class="button secondary" ${lockedByNext || lockedByFinal ? "disabled" : ""} onclick="App.saveStage('${task.employee.id}', '${task.stage}', false)">임시 저장</button>
+          <button class="button" ${allowed && !lockedByNext && !lockedByFinal ? "" : "disabled"} onclick="App.saveStage('${task.employee.id}', '${task.stage}', true)">작성 완료</button>
+          ${evaluation.status[task.stage] === "completed" ? '<span class="pill green">완료</span>' : ""}
         </div>
       </div>
     </section>
@@ -2764,6 +3251,7 @@ function renderUpwardTaskDetail(task) {
   const target = task.employee;
   const evaluator = userById(assignment.evaluatorId);
   const allowed = canEditUpward();
+  const finalSubmitted = hasEvaluatorFinalSubmitted(currentUser().id);
   return `
     <section class="panel">
       <div class="panel-head">
@@ -2774,7 +3262,8 @@ function renderUpwardTaskDetail(task) {
         ${statusPill(assignment.status, allowed)}
       </div>
       <div class="panel-body grid">
-        ${allowed ? "" : `<div class="notice warn">${esc(periodMessage("upward", cycle))}</div>`}
+        ${finalSubmitted ? `<div class="notice ok">✅ 평가 최종 제출이 완료되어 수정할 수 없습니다.</div>` :
+          allowed ? "" : `<div class="notice warn">${esc(periodMessage("upward", cycle))}</div>`}
         <div class="component-card">
           <h3>평가 관계</h3>
           <div class="grid two">
@@ -2782,11 +3271,13 @@ function renderUpwardTaskDetail(task) {
             <div><strong>평가 대상 조직장</strong><p class="muted">${esc(target.name)} · ${ROLE_LABELS[target.role]}</p></div>
           </div>
         </div>
-        ${renderUpwardEvaluationForm(assignment)}
+        <fieldset ${finalSubmitted ? "disabled" : ""} style="border:none;padding:0;margin:0;">
+          ${renderUpwardEvaluationForm(assignment)}
+        </fieldset>
         <div class="toolbar">
-          <button class="button secondary" onclick="App.saveUpward(${jsLiteral(assignment.id)}, false)">임시 저장</button>
-          <button class="button" ${allowed ? "" : "disabled"} onclick="App.saveUpward(${jsLiteral(assignment.id)}, true)">평가 제출</button>
-          ${isCompletedStatus(assignment.status) ? '<span class="pill green">제출완료</span>' : ""}
+          <button class="button secondary" ${finalSubmitted ? "disabled" : ""} onclick="App.saveUpward(${jsLiteral(assignment.id)}, false)">임시 저장</button>
+          <button class="button" ${allowed && !finalSubmitted ? "" : "disabled"} onclick="App.saveUpward(${jsLiteral(assignment.id)}, true)">작성 완료</button>
+          ${isCompletedStatus(assignment.status) ? '<span class="pill green">완료</span>' : ""}
         </div>
       </div>
     </section>
@@ -2799,6 +3290,7 @@ function renderPeerTaskDetail(task) {
   const target = task.employee;
   const evaluator = userById(assignment.evaluatorId);
   const allowed = canEditPeer();
+  const finalSubmitted = hasEvaluatorFinalSubmitted(currentUser().id);
   return `
     <section class="panel">
       <div class="panel-head">
@@ -2809,7 +3301,8 @@ function renderPeerTaskDetail(task) {
         ${statusPill(assignment.status, allowed)}
       </div>
       <div class="panel-body grid">
-        ${allowed ? "" : `<div class="notice warn">${esc(periodMessage("peer", cycle))}</div>`}
+        ${finalSubmitted ? `<div class="notice ok">✅ 평가 최종 제출이 완료되어 수정할 수 없습니다.</div>` :
+          allowed ? "" : `<div class="notice warn">${esc(periodMessage("peer", cycle))}</div>`}
         <div class="component-card">
           <h3>평가 관계</h3>
           <div class="grid two">
@@ -2817,11 +3310,13 @@ function renderPeerTaskDetail(task) {
             <div><strong>동료평가 대상</strong><p class="muted">${esc(target.name)} · ${ROLE_LABELS[target.role]}</p></div>
           </div>
         </div>
-        ${renderPeerEvaluationForm(assignment)}
+        <fieldset ${finalSubmitted ? "disabled" : ""} style="border:none;padding:0;margin:0;">
+          ${renderPeerEvaluationForm(assignment)}
+        </fieldset>
         <div class="toolbar">
-          <button class="button secondary" onclick="App.savePeer(${jsLiteral(assignment.id)}, false)">임시 저장</button>
-          <button class="button" ${allowed ? "" : "disabled"} onclick="App.savePeer(${jsLiteral(assignment.id)}, true)">평가 제출</button>
-          ${isCompletedStatus(assignment.status) ? '<span class="pill green">제출완료</span>' : ""}
+          <button class="button secondary" ${finalSubmitted ? "disabled" : ""} onclick="App.savePeer(${jsLiteral(assignment.id)}, false)">임시 저장</button>
+          <button class="button" ${allowed && !finalSubmitted ? "" : "disabled"} onclick="App.savePeer(${jsLiteral(assignment.id)}, true)">작성 완료</button>
+          ${isCompletedStatus(assignment.status) ? '<span class="pill green">완료</span>' : ""}
         </div>
       </div>
     </section>
@@ -3111,12 +3606,43 @@ function renderResultSubmission(user) {
       </section>`;
   }
 
-  // 점수 기준 내림차순 정렬
+  // 표준화 점수 계산 (설정 활성화 시)
+  const useStd = Boolean(activeCycle()?.useScoreStandardization);
+  const stdScores = useStd ? calculateStandardizedScores(rows) : new Map();
+
+  // 정렬 상태 (기본: 표준화점수 또는 종합점수 내림차순)
+  const cmpSortCol = state.ui.cmpSortCol || (useStd ? "std" : "score");
+  const cmpSortDir = state.ui.cmpSortDir || "desc";
+
+  const getCmpSortValue = (emp) => {
+    const result = calculateFinal(emp.id);
+    if (cmpSortCol === "std") {
+      const s = stdScores.get(emp.id)?.standardizedScore;
+      return s != null ? s : (result.rawScore ?? -1);
+    }
+    if (cmpSortCol === "score") return result.rawScore ?? -1;
+    if (cmpSortCol === "grade") return GRADES.indexOf(result.autoGrade ?? "");
+    return -1;
+  };
+
   const sortedRows = [...rows].sort((a, b) => {
-    const sa = calculateFinal(a.id).rawScore ?? -1;
-    const sb = calculateFinal(b.id).rawScore ?? -1;
-    return sb - sa;
+    const sa = getCmpSortValue(a);
+    const sb = getCmpSortValue(b);
+    return cmpSortDir === "asc" ? sa - sb : sb - sa;
   });
+
+  // 소규모팀(표준화 불가) 구성원: 등급 미배정이면 상단 분리, 배정 완료되면 본 목록에 합류
+  const smallTeamRows = useStd ? sortedRows.filter(e => {
+    if (stdScores.get(e.id)?.canStandardize !== false) return false;
+    const ev = evaluations()[e.id];
+    return !ev?.orgAdjustment?.gradeManual;
+  }) : [];
+  const normalRows = useStd ? sortedRows.filter(e => {
+    const info = stdScores.get(e.id);
+    if (info?.canStandardize !== false) return true;
+    const ev = evaluations()[e.id];
+    return Boolean(ev?.orgAdjustment?.gradeManual);
+  }) : sortedRows;
 
   // 현재 등급 배분 통계
   const gradeCounts = Object.fromEntries(GRADES.map((g) => [g, 0]));
@@ -3183,20 +3709,111 @@ function renderResultSubmission(user) {
           </div>
         </div>
 
+        <!-- 종합평가 필터 -->
+        ${(() => {
+          const teams   = [...new Set(sortedRows.map(e => e.team).filter(Boolean))].sort();
+          const titles  = [...new Set(sortedRows.map(e => e.title).filter(Boolean))].sort();
+          const teamOpts  = teams.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+          const titleOpts = titles.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+          const gradeOpts = GRADES.map(g => `<option value="${g}">${g}등급</option>`).join("");
+          const selStyle  = `padding:7px 14px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:var(--surface);min-width:120px;`;
+          return `<div style="display:flex;gap:10px;flex-wrap:nowrap;align-items:center;padding:12px 0 8px;">
+            <div style="position:relative;flex:1;min-width:160px;max-width:260px;">
+              <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;">🔍</span>
+              <input id="cmp-filter-name" type="text" placeholder="이름 검색..."
+                oninput="App.cmpFilter()"
+                style="width:100%;padding:7px 10px 7px 30px;border:1px solid var(--line);border-radius:6px;font-size:13px;" />
+            </div>
+            <select id="cmp-filter-team"  onchange="App.cmpFilter()" style="${selStyle}">
+              <option value="">팀&nbsp;&nbsp;전체</option>${teamOpts}
+            </select>
+            <select id="cmp-filter-title" onchange="App.cmpFilter()" style="${selStyle}">
+              <option value="">직급&nbsp;&nbsp;전체</option>${titleOpts}
+            </select>
+            <select id="cmp-filter-grade" onchange="App.cmpFilter()" style="${selStyle}">
+              <option value="">등급&nbsp;&nbsp;전체</option>${gradeOpts}
+            </select>
+          </div>`;
+        })()}
         <!-- 종합평가 테이블 -->
-        <div class="table-wrap">
+        ${useStd && smallTeamRows.length > 0 ? `
+        <div class="notice warn" style="margin-bottom:8px;">
+          <strong>⚠ 아래 ${smallTeamRows.length}명은 팀 인원이 2명 이하로 표준화 점수를 산출할 수 없습니다.</strong><br/>
+          추천 등급이 표시되지 않으니 본부장이 직접 등급을 부여해 주세요.
+        </div>
+        <div class="table-wrap" style="margin-bottom:16px;">
           <table>
-            <thead><tr><th>순위</th><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th><th>종합 점수</th><th>추천 등급</th><th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th></tr></thead>
+            <thead><tr><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th><th>종합 점수</th><th>표준화 점수</th><th>추천 등급</th><th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th></tr></thead>
             <tbody>
-              ${sortedRows.map((employee, idx) => {
+              ${smallTeamRows.map(employee => {
                 const ev = evaluations()[employee.id];
                 const result = calculateFinal(employee.id);
+                const hasManualGrade = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade);
+                const curGrade = hasManualGrade ? ev.orgAdjustment.grade : "";
+                return `
+                  <tr data-name="${esc(employee.name)}" data-team="${esc(employee.team||"")}" data-title="${esc(employee.title||"")}" data-grade="${esc(curGrade||"")}">
+                    <td>
+                      <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                        <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                      </button>
+                      <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
+                    </td>
+                    <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.team || employee.division || "")}</span></td>
+                    <td>${renderStageComponentScores(employee, ev, { hiddenStages: [], hideExtras: true })}</td>
+                    <td>${peerScoreCellHtml(employee)}</td>
+                    <td><span class="score" style="font-size:18px;">${result.scoreText}</span></td>
+                    <td><span class="muted" style="font-size:12px;">팀 인원 부족</span></td>
+                    <td><span class="muted">-</span></td>
+                    <td>
+                      ${(() => {
+                        const lockedGrade = submission?.needsAdjustmentSession ? (submission.submittedGrades?.[employee.id] || curGrade) : null;
+                        if (isSubmitted || submission?.needsAdjustmentSession) return hasManualGrade ? gradeBadge(curGrade) : `<span class="muted">-</span>`;
+                        return `<select id="org_adj_grade_${employee.id}"
+                            onchange="App.handleSmallTeamGradeChange('${employee.id}');App.refreshComprehensiveStats();"
+                            style="width:90px;font-weight:700;${!curGrade ? "color:var(--text-muted,#888);" : ""}">
+                            <option value="" ${!curGrade ? "selected" : ""}>-</option>
+                            ${GRADES.map(g => `<option value="${g}" ${curGrade === g ? "selected" : ""}>${g}</option>`).join("")}
+                          </select>`;
+                      })()}
+                    </td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>` : ""}
+        <div class="table-wrap">
+          <table>
+            ${(() => {
+              const sortArrow = (col) => {
+                const active = cmpSortCol === col;
+                const up = active && cmpSortDir === "asc";
+                const down = active && cmpSortDir === "desc";
+                return `<span style="display:inline-flex;flex-direction:column;margin-left:4px;line-height:1;vertical-align:middle;cursor:pointer;" onclick="App.setCmpSort('${col}')">
+                  <span style="font-size:9px;opacity:${up ? 1 : 0.3};color:${up ? "var(--primary)" : "inherit"};">▲</span>
+                  <span style="font-size:9px;opacity:${down ? 1 : 0.3};color:${down ? "var(--primary)" : "inherit"};">▼</span>
+                </span>`;
+              };
+              return `<thead><tr>
+                <th>순위</th><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th>
+                <th style="cursor:pointer;white-space:nowrap;" onclick="App.setCmpSort('score')">종합 점수${sortArrow("score")}</th>
+                ${useStd ? `<th style="white-space:nowrap;">표준화 점수 <span onclick="App.showStandardizationInfo()" title="표준화 점수 산출 방법 보기" style="cursor:pointer;color:var(--primary);font-weight:400;font-size:13px;margin-left:2px;">ⓘ</span>${sortArrow("std")}</th>` : ""}
+                <th style="cursor:pointer;white-space:nowrap;" onclick="App.setCmpSort('grade')">추천 등급${sortArrow("grade")}</th>
+                <th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th>
+              </tr></thead>`;
+            })()}
+            <tbody id="cmp-tbody">
+              ${normalRows.map((employee, idx) => {
+                const ev = evaluations()[employee.id];
+                const result = calculateFinal(employee.id);
+                const stdInfo = stdScores.get(employee.id);
+                const isSmallTeamMerged = useStd && stdInfo?.canStandardize === false && ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade);
+                const recommendedGrade = isSmallTeamMerged ? ev.orgAdjustment.grade : result.autoGrade;
                 const curGrade = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : result.autoGrade;
                 return `
-                  <tr>
+                  <tr data-name="${esc(employee.name)}" data-team="${esc(employee.team||"")}" data-title="${esc(employee.title||"")}" data-grade="${esc(curGrade||"")}">
                     <td><strong style="font-size:16px;color:var(--primary);">${idx + 1}</strong></td>
                     <td>
-                      <button onclick="App.openMemberDetail('${employee.id}', { hideGrades: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                      <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
                         <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
                       </button>
                       <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
@@ -3207,7 +3824,8 @@ function renderResultSubmission(user) {
                     <td>
                       <span class="score" style="font-size:18px;">${result.scoreText}</span>
                     </td>
-                    <td>${gradeBadge(result.autoGrade)}</td>
+                    ${useStd ? `<td><span class="score" style="font-size:18px;color:#2454c6;">${stdInfo?.standardizedScore != null ? stdInfo.standardizedScore.toFixed(1) : "-"}</span></td>` : ""}
+                    <td>${gradeBadge(recommendedGrade)}</td>
                     <td>
                       ${(() => {
                         const lockedGrade = submission?.needsAdjustmentSession
@@ -4079,15 +4697,38 @@ function renderApprovalPage(user) {
 
   const cycle = selectedCycle();
   const allUsers = cycleUsers();
-  // 사장: 본인 소속 조직(division) 하위 구성원만 / 회장: 전체
+
+  // 사장: COO 조직 하위 구성원만 / 회장: 전체
+  // COO 하위 조직 이름을 org 트리에서 재귀 수집
+  const presidentOrgNames = (() => {
+    if (user.role !== "president") return null;
+    const nodes = (state.organizationNodes && state.organizationNodes.length)
+      ? state.organizationNodes
+      : defaultOrganizationNodes();
+    // 사장 계정의 division(= "COO")으로 루트 노드 찾기
+    const rootName = user.division || "COO";
+    const rootNode = nodes.find(n => n.name === rootName);
+    if (!rootNode) return new Set([rootName]);
+    const result = new Set();
+    const collect = (parentId) => {
+      nodes.filter(n => n.parentId === parentId).forEach(n => {
+        result.add(n.name);
+        collect(n.id);
+      });
+    };
+    result.add(rootNode.name);
+    collect(rootNode.id);
+    return result;
+  })();
+
   const evaluatees = allUsers.filter(emp => {
     if (!isEvaluatee(emp)) return false;
     if (user.role === "president") {
-      // 사장 소속 division(예: COO)과 같은 division이거나 그 하위
-      return (emp.division === user.division || emp.orgRoot === user.division || emp.team === user.division || true);
+      // COO 하위 조직에 속하는 구성원만
+      return presidentOrgNames.has(emp.division) || presidentOrgNames.has(emp.team);
     }
-    return true;
-  }).filter(isEvaluatee);
+    return true; // 회장: 전체
+  });
 
   // ── 성능 최적화: calculateFinal 결과를 한 번만 계산해 캐싱 ──
   const resultCache = new Map();
@@ -4349,10 +4990,10 @@ function renderApprovalPage(user) {
                   </th>
                   <th>
                     <button onclick="App.setApprovalSort('grade')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px;padding:0;">
-                      최종 등급 ${sortField==="grade" ? (sortDir==="desc"?"▼":"▲") : "↕"}
+                      등급 ${sortField==="grade" ? (sortDir==="desc"?"▼":"▲") : "↕"}
                     </button>
                   </th>
-                  <th>조정 등급</th>
+                  <th>승인 등급</th>
                   <th>조정 사유</th>
                 </tr></thead>
                 <tbody id="approval-result-tbody">
@@ -4365,7 +5006,7 @@ function renderApprovalPage(user) {
                     return `<tr data-name="${esc((employee.name||"").toLowerCase())}">
                       <td><strong class="approval-rank" style="color:var(--primary);">${idx + 1}</strong></td>
                       <td>
-                        <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                        <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
                           <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
                         </button>
                         <br/><span class="muted">${esc(employee.employeeNo || "")}</span>
@@ -5217,7 +5858,7 @@ function renderAdjustmentSessionModal(division) {
                   const cur = submittedGrade || getAdjustmentGrade(ev, result);
                   return `<tr>
                     <td><strong style="color:var(--primary);">${idx + 1}</strong></td>
-                    <td><button onclick="App.openMemberDetail('${emp.id}', { hideGrades: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);text-decoration:underline;">${esc(emp.name)}</strong></button><br/><span class="muted" style="font-size:11px;">${esc(emp.team || "")} ${esc(emp.employeeNo || "")}</span></td>
+                    <td><button onclick="App.openMemberDetailWindow('${emp.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);text-decoration:underline;">${esc(emp.name)}</strong></button><br/><span class="muted" style="font-size:11px;">${esc(emp.team || "")} ${esc(emp.employeeNo || "")}</span></td>
                     <td>${renderStageComponentScores(emp, ev, { hiddenStages: [], hideExtras: true })}</td>
                     <td>${peerScoreCellHtml(emp)}</td>
                     <td class="score" style="font-size:16px;">${result.scoreText}</td>
@@ -5329,7 +5970,7 @@ function renderAdminPeople() {
   const subTabsHtml = [
     { key: "targets", label: "평가 대상자 관리" },
     { key: "relative", label: "상대평가 그룹 설정" },
-    { key: "submitPolicy", label: "종합평가 제출 설정" },
+    { key: "submitPolicy", label: "종합평가 설정" },
   ].map(({ key, label }) =>
     `<button class="cycle-modal-tab ${subTab === key ? "active" : ""}" style="font-size:13px;padding:6px 14px;" onclick="state.ui.peopleSubTab='${key}';render();">${label}</button>`
   ).join("");
@@ -5345,17 +5986,18 @@ function renderAdminPeople() {
 function renderSubmitPolicyTab() {
   const cycle = selectedCycle();
   const allowance = cycle.gradeExcessAllowance ?? 1;
+  const useAdjSession = cycle.useAdjustmentSession !== false; // 기본값 true
+  const useStd = Boolean(cycle.useScoreStandardization);
   return `
     <section class="panel">
       <div class="panel-head">
         <div>
-          <h2>종합평가 제출 설정</h2>
-          <p class="muted">등급 배분 가이드 초과 시 사유 입력만으로 제출 가능한 허용 인원을 설정합니다.</p>
+          <h2>종합평가 설정</h2>
         </div>
       </div>
       <div class="panel-body">
         <div class="component-card" style="max-width:480px;">
-          <h3 style="margin-bottom:12px;">배분 초과 허용 인원</h3>
+          <h3 style="margin-bottom:12px;">종합평가 등급 배분율 초과 허용 인원 설정</h3>
           <p class="muted" style="margin-bottom:16px;font-size:13px;">
             등급 배분 가이드를 초과한 인원이 설정값 이하이면 본부장이 사유를 입력하고 직접 제출할 수 있습니다.<br/>
             설정값을 초과하면 인사팀 면담(조정 세션) 요청이 필요합니다.
@@ -5367,8 +6009,58 @@ function renderSubmitPolicyTab() {
             <span class="muted">명 이하까지 허용</span>
           </div>
           <div class="notice info" style="font-size:12px;margin-bottom:16px;">
-            현재 설정: 초과 인원이 <strong>${allowance}명 이하</strong>이면 사유 입력 후 제출 가능 / <strong>${allowance + 1}명 이상</strong>이면 인사팀 조정 세션 필요
+            현재 설정: 초과 인원이 <strong>${allowance}명 이하</strong>이면 사유 입력 후 제출 가능 / <strong>${allowance + 1}명 이상</strong>이면 ${useAdjSession ? "인사팀 조정 세션 필요" : "<strong style='color:#dc2626;'>제출 자체가 불가</strong>"}
           </div>
+          <div style="border-top:1px solid var(--line);padding-top:16px;margin-top:4px;">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;font-weight:600;margin-bottom:8px;">
+              <input type="checkbox" id="use_adjustment_session" ${useAdjSession ? "checked" : ""}
+                style="width:18px;height:18px;cursor:pointer;" />
+              인사팀 면담(조정 세션) 요청 기능 사용
+            </label>
+            <p class="muted" style="font-size:12px;margin:0;">
+              <strong>켬:</strong> 허용 인원 초과 시 본부장이 인사팀 면담을 요청하고, 인사팀이 조정 후 최종 제출합니다.<br/>
+              <strong>끔:</strong> 허용 인원 초과 시 종합평가 제출 자체가 불가합니다. 등급 배분을 수정해야만 제출할 수 있습니다.
+            </p>
+          </div>
+        </div>
+        <div class="component-card" style="max-width:480px;margin-top:16px;">
+          <h3 style="margin-bottom:12px;">평가자 변별도 검증 설정</h3>
+          <p class="muted" style="margin-bottom:16px;font-size:13px;">
+            1차/2차 평가자가 담당 팀원 전체에 대한 평가를 완료해 제출할 때, 팀 내 점수 차이(최고 − 최저)가 설정값보다 작으면 경고 메시지를 표시합니다.<br/>
+            팀 인원이 <strong>3명 이상</strong>인 팀에만 적용됩니다.
+          </p>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;font-weight:600;margin-bottom:16px;">
+            <input type="checkbox" id="use_discrimination_check" ${cycle.useDiscriminationCheck ? "checked" : ""}
+              style="width:18px;height:18px;cursor:pointer;" />
+            변별도 검증 사용
+          </label>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <label style="font-weight:600;min-width:140px;font-size:13px;">최소 점수 차이 기준</label>
+            <input type="number" id="discrimination_threshold" min="1" max="50" value="${cycle.discriminationThreshold ?? 10}"
+              style="width:80px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:14px;text-align:center;" />
+            <span class="muted">점 미만이면 경고</span>
+          </div>
+          <div class="notice info" style="font-size:12px;">
+            현재 설정: 변별도 검증 <strong>${cycle.useDiscriminationCheck ? "사용 중" : "미사용"}</strong>${cycle.useDiscriminationCheck ? ` / 기준 점수 차이 <strong>${cycle.discriminationThreshold ?? 10}점</strong> 미만 시 경고` : ""}
+          </div>
+        </div>
+        <div class="component-card" style="max-width:480px;margin-top:16px;">
+          <h3 style="margin-bottom:12px;">종합 점수 표준화 사용</h3>
+          <p class="muted" style="margin-bottom:16px;font-size:13px;">
+            팀마다 평가자 기준이 다를 수 있어 원점수를 그대로 비교하면 불공정할 수 있습니다.<br/>
+            표준화를 사용하면 팀 내 상대적 위치를 전사 기준으로 환산한 <strong>표준화 점수</strong>를 종합평가 화면에 추가로 표시합니다.<br/>
+            팀 인원이 <strong>3명 이상</strong>인 팀에만 적용되며, 1~2명 팀은 본부장이 직접 등급을 부여합니다.
+          </p>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;font-weight:600;">
+            <input type="checkbox" id="use_score_standardization" ${useStd ? "checked" : ""}
+              style="width:18px;height:18px;cursor:pointer;" />
+            종합평가 화면에 표준화 점수 열 표시
+          </label>
+          <div class="notice info" style="font-size:12px;margin-top:12px;">
+            현재 설정: 표준화 점수 <strong>${useStd ? "사용 중" : "미사용"}</strong>
+          </div>
+        </div>
+        <div style="margin-top:20px;">
           <button class="button" onclick="App.saveSubmitPolicy()">저장</button>
         </div>
       </div>
@@ -5511,7 +6203,7 @@ function renderAdminHRGroupComprehensive() {
                   <tr>
                     <td><strong style="font-size:16px;color:var(--primary);">${idx + 1}</strong></td>
                     <td>
-                      <button onclick="App.openMemberDetail('${employee.id}', { hideGrades: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                      <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
                         <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
                       </button>
                       <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
@@ -7806,7 +8498,7 @@ function renderAdjustmentResultPanel(evaluatees) {
                 return `<tr data-name="${esc((employee.name||"").toLowerCase())}" data-div="${esc(employee.division||"미지정")}" data-team="${esc(employee.team||"")}" data-grade2="${esc(employee.grade||"")}" data-grade="${esc(result.finalGrade||"")}">
                   <td><strong class="adj-rank" style="color:var(--primary);">${idx + 1}</strong></td>
                   <td>
-                    <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                    <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
                       <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
                     </button>
                     <br/><span class="muted">${esc(employee.employeeNo || "")}</span>
@@ -8307,7 +8999,7 @@ function renderAdjustmentTable(employees) {
             return `
               <tr>
                 <td>
-                  <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                  <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
                     <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
                   </button>
                   <br /><span class="muted">${esc(employee.employeeNo || employee.team)}</span>
@@ -8454,6 +9146,38 @@ function memberScoreCells(employee, opts = {}) {
     adminReason: stageAdjustText(ev, "admin"),
     feedback: (() => { try { return getPublishedFeedback(ev, employee); } catch (e) { return ""; } })(),
   };
+}
+
+// 구성원의 전체 평가 피드백 텍스트 (1차/2차 평가 코멘트 + 상향/동료평가 코멘트)
+function buildEvalFeedbackText(emp) {
+  const ev = evaluations()[emp.id] || {};
+  const lines = [];
+  [["first", "1차 평가"], ["second", "2차 평가"]].forEach(([stage, label]) => {
+    const review = ev[stage];
+    if (!review) return;
+    const hasComment = review.performance?.comment || review.competency?.comment || review.attitude?.comment;
+    if (!hasComment) return;
+    lines.push(`${label}:`);
+    if (review.performance?.comment) lines.push(`  업적평가: ${review.performance.comment}`);
+    if (review.competency?.comment)  lines.push(`  역량평가: ${review.competency.comment}`);
+    if (review.attitude?.comment)    lines.push(`  자세·태도평가: ${review.attitude.comment}`);
+    lines.push("");
+  });
+  const upwardAssigns = getUpwardAssignments()
+    .filter(a => a.targetId === emp.id && isCompletedStatus(a.status) && a.answer?.comment);
+  if (upwardAssigns.length) {
+    lines.push("상향평가:");
+    upwardAssigns.forEach((a, i) => lines.push(`  상향평가${i + 1}: ${a.answer.comment}`));
+    lines.push("");
+  }
+  const peerAssigns = getPeerAssignments()
+    .filter(a => a.targetId === emp.id && isCompletedStatus(a.status) && a.answer?.comment);
+  if (peerAssigns.length) {
+    lines.push("동료평가:");
+    peerAssigns.forEach((a, i) => lines.push(`  동료평가${i + 1}: ${a.answer.comment}`));
+    lines.push("");
+  }
+  return lines.join("\n").trim();
 }
 
 // 단계(사장/회장/어드민) 조정 기록을 "B→A : 사유" 형식 텍스트로
@@ -8621,7 +9345,7 @@ function renderAdjustmentGroup(employees, division) {
             return `
               <tr>
                 <td>
-                  <button onclick="App.openMemberDetail('${employee.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                  <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
                     <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
                   </button>
                   <br /><span class="muted">${esc(employee.team)}</span>
@@ -8939,6 +9663,60 @@ function getVisibleResultUsers(user) {
   return [];
 }
 
+// 평가자가 준 점수의 소계 (업적+역량+자세태도 가중합산)
+function calculateEvaluatorSubtotalScore(employee, review) {
+  const roleWeights = state.roleWeights[employee.role] || state.roleWeights.member || {};
+  const items = ["performance", "competency", "attitude"].map(c => ({
+    value: review[c]?.score != null && review[c].score !== "" ? Number(review[c].score) : null,
+    weight: Number(roleWeights[c] || 0)
+  })).filter(s => s.value !== null && s.weight > 0);
+  if (!items.length) return null;
+  const totalWeight = items.reduce((s, v) => s + v.weight, 0);
+  return totalWeight ? items.reduce((s, v) => s + v.value * v.weight, 0) / totalWeight : null;
+}
+
+// 팀 단위 Z점수 표준화 점수 계산 (팀원 3명 이상인 팀만)
+function calculateStandardizedScores(rows) {
+  const result = new Map();
+  const scoreRows = rows.map(emp => ({
+    id: emp.id,
+    team: emp.team || emp.division || '_',
+    score: calculateFinal(emp.id).rawScore
+  }));
+  const byTeam = {};
+  scoreRows.forEach(r => {
+    if (!byTeam[r.team]) byTeam[r.team] = [];
+    byTeam[r.team].push(r);
+  });
+  const validAll = scoreRows.filter(r => r.score !== null).map(r => r.score);
+  if (!validAll.length) return result;
+  const divMean = validAll.reduce((s, v) => s + v, 0) / validAll.length;
+  const divVar = validAll.reduce((s, v) => s + (v - divMean) ** 2, 0) / validAll.length;
+  const divSD = Math.sqrt(divVar) || 1;
+  Object.values(byTeam).forEach(teamMembers => {
+    const validTeam = teamMembers.filter(r => r.score !== null);
+    const canStandardize = validTeam.length >= 3;
+    teamMembers.forEach(r => {
+      if (!canStandardize) {
+        result.set(r.id, { standardizedScore: null, canStandardize: false, teamSize: teamMembers.length });
+        return;
+      }
+      if (r.score === null) {
+        result.set(r.id, { standardizedScore: null, canStandardize: true, teamSize: teamMembers.length });
+        return;
+      }
+      const teamScores = validTeam.map(t => t.score);
+      const teamMean = teamScores.reduce((s, v) => s + v, 0) / teamScores.length;
+      const teamSD = Math.sqrt(teamScores.reduce((s, v) => s + (v - teamMean) ** 2, 0) / teamScores.length);
+      const usedSD = teamSD < 0.01 ? divSD : teamSD;
+      const z = (r.score - teamMean) / usedSD;
+      const standardizedScore = Math.round((divMean + z * divSD) * 10) / 10;
+      result.set(r.id, { standardizedScore, canStandardize: true, teamSize: teamMembers.length });
+    });
+  });
+  return result;
+}
+
 function calculateFinal(userId) {
   const employee = cycleUserById(userId);
   const evaluation = evaluations()[userId];
@@ -9229,7 +10007,7 @@ async function callAIPerformanceEval(employeeId, silent = false, cycleId = null)
 
     // 업적별 JSON 스키마 예시 생성
     const achSchemaExamples = achievements.map((_, i) =>
-      `    { "index": ${i+1}, "score": 점수(0~100), "rationale": "업적 ${i+1} 채점 근거 (한국어 200자 내외, 데이터 근거 명시)" }`
+      `    { "index": ${i+1}, "score": 점수(0~100), "rationale": "업적 ${i+1} 채점 근거 (한국어 400자 이상, 업적 목표·달성 수준·과정의 구체성·데이터 일치 여부·직급 적합성 등을 항목별로 상세히 서술)" }`
     ).join(",\n");
 
     const systemInstruction = `당신은 객관적이고 냉철한 인사평가 AI입니다.
@@ -9241,7 +10019,7 @@ async function callAIPerformanceEval(employeeId, silent = false, cycleId = null)
     const prompt = leaderEval
       ? `${systemInstruction}
 
-아래는 "${employee.name}(${employee.title || ""})"님의 자기평가 업적 데이터입니다.
+아래는 "${employee.name}(${employee.title || ""})" 님의 자기평가 업적 데이터입니다. 직급은 "${employee.title || "임원"}"입니다.
 
 ---
 ${achievementTexts}
@@ -9252,6 +10030,7 @@ ${achievementTexts}
 - 목표수준(정량 기준) 대비 달성수준의 수치적 격차를 핵심 기준으로 삼으세요
 - 달성내용은 과정의 구체성과 타당성을 검토하세요
 - 연결된 목표의 시스템 데이터(달성률, 체크인)와 자기 기술 내용이 일치하는지 교차 검증하세요
+- 직급(${employee.title || "임원"})을 감안할 때 제시한 목표 수준과 달성 수준·내용이 해당 직급에 요구되는 책임과 난이도에 부합하는지 평가하세요. 직급 대비 목표 수준이 낮거나 달성 내용이 기대에 미치지 못하면 이를 채점에 반영하세요.
 - 총점 = 각 업적 점수 × 가중치 합산 (가중치 합이 100% 미만이면 비율 환산)
 
 반드시 아래 JSON 형식만 출력하세요:
@@ -9260,11 +10039,11 @@ ${achievementTexts}
 ${achSchemaExamples}
   ],
   "totalScore": 가중합계점수(0~100),
-  "totalRationale": "전체 종합 평가 의견 (한국어 200자 내외, 데이터 기반 객관적 의견)"
+  "totalRationale": "전체 종합 평가 의견 (한국어 500자 이상, 각 업적의 성과 수준 요약·강점·개선 필요 사항·직급 기대 부합도·종합 판단을 구체적으로 서술. 단순 나열이 아닌 논거를 갖춘 평가 의견으로 작성)"
 }`
       : `${systemInstruction}
 
-아래는 "${employee.name}(${employee.title || ""})"님의 자기평가 업적 데이터입니다.
+아래는 "${employee.name}(${employee.title || ""})" 님의 자기평가 업적 데이터입니다. 직급은 "${employee.title || "일반 직원"}"입니다.
 
 ---
 ${achievementTexts}
@@ -9272,9 +10051,10 @@ ${achievementTexts}
 
 [채점 기준]
 - 각 업적별 0~100점 채점
-- 연결된 팀 목표가 있으면: 팀 목표의 지표 달성률·체크인 기록을 기준으로 해당 업적이 팀 목표에 실질적으로 얼마나 기여했는지 평가하세요
-- 연결된 개인 목표가 있으면: 개인 목표의 달성률·체크인 데이터로 목표 달성 수준을 평가하세요
+- 연결된 팀 목표가 있으면: 팀 목표의 지표 달성률·체크인 기록을 기준으로 해당 업적이 팀 목표에 실질적으로 얼마나 기여했는지 평가하세요. 이때 연결된 개인 목표의 달성률·체크인 데이터를 함께 고려하여, 개인의 실제 활동 수준이 팀 목표 공헌도와 일치하는지 교차 검증하세요.
+- 연결된 개인 목표만 있으면: 개인 목표의 달성률·체크인 데이터로 목표 달성 수준을 평가하세요
 - 연결된 목표가 없으면: 자기 기술 내용만으로 평가하되 보수적으로 채점하세요
+- 직급(${employee.title || "일반 직원"})을 감안할 때 해당 업적과 팀 목표에 대한 공헌도 수준이 직급에 요구되는 역할과 난이도에 부합하는지 평가하세요. 직급 대비 공헌도가 기대치를 상회하거나 하회하는 경우 이를 채점에 반영하세요.
 - 시스템 데이터와 자기평가 서술의 불일치가 있으면 반드시 채점 근거에 명시하세요
 - 총점 = 각 업적 점수 × 가중치 합산 (가중치 합이 100% 미만이면 비율 환산)
 
@@ -9284,7 +10064,7 @@ ${achievementTexts}
 ${achSchemaExamples}
   ],
   "totalScore": 가중합계점수(0~100),
-  "totalRationale": "전체 종합 평가 의견 (한국어 200자 내외, 데이터 기반 객관적 의견)"
+  "totalRationale": "전체 종합 평가 의견 (한국어 500자 이상, 각 업적의 성과 수준 요약·강점·개선 필요 사항·직급 기대 부합도·종합 판단을 구체적으로 서술. 단순 나열이 아닌 논거를 갖춘 평가 의견으로 작성)"
 }`;
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -9295,7 +10075,7 @@ ${achSchemaExamples}
         response_format: { type: "json_object" },
         messages: [{ role: "user", content: prompt }],
         temperature: 0.4,
-        max_tokens: 1200,
+        max_tokens: 3000,
       }),
     });
     if (!response.ok) throw new Error("API 오류");
@@ -9440,12 +10220,12 @@ ${rawFeedback}
 위 피드백을 분석하여 반드시 아래 JSON 형식만 출력하세요. 다른 텍스트는 포함하지 마세요.
 
 [작성 규칙 — D등급 특별 지침]
-- overall: 원문 피드백의 내용을 충실히 반영하여 냉철하고 직설적인 어조로 작성. 미화하거나 완곡하게 표현하지 말 것. 업적·역량·자세·태도 전반에서 조직 기대 수준에 미치지 못한 점을 구체적으로 명시하고, 현 조직이 본인에게 적합하지 않을 수 있으며 새로운 환경을 탐색하는 것이 본인의 성장에 도움이 될 수 있음을 솔직하게 전달. 반드시 한국어 500자 내외의 문단으로 작성.
-- upward: 상향평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 없으면 빈 문자열.
-- peer: 동료평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 없으면 빈 문자열.
+- overall: 원문 피드백의 내용을 충실히 반영하여 냉철하고 직설적인 어조로 작성. 미화하거나 완곡하게 표현하지 말 것. 업적·역량·자세·태도 전반에서 조직 기대 수준에 미치지 못한 구체적 사례와 내용을 충분히 담아 작성하고, 현 조직이 본인에게 적합하지 않을 수 있으며 새로운 환경을 탐색하는 것이 본인의 성장에 도움이 될 수 있음을 솔직하게 전달. 반드시 한국어 500자 내외의 문단으로 작성하되, 분량을 채우기 위한 공허한 표현 없이 구체적 내용으로 채울 것.
+- upward: 상향평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 없으면 빈 문자열.
+- peer: 동료평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 없으면 빈 문자열.
 - strengths: 피드백에서 긍정적 키워드 2~3개 (각 10자 이내 단어). 없으면 빈 배열.
 - weaknesses: 피드백에서 개선 필요 키워드 3~4개 (각 10자 이내 단어).
-- suggestions: 현재의 역량 수준과 조직 기대치 간의 간극을 냉철하게 짚고, 이 조직보다 본인의 강점이 더 잘 발휘될 수 있는 다른 환경을 탐색하도록 권유하는 내용을 직설적으로 작성. 번호나 줄바꿈 없이 하나의 자연스러운 문단으로 작성. 한국어 500자 내외.
+- suggestions: 현재의 역량 수준과 조직 기대치 간의 간극을 냉철하게 짚고, 구체적으로 어떤 점에서 기대에 미치지 못했는지 명시하면서 이 조직보다 본인의 강점이 더 잘 발휘될 수 있는 다른 환경을 탐색하도록 권유하는 내용을 직설적으로 작성. 번호나 줄바꿈 없이 하나의 자연스러운 문단으로 작성. 한국어 500자 내외로 구체적 내용을 충분히 담을 것.
 - ref1Title: "실업급여"
 - ref1Desc: "고용보험 실업급여 신청 절차 안내"
 - ref2Title: "취업 준비"
@@ -9472,12 +10252,12 @@ ${rawFeedback}
 위 피드백을 분석하여 반드시 아래 JSON 형식만 출력하세요. 다른 텍스트는 포함하지 마세요.
 
 [작성 규칙]
-- overall: 원문 피드백(1차·2차 평가)의 내용을 최대한 충실히 반영하되, 과장되거나 강한 표현은 절제하여 균형 있고 자연스럽게 다듬은 종합 피드백. 업적·역량·자세·태도 세 영역의 핵심 내용이 모두 포함되어야 하며, 피평가자가 자신의 평가 결과를 명확히 이해하고 성장 방향을 인식할 수 있도록 작성. 반드시 한국어 500자 내외의 자연스러운 문단으로 작성.
-- upward: 상향평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 상향평가 내용이 없으면 빈 문자열.
-- peer: 동료평가 내용이 있으면 종합하여 300자 내외 한국어 문장으로 작성. 동료평가 내용이 없으면 빈 문자열.
+- overall: 원문 피드백(1차·2차 평가)의 내용을 최대한 충실히 반영하되, 과장되거나 강한 표현은 절제하여 균형 있고 자연스럽게 다듬은 종합 피드백. 업적·역량·자세·태도 세 영역의 핵심 내용과 구체적 사례가 모두 포함되어야 하며, 피평가자가 자신의 평가 결과를 명확히 이해하고 성장 방향을 인식할 수 있도록 구체적으로 작성. 반드시 한국어 500자 내외의 자연스러운 문단으로 작성하되, 분량을 채우기 위한 공허한 표현 없이 실질적 내용으로 채울 것.
+- upward: 상향평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 상향평가 내용이 없으면 빈 문자열.
+- peer: 동료평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 동료평가 내용이 없으면 빈 문자열.
 - strengths: 피드백에서 반복되는 긍정적 키워드 3~4개 (각 10자 이내 단어).
 - weaknesses: 피드백에서 반복되는 개선 필요 키워드 2~3개 (각 10자 이내 단어).
-- suggestions: 역량 개선 가이드, 강점·단점의 향후 개선 방향, 사업목표 달성을 위한 개선 방향 세 가지 내용을 번호나 줄바꿈 없이 하나의 자연스러운 줄글 문단으로 연결하여 구체적으로 작성. 한국어 500자 내외.
+- suggestions: 역량 개선 가이드, 강점·단점의 향후 개선 방향, 사업목표 달성을 위한 개선 방향 세 가지 내용을 번호나 줄바꿈 없이 하나의 자연스러운 줄글 문단으로 연결하여 구체적으로 작성. 각 방향에 대해 피평가자가 실제로 실행할 수 있는 구체적 행동과 방법을 포함할 것. 한국어 500자 내외.
 - ref1Title: 멀티캠퍼스 교육 사이트 검색창에 입력할 키워드. 피평가자의 개선 역량과 관련된 1~3단어 한국어 검색어 (예: "리더십", "커뮤니케이션", "데이터 분석", "프로젝트 관리"). 사이트 검색창에 바로 입력할 수 있는 짧고 구체적인 단어로 작성.
 - ref1Desc: 이 교육이 피평가자에게 도움이 되는 이유 한 문장 (50자 이내).
 - ref2Title: YES24 도서 사이트 검색창에 입력할 키워드. 피평가자의 개선 역량과 관련된 1~3단어 한국어 검색어 (예: "리더십", "커뮤니케이션 기술", "조직 관리"). 사이트 검색창에 바로 입력할 수 있는 짧고 구체적인 단어로 작성.
@@ -9508,7 +10288,7 @@ ${rawFeedback}
       response_format: { type: "json_object" },
       messages: [{ role: "user", content: prompt }],
       temperature: 0.6,
-      max_tokens: 1600,
+      max_tokens: 2800,
     }),
   });
 
@@ -9667,8 +10447,9 @@ function renderOrgSubmitGuideModal() {
     </div>`;
   }
 
-  // ── Step 1-B: 2명 이상 초과 — 제출 불가, 선택 팝업 ──
+  // ── Step 1-B: 허용 인원 초과 — 제출 불가 팝업 ──
   if (ui.step === "major") {
+    const adjSessionEnabled = activeCycle()?.useAdjustmentSession !== false;
     return `
     <div style="${overlayStyle}">
       <div style="${boxStyle}">
@@ -9677,20 +10458,21 @@ function renderOrgSubmitGuideModal() {
             <span style="font-size:20px;">🚫</span>
             <h2 style="margin:0;font-size:17px;">등급 배분 가이드 초과 — 제출 불가</h2>
           </div>
-          <p style="margin:4px 0 0;font-size:13px;color:var(--muted);">현재 배분으로는 제출할 수 없습니다. 아래 중 하나를 선택하세요.</p>
+          <p style="margin:4px 0 0;font-size:13px;color:var(--muted);">현재 배분으로는 제출할 수 없습니다.${adjSessionEnabled ? " 아래 중 하나를 선택하세요." : ""}</p>
         </div>
         <div style="padding:16px 24px;flex:1;overflow-y:auto;">
           ${detailHtml}
           <div class="notice" style="margin-top:14px;background:#fef2f2;border-color:#fca5a5;">
             <strong>이 배분으로는 확정 제출이 불가합니다.</strong><br/>
-            등급 배분을 수정하거나, 부득이한 사유가 있는 경우 인사팀 면담을 요청하세요.<br/>
-            <span style="color:#b91c1c;font-size:12px;">※ 인사팀 면담 요청 시 이후 배분 현황을 수정할 수 없습니다.</span>
+            ${adjSessionEnabled
+              ? `등급 배분을 수정하거나, 부득이한 사유가 있는 경우 인사팀 면담을 요청하세요.<br/><span style="color:#b91c1c;font-size:12px;">※ 인사팀 면담 요청 시 이후 배분 현황을 수정할 수 없습니다.</span>`
+              : `등급 배분을 수정해야만 제출할 수 있습니다.`}
           </div>
         </div>
         <div style="padding:14px 24px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;">
           <button class="button secondary" onclick="App.closeOrgSubmitGuideModal()">등급 배분 수정하기</button>
-          <button class="button" onclick="App.openOrgSubmitMajorReason()"
-            style="background:#dc2626;border-color:#dc2626;">인사팀 면담 요청하기</button>
+          ${adjSessionEnabled ? `<button class="button" onclick="App.openOrgSubmitMajorReason()"
+            style="background:#dc2626;border-color:#dc2626;">인사팀 면담 요청하기</button>` : ""}
         </div>
       </div>
     </div>`;
@@ -9927,19 +10709,20 @@ ${evalLines}
 [분석 지시]
 1. 자기평가 대비 평가 점수 차이, 피드백 톤을 종합해 leniencyScore(0=매우 엄격, 100=매우 관대)와 leniencyLabel을 결정하세요.
 2. discriminationScore는 반드시 ${discriminationScoreRaw} 고정값을 그대로 출력하세요.
-3. coaching은 반드시 아래 형식 3줄로만 작성하세요. 각 줄은 정확히 한 문장. 군더더기 없이 핵심만.
+3. coaching은 아래 작성 지침에 따라 자연스러운 줄글 문단 하나로 작성하세요. 항목 번호나 [성향], [해석], [제언] 같은 레이블을 붙이지 마세요.
 
-coaching 출력 형식 (이 형식 그대로, 줄바꿈 포함):
-[성향] {leniencyLabel}한 경향. ${evalData.length}명 평가, 점수 ${scoreRangeStr}, 표준편차 ${stdDevRaw.toFixed(1)}로 변별도 ${discriminationLabel}.
-[해석] {관대·엄격 + 변별도 조합으로 이 평가자의 패턴을 한 문장으로 — 예: "전체적으로 높은 점수를 부여하나 피평가자 간 점수 차이가 적어 변별력이 낮다."}
-[제언] {구체적 개선 행동 한 문장 — 예: "평가 기준을 명확히 설정하고 성과 수준에 따라 점수를 차별화할 필요가 있다."}
+coaching 작성 지침:
+- 이 평가자의 관대-엄격 성향(leniencyLabel)과 변별도(${discriminationLabel})를 조합하여 평가 패턴을 한두 문장으로 자연스럽게 설명하세요. 예: "전체적으로 높은 점수를 부여하는 관대한 경향이 있으며, 피평가자 간 점수 분산이 작아 변별력이 낮은 편입니다."
+- 이어서 이 성향이 조직의 평가 공정성과 동기부여에 미치는 영향을 한두 문장으로 설명하세요.
+- 마지막으로 구체적인 개선 방향을 한두 문장으로 제안하세요. 예: "성과 수준별 기준점수(anchor)를 사전에 설정하고, 우수·보통·미흡 사례를 구체적으로 정의하여 점수 차별화를 높일 것을 권장합니다."
+- 전체 분량은 200~300자 내외의 자연스러운 줄글로 작성하세요.
 
 반드시 아래 JSON만 출력하세요:
 {
   "leniencyScore": 숫자(0~100),
   "leniencyLabel": "매우 엄격/엄격/약간 엄격/중립/약간 관대/관대/매우 관대 중 하나",
   "discriminationScore": ${discriminationScoreRaw},
-  "coaching": "위 형식 3줄"
+  "coaching": "위 지침에 따른 줄글 문단"
 }`;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -9959,6 +10742,1059 @@ coaching 출력 형식 (이 형식 그대로, 줄바꿈 포함):
   // 변별도 점수는 수학적으로 계산한 값을 항상 사용 (AI 반환값 무시)
   result.discriminationScore = discriminationScoreRaw;
   return result;
+}
+
+// ── 평가자 최종 제출 헬퍼 ────────────────────────────────────────────────────
+
+function hasEvaluatorFinalSubmitted(userId) {
+  return !!selectedCycle()?.evaluatorFinalSubmits?.[userId];
+}
+
+function renderEvalTaskPanelHead(user, tasks) {
+  const isDivisionHead = user.role === "divisionHead";
+  const finalBtnLabel = isDivisionHead ? "평가 최종 확정" : "평가 최종 제출";
+  const finalDoneLabel = isDivisionHead ? "✅ 최종 확정 완료" : "✅ 최종 제출 완료";
+  const finalSubmitted = hasEvaluatorFinalSubmitted(user.id);
+  const completedCount = tasks.filter(t => isCompletedStatus(t.status)).length;
+  const total = tasks.length;
+  const allDone = total > 0 && completedCount === total;
+  const pct = total ? Math.round((completedCount / total) * 100) : 0;
+  const pillColor = allDone ? "var(--green, #16a34a)" : "var(--primary)";
+  return `
+    <div class="panel-head" style="display:flex;flex-direction:column;gap:10px;align-items:stretch;">
+      <div>
+        <h2 style="margin:0;">평가 대상</h2>
+        <p class="muted" style="margin:2px 0 0;">${total}건의 평가 작업</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:nowrap;align-items:center;">
+        <button class="button secondary" style="font-size:12px;white-space:nowrap;" onclick="App.openEvalSummaryWindow()">📊 평가 모아보기</button>
+        <button class="button" style="font-size:12px;white-space:nowrap;" ${allDone && !finalSubmitted ? "" : "disabled"} onclick="App.submitEvaluatorFinal()">
+          ${finalSubmitted ? finalDoneLabel : finalBtnLabel}
+        </button>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px;text-align:right;">${completedCount} / ${total} 작성 완료</div>
+        <div style="height:6px;background:var(--line);border-radius:4px;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:${pillColor};border-radius:4px;transition:width 0.3s;"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── 평가 진행 현황 새 창 ──────────────────────────────────────────────────────
+
+function gradeByItemScore(score, grades) {
+  if (score === "" || score === undefined || score === null) return "";
+  const s = Number(score);
+  if (isNaN(s)) return "";
+  const g = (grades || []).find(g => Number(g.score) === s);
+  return g ? g.grade : "";
+}
+
+function safeItemScore(raw) {
+  if (raw === undefined || raw === null || raw === "") return "";
+  const n = Number(raw);
+  return isNaN(n) ? "" : n;
+}
+
+function gradeColor(grade) {
+  if (!grade) return "";
+  const g = grade.toUpperCase();
+  if (g === "S") return "#7c3aed";
+  if (g === "A") return "#1d4ed8";
+  if (g === "B") return "#047857";
+  if (g === "C") return "#b45309";
+  if (g === "D") return "#dc2626";
+  return "#374151";
+}
+
+function scoreColor(score) {
+  if (score === "" || score === undefined) return "";
+  const n = Number(score);
+  if (n >= 90) return "#dcfce7";
+  if (n >= 75) return "#dbeafe";
+  if (n >= 60) return "#fef9c3";
+  return "#fee2e2";
+}
+
+function buildEvalSummaryWindowHTML(user, tasks) {
+  const H = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const normalTasks = tasks.filter(t => !t.type);
+  const upwardTasks = tasks.filter(t => t.type === "upward");
+  const peerTasks   = tasks.filter(t => t.type === "peer");
+  const finalSubmitted = hasEvaluatorFinalSubmitted(user.id);
+  const now = new Date().toLocaleDateString("ko-KR");
+
+  // ── 공통: 합계셀 렌더 ──────────────────────────────────────────────────
+  function totalCell(score, grade, extraStyle) {
+    const bg = scoreColor(score);
+    const bgS = bg ? `background:${bg};` : "";
+    let inner = `<span style="color:#d1d5db;">-</span>`;
+    if (score !== "") {
+      inner = `<span style="font-size:15px;font-weight:700;">${score}</span>`;
+      if (grade) inner += `<br/><span style="font-size:12px;font-weight:800;color:${gradeColor(grade)};">${H(grade)}</span>`;
+    } else if (grade) {
+      inner = `<span style="font-size:15px;font-weight:800;color:${gradeColor(grade)};">${H(grade)}</span>`;
+    }
+    return `<td style="text-align:center;padding:7px 8px;border-right:2px solid #c7d2fe;border-bottom:1px solid #e5e7eb;${bgS}${extraStyle||""}">${inner}</td>`;
+  }
+
+  // ── 일반 문항 셀 ────────────────────────────────────────────────────────
+  function itemCell(score, grade, borderColor) {
+    const bc = borderColor || "#e5e7eb";
+    let inner = `<span style="color:#d1d5db;">-</span>`;
+    if (score !== "") {
+      inner = `<span style="font-size:13px;">${score}</span>`;
+      if (grade) inner += `<br/><span style="font-size:10px;color:${gradeColor(grade)};font-weight:700;">${H(grade)}</span>`;
+    } else if (grade) {
+      inner = `<span style="font-size:13px;font-weight:700;color:${gradeColor(grade)};">${H(grade)}</span>`;
+    }
+    return `<td style="text-align:center;padding:6px 5px;border-right:1px solid ${bc};border-bottom:1px solid #e5e7eb;">${inner}</td>`;
+  }
+
+  // ── 상태 셀 ─────────────────────────────────────────────────────────────
+  function statusCell(done, extraBorder) {
+    const color = done ? "#15803d" : "#dc2626";
+    const dot   = done ? "#16a34a" : "#ef4444";
+    return `<td style="text-align:center;padding:6px 8px;border-right:${extraBorder||"1px solid #e5e7eb"};border-bottom:1px solid #e5e7eb;">
+      <span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:${color};">
+        <span style="width:7px;height:7px;border-radius:50%;background:${dot};flex-shrink:0;"></span>${done?"완료":"미완료"}
+      </span></td>`;
+  }
+
+  // ── 1차·2차 평가 매트릭스 (행=피평가자, 열=문항) ─────────────────────────────
+  function buildNormalSection(sectionTasks, sectionLabel) {
+    if (!sectionTasks.length) return "";
+
+    // 이 섹션의 팀 목록 (조직 열 필터용)
+    const sectionTeams = [...new Set(sectionTasks.map(t => t.employee?.team||"").filter(Boolean))].sort();
+
+    const firstEmp    = sectionTasks[0].employee;
+    const compTemplate = templateFor(firstEmp, "competency") || { items: [], grades: [] };
+    const attTemplate  = templateFor(firstEmp, "attitude")   || { items: [], grades: [] };
+    const compItems    = compTemplate.items;
+    const attItems     = attTemplate.items;
+    const compCount    = compItems.length;
+    const attCount     = attItems.length;
+
+    // 최대 업적 개수
+    let maxAch = 0;
+    sectionTasks.forEach(task => {
+      const achs = evaluations()[task.employee.id]?.[task.stage]?.performance?.achievements || [];
+      if (achs.length > maxAch) maxAch = achs.length;
+    });
+    if (maxAch === 0) maxAch = 1;
+
+    // 열 인덱스 (고정 5열: 피평가자/직급/조직/유형/상태)
+    const FIXED        = 5;
+    const perfTotalIdx = FIXED + maxAch;
+    const compTotalIdx = perfTotalIdx + 1 + compCount;
+    const attTotalIdx  = compTotalIdx + 1 + attCount;
+
+    // 테이블 ID (1차/2차 구분)
+    const stage0  = sectionTasks[0]?.stage || "first";
+    const tableId = "normal-table-" + stage0;
+
+    // 업적 열 이름: 항상 "업적 N" 표시
+    const achNames = Array.from({length: maxAch}, (_, i) => `업적 ${i+1}`);
+
+    // AI 평가 점수 존재 여부 (1차 평가 섹션에서만 표시 — stage === "first" 기준, AI는 자기평가 기반)
+    const hasAI = sectionTasks.some(task => evaluations()[task.employee.id]?.aiEval?.status === "done");
+    const aiTotalIdx = attTotalIdx + (attCount ? 1 : 0) + 1;
+
+    const sortThS = bg => `padding:8px 10px;background:${bg};color:#fff;text-align:center;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;border-right:2px solid rgba(255,255,255,.4);`;
+    const itemThS = bg => `padding:8px 6px;background:${bg};color:#fff;font-size:11px;border-right:1px solid rgba(255,255,255,.15);text-align:center;min-width:75px;`;
+
+    // 그룹 헤더 행 (2행 헤더)
+    const groupRow = `<tr>
+      <th colspan="5" style="padding:8px 12px;background:#1e3a5f;color:#fff;border-right:2px solid rgba(255,255,255,.3);font-size:12px;">피평가자 정보</th>
+      <th colspan="${maxAch}" style="padding:8px;background:#2d4a7f;color:#fff;text-align:center;border-right:1px solid rgba(255,255,255,.2);font-size:12px;">📌 업적평가 (항목별)</th>
+      <th style="${sortThS("#1a3060")}" onclick="sortTable('${tableId}',${perfTotalIdx},this)">업적합계 <span class="si">↕</span></th>
+      ${compCount ? `<th colspan="${compCount}" style="padding:8px;background:#1a4a6b;color:#fff;text-align:center;border-right:1px solid rgba(255,255,255,.2);font-size:12px;">📌 역량평가 (항목별)</th>
+      <th style="${sortThS("#13385a")}" onclick="sortTable('${tableId}',${compTotalIdx},this)">역량합계 <span class="si">↕</span></th>` : ""}
+      ${attCount  ? `<th colspan="${attCount}"  style="padding:8px;background:#1a5a3a;color:#fff;text-align:center;border-right:1px solid rgba(255,255,255,.2);font-size:12px;">📌 자세태도 (항목별)</th>
+      <th style="padding:8px 10px;background:#144730;color:#fff;text-align:center;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;" onclick="sortTable('${tableId}',${attTotalIdx},this)">자세합계 <span class="si">↕</span></th>` : ""}
+      ${hasAI ? `<th style="padding:8px 10px;background:#4a1d96;color:#fff;text-align:center;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;" onclick="sortTable('${tableId}',${aiTotalIdx},this)">🤖 AI점수 <span class="si">↕</span></th>` : ""}
+    </tr>`;
+
+    const itemRow = `<tr>
+      <th style="padding:8px 10px;background:#1e3a5f;color:#fff;text-align:left;min-width:80px;border-right:1px solid rgba(255,255,255,.2);">피평가자</th>
+      <th style="${itemThS("#1e3a5f")}min-width:55px;">직급</th>
+      <th style="${itemThS("#1e3a5f")}min-width:130px;">
+        조직
+        ${sectionTeams.length > 1 ? `<select onchange="filterTableTeam('${tableId}',this.value)" style="margin-left:4px;padding:2px 4px;border:1px solid rgba(255,255,255,.4);border-radius:4px;font-size:11px;background:rgba(255,255,255,.15);color:#fff;cursor:pointer;max-width:80px;">
+          <option value="" style="background:#1e3a5f;">전체</option>
+          ${sectionTeams.map(t => `<option value="${H(t)}" style="background:#1e3a5f;">${H(t)}</option>`).join("")}
+        </select>` : ""}
+      </th>
+      <th style="${itemThS("#1e3a5f")}min-width:65px;text-align:center;">유형</th>
+      <th style="${itemThS("#1e3a5f")}min-width:60px;border-right:2px solid rgba(255,255,255,.4);text-align:center;">상태</th>
+      ${achNames.map(n => `<th style="${itemThS("#2d4a7f")}">${H(n)}</th>`).join("")}
+      <th style="${itemThS("#1a3060")}min-width:75px;border-right:2px solid rgba(255,255,255,.4);cursor:pointer;" onclick="sortTable('${tableId}',${perfTotalIdx},this)">합계<br/><span class="si">↕</span></th>
+      ${compItems.map(it => `<th style="${itemThS("#1a4a6b")}">${H(it.name||"")}</th>`).join("")}
+      ${compCount ? `<th style="${itemThS("#13385a")}min-width:75px;border-right:2px solid rgba(255,255,255,.4);cursor:pointer;" onclick="sortTable('${tableId}',${compTotalIdx},this)">합계<br/><span class="si">↕</span></th>` : ""}
+      ${attItems.map(it  => `<th style="${itemThS("#1a5a3a")}">${H(it.name||"")}</th>`).join("")}
+      ${attCount  ? `<th style="${itemThS("#144730")}min-width:75px;cursor:pointer;" onclick="sortTable('${tableId}',${attTotalIdx},this)">합계<br/><span class="si">↕</span></th>` : ""}
+      ${hasAI ? `<th style="${itemThS("#4a1d96")}min-width:75px;border-left:2px solid rgba(255,255,255,.4);cursor:pointer;" onclick="sortTable('${tableId}',${aiTotalIdx},this)">AI점수<br/><span class="si">↕</span></th>` : ""}
+    </tr>`;
+
+    // 데이터 행 (행 = 피평가자 1명)
+    const dataRows = sectionTasks.map(task => {
+      const ev     = evaluations()[task.employee.id];
+      const review = ev?.[task.stage] || {};
+      const done   = isCompletedStatus(ev?.status?.[task.stage]);
+
+      const perfGrades = (templateFor(task.employee, "performance") || { grades: [] }).grades;
+      const achCells = achNames.map((_, i) => {
+        const ach   = review.performance?.achievements?.[i];
+        const score = ach ? safeItemScore(ach.score) : "";
+        return itemCell(score, score !== "" ? gradeByItemScore(score, perfGrades) : "", "#e5e7eb");
+      }).join("");
+
+      const compCells = compItems.map((_, i) => {
+        const score = safeItemScore(review.competency?.itemScores?.[i]);
+        return itemCell(score, gradeByItemScore(score, compTemplate.grades), "#e5e7eb");
+      }).join("");
+
+      const attCells = attItems.map((_, i) => {
+        const score = safeItemScore(review.attitude?.itemScores?.[i]);
+        return itemCell(score, gradeByItemScore(score, attTemplate.grades), "#e5e7eb");
+      }).join("");
+
+      const perfScore = safeItemScore(review.performance?.score);
+      const compScore = safeItemScore(review.competency?.score);
+      const attScore  = safeItemScore(review.attitude?.score);
+
+      // AI 점수 (aiEval은 자기평가 기반이므로 직원 단위로 읽음)
+      const aiEvalData = ev?.aiEval;
+      const aiScore    = hasAI ? (aiEvalData?.status === "done" ? safeItemScore(aiEvalData.score) : "") : null;
+      const aiGradeStr = aiScore !== "" && aiScore !== null ? gradeByItemScore(aiScore, perfGrades) : "";
+      const aiCell     = hasAI ? `<td style="text-align:center;padding:7px 8px;border-left:2px solid #ddd5fe;border-bottom:1px solid #e5e7eb;background:#faf5ff;">
+        ${aiScore !== "" ? `<span style="font-size:14px;font-weight:700;">${aiScore}</span>${aiGradeStr ? `<br/><span style="font-size:11px;font-weight:800;color:#7c3aed;">${H(aiGradeStr)}</span>` : ""}` : `<span style="color:#d1d5db;">-</span>`}
+      </td>` : "";
+
+      return `<tr data-team="${H(task.employee.team||"")}">
+        <td style="padding:8px 10px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-weight:600;white-space:nowrap;">${H(task.employee.name)}</td>
+        <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#64748b;white-space:nowrap;">${H(task.employee.title||"")}</td>
+        <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#64748b;">${H(task.employee.division||"")} / ${H(task.employee.team||"")}</td>
+        <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:11px;text-align:center;">${H(task.label)}</td>
+        ${statusCell(done, "2px solid #e5e7eb")}
+        ${achCells}${totalCell(perfScore, review.performance?.grade||"", "border-right:2px solid #c7d2fe;")}
+        ${compCells}${compCount ? totalCell(compScore, review.competency?.grade||"", "border-right:2px solid #c7d2fe;") : ""}
+        ${attCells}${attCount  ? totalCell(attScore,  review.attitude?.grade||"",  "") : ""}
+        ${aiCell}
+      </tr>`;
+    }).join("");
+
+    return `
+      <div style="margin-bottom:48px;">
+        <h2 style="font-size:17px;font-weight:700;color:#1e3a5f;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid #3b82f6;">
+          ${H(sectionLabel)} <span style="font-size:13px;font-weight:400;color:#6b7280;">(${sectionTasks.length}명)</span>
+        </h2>
+        <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">합계 열 헤더 클릭 → 오름차순 / 내림차순 정렬</p>
+        <div style="overflow-x:auto;">
+          <table id="${tableId}" style="border-collapse:collapse;font-size:13px;white-space:nowrap;">
+            <thead>${groupRow}${itemRow}</thead>
+            <tbody>${dataRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // ── 상향·동료 평가 (행=피평가자, 열=문항) ────────────────────────────────────
+  function buildSpecialSection(specialTasks, kind, label) {
+    if (!specialTasks.length) return "";
+    const firstTask = specialTasks[0];
+    const evalUser  = cycleUserById(firstTask.assignment?.evaluatorId) || userById(firstTask.assignment?.evaluatorId);
+    const template  = evalUser ? templateForKind(evalUser, kind) : (kind === "upward" ? state.upwardTemplate : state.peerTemplate);
+    const items     = template?.items || [];
+    const grades    = template?.grades || [];
+    const tableId   = kind + "-table";
+    const specialTeams = [...new Set(specialTasks.map(t => t.employee?.team||"").filter(Boolean))].sort();
+
+    // 고정 4열(피평가자/직급/조직/상태) + 항목들 + 합계
+    const FIXED    = 4;
+    const totalIdx = FIXED + items.length;
+
+    const itemThS = bg => `padding:8px 6px;background:${bg};color:#fff;font-size:11px;border-right:1px solid rgba(255,255,255,.15);text-align:center;min-width:75px;`;
+
+    const groupRow = `<tr>
+      <th colspan="4" style="padding:8px 12px;background:#1e3a5f;color:#fff;border-right:2px solid rgba(255,255,255,.3);font-size:12px;">피평가자 정보</th>
+      <th colspan="${items.length || 1}" style="padding:8px;background:#4a1d6f;color:#fff;text-align:center;border-right:1px solid rgba(255,255,255,.2);font-size:12px;">📌 ${label} (항목별)</th>
+      <th style="padding:8px 10px;background:#3a1560;color:#fff;text-align:center;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;" onclick="sortTable('${tableId}',${totalIdx},this)">${label} 합계 <span class="si">↕</span></th>
+    </tr>`;
+
+    const headerRow = `<tr>
+      <th style="padding:8px 10px;background:#1e3a5f;color:#fff;text-align:left;min-width:80px;border-right:1px solid rgba(255,255,255,.2);">피평가자</th>
+      <th style="${itemThS("#1e3a5f")}min-width:55px;">직급</th>
+      <th style="${itemThS("#1e3a5f")}min-width:130px;">
+        조직
+        ${specialTeams.length > 1 ? `<select onchange="filterTableTeam('${tableId}',this.value)" style="margin-left:4px;padding:2px 4px;border:1px solid rgba(255,255,255,.4);border-radius:4px;font-size:11px;background:rgba(255,255,255,.15);color:#fff;cursor:pointer;max-width:80px;">
+          <option value="" style="background:#1e3a5f;">전체</option>
+          ${specialTeams.map(t => `<option value="${H(t)}" style="background:#1e3a5f;">${H(t)}</option>`).join("")}
+        </select>` : ""}
+      </th>
+      <th style="${itemThS("#1e3a5f")}min-width:60px;border-right:2px solid rgba(255,255,255,.4);text-align:center;">상태</th>
+      ${items.map(it => `<th style="${itemThS("#4a1d6f")}">${H(it.name||"")}</th>`).join("")}
+      <th style="${itemThS("#3a1560")}min-width:75px;cursor:pointer;" onclick="sortTable('${tableId}',${totalIdx},this)">합계<br/><span class="si">↕</span></th>
+    </tr>`;
+
+    const dataRows = specialTasks.map(task => {
+      const ans  = task.assignment?.answer || {};
+      const done = isCompletedStatus(task.assignment?.status);
+
+      const itemCells = items.map((_, i) => {
+        const score = safeItemScore(ans.itemScores?.[i]);
+        return itemCell(score, gradeByItemScore(score, grades), "#e5e7eb");
+      }).join("");
+
+      return `<tr data-team="${H(task.employee.team||"")}">
+        <td style="padding:8px 10px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-weight:600;white-space:nowrap;">${H(task.employee.name)}</td>
+        <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#64748b;white-space:nowrap;">${H(task.employee.title||"")}</td>
+        <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#64748b;">${H(task.employee.division||"")} / ${H(task.employee.team||"")}</td>
+        ${statusCell(done, "2px solid #e5e7eb")}
+        ${itemCells}${totalCell(safeItemScore(ans.score), ans.grade||"", "")}
+      </tr>`;
+    }).join("");
+
+    return `
+      <div style="margin-bottom:48px;">
+        <h2 style="font-size:17px;font-weight:700;color:#1e3a5f;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid #3b82f6;">
+          ${label} 비교 <span style="font-size:13px;font-weight:400;color:#6b7280;">(${specialTasks.length}명)</span>
+        </h2>
+        <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">합계 열 헤더 클릭 → 오름차순 / 내림차순 정렬</p>
+        <div style="overflow-x:auto;">
+          <table id="${tableId}" style="border-collapse:collapse;font-size:13px;white-space:nowrap;">
+            <thead>${groupRow}${headerRow}</thead>
+            <tbody>${dataRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // ── CSV 데이터 (새 창 내장 스크립트용) ───────────────────────────────────
+  const csvLines = [["피평가자","직급","조직","평가유형","평가영역","문항","점수","등급","상태"].join(",")];
+  tasks.forEach(task => {
+    const base = [task.employee.name, task.employee.title||"", `${task.employee.division||""}/${task.employee.team||""}`, task.label];
+    if (!task.type) {
+      const ev = evaluations()[task.employee.id];
+      const review = ev?.[task.stage] || {};
+      const status = isCompletedStatus(ev?.status?.[task.stage]) ? "완료" : "미완료";
+      const perfTemplate = templateFor(task.employee, "performance") || { grades:[] };
+      const compTemplate = templateFor(task.employee, "competency") || { items:[], grades:[] };
+      const attTemplate  = templateFor(task.employee, "attitude")   || { items:[], grades:[] };
+      (review.performance?.achievements || []).forEach((ach, i) => {
+        csvLines.push([...base,"업적평가",H(ach.name||`업적${i+1}`),safeItemScore(ach.score),"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      });
+      csvLines.push([...base,"업적평가","합계",safeItemScore(review.performance?.score),review.performance?.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      compTemplate.items.forEach((item,i) => {
+        const score = safeItemScore(review.competency?.itemScores?.[i]);
+        csvLines.push([...base,"역량평가",H(item.name||`역량${i+1}`),score,gradeByItemScore(score,compTemplate.grades),status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      });
+      csvLines.push([...base,"역량평가","합계",safeItemScore(review.competency?.score),review.competency?.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      attTemplate.items.forEach((item,i) => {
+        const score = safeItemScore(review.attitude?.itemScores?.[i]);
+        csvLines.push([...base,"자세태도",H(item.name||`자세태도${i+1}`),score,gradeByItemScore(score,attTemplate.grades),status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      });
+      csvLines.push([...base,"자세태도","합계",safeItemScore(review.attitude?.score),review.attitude?.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+    } else {
+      const ans = task.assignment?.answer || {};
+      const status = isCompletedStatus(task.assignment?.status) ? "완료" : "미완료";
+      const evalUser2 = cycleUserById(task.assignment?.evaluatorId) || userById(task.assignment?.evaluatorId);
+      const tmpl = evalUser2 ? templateForKind(evalUser2, task.type) : (task.type==="upward"?state.upwardTemplate:state.peerTemplate);
+      (tmpl?.items||[]).forEach((item,i) => {
+        const score = safeItemScore(ans.itemScores?.[i]);
+        csvLines.push([...base,task.label,H(item.name||`문항${i+1}`),score,gradeByItemScore(score,tmpl?.grades||[]),status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      });
+      csvLines.push([...base,task.label,"합계",safeItemScore(ans.score),ans.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+    }
+  });
+  const csvData = "\\ufeff" + csvLines.join("\\n");
+
+  const fileName = `평가진행현황_${H(user.name)}_${new Date().toISOString().slice(0,10)}`;
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<title>평가 모아보기 — ${H(user.name)}</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"><\/script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Pretendard', 'Apple SD Gothic Neo', sans-serif; background: #f8fafc; color: #1e293b; }
+  #header { background: #1e3a5f; color: #fff; padding: 18px 32px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+  #header h1 { font-size: 20px; font-weight: 700; }
+  #header .meta { font-size: 13px; opacity: .8; margin-top: 3px; }
+  #dl-btn { background: #fff; color: #1e3a5f; border: none; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer; }
+  #dl-btn:hover { background: #dbeafe; }
+  #dl-btn:disabled { opacity: .5; cursor: not-allowed; }
+  #content { padding: 28px 32px; }
+  ${finalSubmitted ? `#final-banner{background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:10px 16px;margin-bottom:24px;color:#15803d;font-weight:600;}` : ""}
+  table td, table th { border-bottom: 1px solid #e5e7eb; }
+  tr:hover td { background: rgba(59,130,246,.04); }
+</style>
+</head>
+<body>
+<div id="header">
+  <div>
+    <h1>📊 평가 모아보기</h1>
+    <div class="meta">평가자: ${H(user.name)} (${H(user.title||"")}) · ${H(user.division||"")} / ${H(user.team||"")} · ${now}</div>
+  </div>
+  <button id="dl-btn" onclick="downloadXLSX()" title="화면의 표를 그대로 XLSX로 내려받습니다">⬇ 엑셀(XLSX) 내려받기</button>
+</div>
+<div id="content">
+  ${finalSubmitted ? `<div id="final-banner">✅ 평가 최종 제출이 완료되었습니다.</div>` : ""}
+  ${buildNormalSection(normalTasks.filter(t => t.stage === "first"),  "1차 평가")}
+  ${buildNormalSection(normalTasks.filter(t => t.stage === "second"), "2차 평가")}
+  ${buildNormalSection(normalTasks.filter(t => t.stage !== "first" && t.stage !== "second"), "기타 평가")}
+  ${buildSpecialSection(upwardTasks, "upward", "상향평가")}
+  ${buildSpecialSection(peerTasks, "peer", "동료평가")}
+</div>
+<script>
+var _ss = {};
+
+function filterTableTeam(tableId, team) {
+  document.querySelectorAll('#' + tableId + ' tbody tr[data-team]').forEach(function(tr) {
+    tr.style.display = (!team || tr.dataset.team === team) ? '' : 'none';
+  });
+}
+
+function sortTable(tableId, colIdx, th) {
+  var key = tableId + '_' + colIdx;
+  var dir = _ss[key] === 'asc' ? 'desc' : 'asc';
+  _ss[key] = dir;
+  var tbody = document.querySelector('#' + tableId + ' tbody');
+  var rows = Array.from(tbody.querySelectorAll('tr'));
+  rows.sort(function(a, b) {
+    var av = parseFloat(a.cells[colIdx] ? a.cells[colIdx].textContent : '') || (dir === 'asc' ? Infinity : -Infinity);
+    var bv = parseFloat(b.cells[colIdx] ? b.cells[colIdx].textContent : '') || (dir === 'asc' ? Infinity : -Infinity);
+    return dir === 'asc' ? av - bv : bv - av;
+  });
+  rows.forEach(function(r){ tbody.appendChild(r); });
+  document.querySelectorAll('.si').forEach(function(s){ s.textContent = '↕'; });
+  th.querySelectorAll('.si').forEach(function(s){ s.textContent = dir === 'asc' ? ' ▲' : ' ▼'; });
+}
+
+function downloadXLSX() {
+  if (typeof XLSX === 'undefined') {
+    alert('엑셀 라이브러리 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  var btn = document.getElementById('dl-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 생성 중...';
+  try {
+    var wb = XLSX.utils.book_new();
+    var tables = document.querySelectorAll('table');
+    var sheetNames = ['1차평가', '2차평가', '기타평가', '상향평가', '동료평가'];
+    var added = 0;
+    tables.forEach(function(tbl, idx) {
+      // 정렬 인디케이터 텍스트를 임시 제거하고 숫자/텍스트만 추출
+      var siEls = tbl.querySelectorAll('.si');
+      siEls.forEach(function(s){ s.dataset._bak = s.textContent; s.textContent = ''; });
+      var ws = XLSX.utils.table_to_sheet(tbl, { raw: false });
+      siEls.forEach(function(s){ s.textContent = s.dataset._bak || ''; });
+      var name = sheetNames[idx] || ('시트' + (idx+1));
+      XLSX.utils.book_append_sheet(wb, ws, name);
+      added++;
+    });
+    if (added === 0) { alert('내보낼 표가 없습니다.'); return; }
+    XLSX.writeFile(wb, '${fileName}.xlsx');
+  } catch(e) {
+    alert('XLSX 생성 오류: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ 엑셀(XLSX) 내려받기';
+  }
+}
+<\/script>
+</body>
+</html>`;
+}
+
+function renderEvalSummaryModal() { return ""; }
+
+// ── 피평가자 평가 현황 새 창 ──────────────────────────────────────────────────
+function buildMemberDetailWindowHTML_OLD_UNUSED() {}
+function buildMemberDetailWindowHTML(employeeId, options = {}) {
+  const H = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const employee = cycleUserById(employeeId);
+  const ev = evaluations()[employeeId];
+  if (!employee || !ev) return "<html><body>데이터를 불러올 수 없습니다.</body></html>";
+
+  const showAll     = !!options.showAll;
+  const hideGrades  = showAll ? false : !!options.hideGrades;
+  const allowStages = showAll ? null : (options.stages || null);
+  const showStage   = key => !allowStages || allowStages.includes(key);
+  const scoreStage  = showAll ? null : (options.scoreStage || null);
+  const scoreLabel  = showAll ? "종합 점수" : (options.scoreLabel || "종합 점수");
+  const result      = calculateFinal(employeeId);
+  const headerScore = scoreStage
+    ? (() => { const v = stageComponentScore(employee, ev[scoreStage]); return v === null ? "-" : v.toFixed(1); })()
+    : result.scoreText;
+  const headerGrade = hideGrades ? "" : (result.finalGrade || result.orgGrade || "");
+
+  const compTemplate = templateFor(employee, "competency") || { items:[], grades:[] };
+  const attTemplate  = templateFor(employee, "attitude")   || { items:[], grades:[] };
+  const now = new Date().toLocaleDateString("ko-KR");
+
+  // ── 표시할 단계 목록 (순서 유지) ────────────────────────────────────────────
+  // 2차 평가는 evaluator2Id가 있거나 실제로 평가 데이터가 입력된 경우에만 표시
+  // (초기화 시 ev.second는 빈 객체로 항상 존재하므로 상태/점수 여부로 판별)
+  const secondHasData = ev.second && (
+    ev.status?.second === "completed" ||
+    typeof ev.second.performance?.score === "number" ||
+    typeof ev.second.competency?.score === "number"
+  );
+  const hasSecond = !!(employee.evaluator2Id || secondHasData);
+  const ALL_STAGES = [
+    { key:"self",   label:"자기평가", thBg:"#1e4d8c", hdrBg:"#dbeafe", hdrColor:"#1e40af" },
+    { key:"first",  label:"1차 평가", thBg:"#166534", hdrBg:"#dcfce7", hdrColor:"#166534" },
+    ...(hasSecond ? [{ key:"second", label:"2차 평가", thBg:"#7c2d12", hdrBg:"#fef9c3", hdrColor:"#92400e" }] : []),
+  ];
+  const visibleStages = ALL_STAGES.filter(s => showStage(s.key));
+
+  // 단계 완료 여부
+  const stageDone = key => key === "self"
+    ? ev.status?.self === "submitted"
+    : isCompletedStatus(ev.status?.[key]);
+
+  // ── 점수 셀 내용 ─────────────────────────────────────────────────────────────
+  function scoreCell(score, grade) {
+    if (score === "" || score === undefined || score === null)
+      return `<span style="color:#cbd5e1;">-</span>`;
+    let out = `<span style="font-size:15px;font-weight:800;">${score}</span>`;
+    if (grade) out += `<br/><span style="font-size:12px;font-weight:800;color:${gradeColor(grade)};">${H(grade)}</span>`;
+    return out;
+  }
+  function itemScoreCell(score, grade) {
+    if (score === "" || score === undefined || score === null)
+      return `<span style="color:#cbd5e1;">-</span>`;
+    let out = `<span style="font-size:13px;font-weight:700;">${score}</span>`;
+    if (grade) out += `<br/><span style="font-size:11px;font-weight:700;color:${gradeColor(grade)};">${H(grade)}</span>`;
+    return out;
+  }
+
+  const tdC = `padding:8px 12px;border:1px solid #e2e8f0;vertical-align:middle;text-align:center;`;
+  const tdL = `padding:8px 12px;border:1px solid #e2e8f0;vertical-align:top;`;
+
+  // ── 업적 최대 개수 ────────────────────────────────────────────────────────────
+  let maxAch = 0;
+  visibleStages.forEach(s => {
+    const n = ev[s.key]?.performance?.achievements?.length || 0;
+    if (n > maxAch) maxAch = n;
+  });
+  if (maxAch === 0) maxAch = 1;
+
+  // ── 헤더 행 ──────────────────────────────────────────────────────────────────
+  const stageHeaders = visibleStages.map(s => {
+    const done = stageDone(s.key);
+    return `<th style="padding:12px 16px;background:${s.thBg};color:#fff;text-align:center;font-size:14px;font-weight:700;min-width:140px;border:1px solid rgba(255,255,255,.2);">
+      ${s.label}
+      <div style="font-size:11px;font-weight:400;margin-top:3px;opacity:.85;">${done ? "✅ 완료" : "⬜ 미완료"}</div>
+    </th>`;
+  }).join("");
+
+  // ── 점수 요약 행 (합계) ───────────────────────────────────────────────────────
+  function summaryRow(areaKey, label, areaColor) {
+    const cells = visibleStages.map(s => {
+      const area = ev[s.key]?.[areaKey];
+      const sc = safeItemScore(area?.score);
+      const gr = area?.grade || "";
+      const bg = sc !== "" ? (scoreColor(sc) || "#f8fafc") : "#f8fafc";
+      return `<td style="${tdC}background:${bg};">${scoreCell(sc, gr)}</td>`;
+    }).join("");
+    return `<tr>
+      <td colspan="2" style="${tdL}background:${areaColor};font-weight:700;font-size:13px;color:#fff;">📌 ${label} 합계</td>
+      ${cells}
+    </tr>`;
+  }
+
+  // ── 업적 행들 ──────────────────────────────────────────────────────────────
+  const isLeaderEmp = employee.role === "teamLead" || employee.role === "divisionHead";
+
+  // 연결된 목표 데이터를 임베딩할 맵 (goalId → enriched goal object)
+  const linkedGoalsMap = {};
+  const collectGoal = (id) => {
+    if (!id || linkedGoalsMap[id]) return;
+    const g = (state.goals || []).find(g => g.id === id);
+    if (!g) return;
+    const owner  = (state.users || []).find(u => u.id === g.ownerId);
+    const cycle  = (state.goalCycles || []).find(c => c.id === g.cycleId);
+    const parent = g.parentGoalId ? (state.goals || []).find(pg => pg.id === g.parentGoalId) : null;
+    linkedGoalsMap[id] = { ...g, ownerName: owner?.name || "", cycleName: cycle?.name || "", parentTitle: parent?.title || "" };
+  };
+
+  const achRows = Array.from({length: maxAch}, (_, i) => {
+    let achName = "", achWeight = "", achGoal = "", achLevel = "", achDetail = "";
+    let linkedGoalId = "", linkedTeamGoalId = "";
+    for (const s of visibleStages) {
+      const ach = ev[s.key]?.performance?.achievements?.[i];
+      if (!ach) continue;
+      if (ach.name  !== undefined && !achName)   achName   = ach.name;
+      if (ach.weight !== undefined && achWeight === "") achWeight = ach.weight;
+      if (ach.goal  !== undefined && !achGoal)   achGoal   = ach.goal;
+      if (ach.achievementLevel !== undefined && !achLevel) achLevel = ach.achievementLevel;
+      if (ach.detail !== undefined && !achDetail) achDetail = ach.detail;
+      if (ach.linkedGoalId     && !linkedGoalId)     linkedGoalId     = ach.linkedGoalId;
+      if (ach.linkedTeamGoalId && !linkedTeamGoalId) linkedTeamGoalId = ach.linkedTeamGoalId;
+    }
+    // 자기평가에서도 수집 (goal 연결은 self에만 있음)
+    const selfAch = ev.self?.performance?.achievements?.[i];
+    if (selfAch?.linkedGoalId     && !linkedGoalId)     linkedGoalId     = selfAch.linkedGoalId;
+    if (selfAch?.linkedTeamGoalId && !linkedTeamGoalId) linkedTeamGoalId = selfAch.linkedTeamGoalId;
+    collectGoal(linkedGoalId);
+    collectGoal(linkedTeamGoalId);
+
+    // 연결된 목표가 있을 때 클릭 가능한 링크로 렌더링
+    const goalLink = (text, goalId) => {
+      if (!goalId || !linkedGoalsMap[goalId]) return `<span class="ach-val">${H(String(text))}</span>`;
+      return `<span class="ach-val"><span onclick="showGoalCard('${goalId.replace(/'/g, "\\'")}')" style="color:#2563eb;text-decoration:underline;cursor:pointer;font-weight:600;">${H(String(text))}</span></span>`;
+    };
+
+    // 역할에 따라 레이블 결정
+    const fields = isLeaderEmp
+      ? [
+          { lbl:"사업목표",    html: goalLink(achName, linkedGoalId) },
+          { lbl:"목표수준",    html: `<span class="ach-val">${H(achGoal)}</span>` },
+          { lbl:"달성수준",    html: `<span class="ach-val">${H(achLevel)}</span>` },
+          { lbl:"달성내용",    html: `<span class="ach-val">${H(achDetail)}</span>` },
+          achWeight !== "" ? { lbl:"업적 가중치", html: `<span class="ach-val">${H(achWeight + "%")}</span>` } : null,
+        ]
+      : [
+          { lbl:"업적 이름",                   html: goalLink(achName, linkedGoalId) },
+          { lbl:"기여한 목표",                 html: goalLink(achGoal || achName, linkedTeamGoalId) },
+          { lbl:"주요 업무 실적 및 상세 내용", html: `<span class="ach-val">${H(achDetail)}</span>` },
+          achWeight !== "" ? { lbl:"업적 가중치", html: `<span class="ach-val">${H(achWeight + "%")}</span>` } : null,
+        ];
+
+    const chips = fields.filter(f => {
+        if (!f) return false;
+        // html 기반이므로 텍스트 값이 비어 있어도 html 자체가 있으면 포함
+        const rawVal = isLeaderEmp
+          ? [achName, achGoal, achLevel, achDetail][["사업목표","목표수준","달성수준","달성내용"].indexOf(f.lbl)]
+          : [achName, achGoal || achName, achDetail][["업적 이름","기여한 목표","주요 업무 실적 및 상세 내용"].indexOf(f.lbl)];
+        return rawVal !== "" && rawVal !== undefined && rawVal !== null;
+      })
+      .map(f => `<div class="ach-field"><span class="ach-lbl">${f.lbl}</span>${f.html}</div>`)
+      .join("");
+
+    // 헤더에 보여줄 이름
+    const displayName = achName || `업적 ${i+1}`;
+    const detailId = `ach-det-${employeeId}-${i}`;
+    const hasDetail = !!chips;
+
+    const scoreCells = visibleStages.map(s => {
+      const ach = ev[s.key]?.performance?.achievements?.[i];
+      const sc  = ach ? safeItemScore(ach.score) : "";
+      return `<td style="${tdC}">${itemScoreCell(sc, "")}</td>`;
+    }).join("");
+
+    return `<tr>
+      <td style="${tdL}font-weight:600;font-size:13px;white-space:nowrap;background:#f8fafc;vertical-align:middle;">
+        업적 ${i+1}${achWeight !== "" ? `<span style="font-size:10px;font-weight:400;color:#94a3b8;margin-left:4px;">(${achWeight}%)</span>` : ""}
+      </td>
+      <td style="${tdL}background:#f8fafc;vertical-align:middle;">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <span style="font-weight:700;font-size:13px;color:#1e293b;">${H(displayName)}</span>
+          ${hasDetail ? `<button onclick="(function(b,d){var open=d.style.display==='none';d.style.display=open?'block':'none';b.textContent=open?'▲ 접기':'▼ 상세';b.style.color=open?'#64748b':'#3b82f6';})(this,document.getElementById('${detailId}'))" style="font-size:10px;color:#3b82f6;background:none;border:1px solid #bfdbfe;border-radius:4px;padding:1px 7px;cursor:pointer;white-space:nowrap;">▼ 상세</button>` : ""}
+        </div>
+        ${hasDetail ? `<div id="${detailId}" style="display:none;margin-top:8px;border-top:1px solid #e2e8f0;padding-top:8px;">${chips}</div>` : ""}
+      </td>
+      ${scoreCells}
+    </tr>`;
+  }).join("");
+
+  // 업적 의견 행 (자기평가에는 입력 항목 없음 → 자기평가 제외한 단계만 표시)
+  const perfCommentRow = (() => {
+    const evalStages = visibleStages.filter(s => s.key !== "self");
+    if (!evalStages.length) return "";
+    const hasAny = evalStages.some(s => ev[s.key]?.performance?.comment);
+    if (!hasAny) return "";
+    // self 열은 빈 셀로, 나머지는 의견으로
+    const comments = visibleStages.map(s => {
+      if (s.key === "self") return `<td style="${tdC}background:#f8fafc;"><span style="color:#cbd5e1;">-</span></td>`;
+      const c = ev[s.key]?.performance?.comment || "";
+      return `<td style="${tdL}font-size:12px;color:#6b7280;font-style:italic;background:#fafafa;">${c ? `"${H(c)}"` : '<span style="color:#cbd5e1;">-</span>'}</td>`;
+    }).join("");
+    return `<tr>
+      <td colspan="2" style="${tdL}background:#f1f5f9;font-size:12px;color:#64748b;font-weight:600;">📝 평가 의견</td>
+      ${comments}
+    </tr>`;
+  })();
+
+  // ── 역량/자세태도 문항 행들 ─────────────────────────────────────────────────
+  function itemRows(areaKey, template) {
+    return template.items.map((item, i) => {
+      const cells = visibleStages.map(s => {
+        const sc = safeItemScore(ev[s.key]?.[areaKey]?.itemScores?.[i]);
+        const gr = gradeByItemScore(sc, template.grades);
+        return `<td style="${tdC}">${itemScoreCell(sc, gr)}</td>`;
+      }).join("");
+      return `<tr>
+        <td style="${tdL}color:#374151;font-size:13px;background:#f8fafc;" colspan="2">${H(item.name||"")}</td>
+        ${cells}
+      </tr>`;
+    }).join("");
+  }
+
+  function areaCommentRow(areaKey, label) {
+    const comments = visibleStages.map(s => {
+      const c = ev[s.key]?.[areaKey]?.comment || "";
+      return `<td style="${tdL}font-size:12px;color:#6b7280;font-style:italic;background:#fafafa;">${c ? `"${H(c)}"` : '<span style="color:#cbd5e1;">-</span>'}</td>`;
+    }).join("");
+    return `<tr>
+      <td colspan="2" style="${tdL}background:#f1f5f9;font-size:12px;color:#64748b;font-weight:600;">📝 평가 의견</td>
+      ${comments}
+    </tr>`;
+  }
+
+  // 종합 의견은 입력 항목이 없으므로 표시하지 않음
+  const overallRow = "";
+
+  // ── 동료/상향/AI 평가 섹션 (showAll 전용) ──────────────────────────────────
+  const colSpan = visibleStages.length + 2;
+
+  function extraSectionTable(title, thBg, rows) {
+    if (!rows.length) return "";
+    return `
+      <div style="margin-top:32px;">
+        <table>
+          <thead>
+            <tr>
+              <th colspan="${colSpan}" style="padding:12px 16px;background:${thBg};color:#fff;font-size:14px;font-weight:700;text-align:left;border:none;">
+                ${title}
+              </th>
+            </tr>
+            <tr>
+              <th style="padding:10px 12px;background:#334155;color:#fff;font-size:12px;text-align:left;border:1px solid rgba(255,255,255,.15);">평가자</th>
+              <th style="padding:10px 12px;background:#334155;color:#fff;font-size:12px;text-align:left;border:1px solid rgba(255,255,255,.15);">소속</th>
+              <th style="padding:10px 12px;background:#334155;color:#fff;font-size:12px;text-align:center;border:1px solid rgba(255,255,255,.15);">종합 점수</th>
+              <th style="padding:10px 12px;background:#334155;color:#fff;font-size:12px;text-align:left;border:1px solid rgba(255,255,255,.15);" colspan="${colSpan - 3}">문항별 점수 / 의견</th>
+            </tr>
+          </thead>
+          <tbody>${rows.join("")}</tbody>
+        </table>
+      </div>`;
+  }
+
+  let peerSection = "", upwardSection = "", aiSection = "";
+
+  if (showAll) {
+    const peerAssigns = (typeof getPeerAssignments === "function" ? getPeerAssignments() : [])
+      .filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
+    const upwardAssigns = (typeof getUpwardAssignments === "function" ? getUpwardAssignments() : [])
+      .filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
+    const peerTemplate = state.peerTemplate || { items: [] };
+    const upwardTemplate = state.upwardTemplate || { items: [] };
+
+    function assignRow(assign, template) {
+      const evaluator = cycleUserById(assign.evaluatorId) || {};
+      const ans = assign.answer || {};
+      const totalSc = safeItemScore(ans.score);
+      const itemCols = template.items.map((item, i) => {
+        const sc = safeItemScore(ans.itemScores?.[i]);
+        return `<span style="font-size:11px;display:inline-block;margin-right:8px;white-space:nowrap;"><span style="color:#64748b;">${H(item.name||"")}:</span> <strong>${sc !== "" ? sc : "-"}</strong></span>`;
+      }).join("");
+      const comment = ans.comment ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:4px;">"${H(ans.comment)}"</div>` : "";
+      return `<tr>
+        <td style="${tdL}font-weight:600;font-size:13px;">${H(evaluator.name || assign.evaluatorId)}</td>
+        <td style="${tdL}font-size:12px;color:#64748b;">${H(evaluator.team || evaluator.division || "")}</td>
+        <td style="${tdC}font-size:15px;font-weight:800;">${totalSc !== "" ? totalSc : "-"}</td>
+        <td style="${tdL}" colspan="${colSpan - 3}"><div style="flex-wrap:wrap;">${itemCols}</div>${comment}</td>
+      </tr>`;
+    }
+
+    if (upwardAssigns.length) {
+      upwardSection = extraSectionTable("⬆️ 상향평가", "#5b21b6", upwardAssigns.map(a => assignRow(a, upwardTemplate)));
+    }
+    if (peerAssigns.length) {
+      peerSection = extraSectionTable("🤝 동료평가", "#065f46", peerAssigns.map(a => assignRow(a, peerTemplate)));
+    }
+
+  }
+
+  // AI 평가 (showAll 여부와 무관하게 데이터가 있으면 표시)
+  {
+    const aiEval = ev.aiEval;
+    if (aiEval?.status === "done") {
+      const perfGrades = (templateFor(employee, "performance") || { grades: [] }).grades;
+      const aiScore = safeItemScore(aiEval.score);
+      const aiGrade = gradeByItemScore(aiScore, perfGrades);
+      const aiComment = aiEval.rationale || aiEval.comment || aiEval.feedback || "";
+
+      // 업적별 평가 행
+      const achScores = Array.isArray(aiEval.achievementScores) ? aiEval.achievementScores : [];
+      const achRows_ai = achScores.map(a => {
+        const sc = safeItemScore(a.score);
+        const gr = gradeByItemScore(sc, perfGrades);
+        const rat = a.rationale || "";
+        return `<tr>
+          <td style="${tdL}font-size:13px;font-weight:600;background:#f8fafc;" colspan="2">업적 ${H(String(a.index || ""))}</td>
+          <td style="${tdC}font-size:15px;font-weight:800;background:#f8fafc;">
+            ${sc !== "" ? sc : "-"}
+            ${gr ? `<br/><span style="font-size:11px;font-weight:800;color:${gradeColor(gr)};">${H(gr)}</span>` : ""}
+          </td>
+          <td style="${tdL}font-size:12px;color:#374151;line-height:1.7;" colspan="${colSpan - 3}">${rat ? H(rat) : '<span style="color:#cbd5e1;">-</span>'}</td>
+        </tr>`;
+      }).join("");
+
+      aiSection = `
+        <div style="margin-top:32px;">
+          <table>
+            <thead>
+              <tr><th colspan="${colSpan}" style="padding:12px 16px;background:#1e3a5f;color:#fff;font-size:14px;font-weight:700;text-align:left;border:none;">🤖 AI 평가 (업적평가)</th></tr>
+              <tr>
+                <th style="padding:8px 12px;background:#2d4a7f;color:#fff;font-size:12px;text-align:left;border:1px solid rgba(255,255,255,.15);" colspan="2">업적</th>
+                <th style="padding:8px 12px;background:#2d4a7f;color:#fff;font-size:12px;text-align:center;border:1px solid rgba(255,255,255,.15);">AI 점수</th>
+                <th style="padding:8px 12px;background:#2d4a7f;color:#fff;font-size:12px;text-align:left;border:1px solid rgba(255,255,255,.15);" colspan="${colSpan - 3}">평가 근거</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${achRows_ai}
+              <tr style="border-top:2px solid #c7d2fe;">
+                <td style="${tdL}font-size:13px;font-weight:700;background:#eef2ff;" colspan="2">종합 의견</td>
+                <td style="${tdC}font-size:16px;font-weight:800;background:#eef2ff;">
+                  ${aiScore !== "" ? aiScore : "-"}
+                  ${aiGrade ? `<br/><span style="font-size:12px;font-weight:800;color:${gradeColor(aiGrade)};">${H(aiGrade)}</span>` : ""}
+                </td>
+                <td style="${tdL}font-size:12px;color:#374151;line-height:1.7;background:#eef2ff;" colspan="${colSpan - 3}">${aiComment ? H(aiComment) : '<span style="color:#cbd5e1;">-</span>'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+    }
+  }
+
+  const gradeChip = headerGrade
+    ? ` <span style="font-size:20px;font-weight:800;color:${gradeColor(headerGrade)};">${H(headerGrade)}</span>` : "";
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<title>평가 현황 — ${H(employee.name)}</title>
+<style>
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Pretendard','Apple SD Gothic Neo',sans-serif; background:#f8fafc; color:#1e293b; }
+  #hdr { background:#1e3a5f; color:#fff; padding:16px 32px; position:sticky; top:0; z-index:10; box-shadow:0 2px 8px rgba(0,0,0,.25); display:flex; align-items:center; justify-content:space-between; }
+  #hdr h1 { font-size:18px; font-weight:700; }
+  #hdr .sub { font-size:12px; opacity:.75; margin-top:2px; }
+  #score-bar { background:#1a3a6f; padding:10px 32px; display:flex; align-items:center; gap:12px; }
+  #score-bar .lbl { font-size:12px; font-weight:600; color:rgba(255,255,255,.75); }
+  #score-bar .val { font-size:26px; font-weight:800; color:#fff; }
+  #content { padding:28px 48px; max-width:1400px; margin:0 auto; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  table th, table td { border:1px solid #e2e8f0; }
+  .ach-field { margin-bottom:6px; }
+  .ach-field:last-child { margin-bottom:0; }
+  .ach-lbl { display:inline-block;font-size:10px;font-weight:700;color:#fff;background:#64748b;border-radius:3px;padding:1px 5px;margin-right:6px;white-space:nowrap;vertical-align:top;margin-top:1px; }
+  .ach-val { font-size:12px;color:#374151;line-height:1.6; }
+  tr:hover td { background-color:rgba(59,130,246,.035); }
+</style>
+</head>
+<body>
+<div id="hdr">
+  <div>
+    <h1>📋 평가 현황 — ${H(employee.name)}</h1>
+    <div class="sub">${H(employee.title||"")} · ${H(employee.division||"")} / ${H(employee.team||"")}${employee.email ? " · "+H(employee.email) : ""} · ${now}</div>
+  </div>
+</div>
+<div id="score-bar">
+  <span class="lbl">${H(scoreLabel)}</span>
+  <span class="val">${H(headerScore)}${gradeChip}</span>
+</div>
+<div id="content">
+  <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr>
+          <th style="padding:12px 14px;background:#1e3a5f;color:#fff;font-size:13px;text-align:left;border:1px solid rgba(255,255,255,.2);" colspan="2">문항 / 내용</th>
+          ${stageHeaders}
+        </tr>
+      </thead>
+      <tbody>
+        ${summaryRow("performance", "업적평가", "#3b4f8c")}
+        ${achRows}
+        ${perfCommentRow}
+        ${compTemplate.items.length ? summaryRow("competency", "역량평가", "#166534") + itemRows("competency", compTemplate) + areaCommentRow("competency","역량평가") : ""}
+        ${attTemplate.items.length  ? summaryRow("attitude",   "자세태도",  "#166060") + itemRows("attitude",   attTemplate)  + areaCommentRow("attitude","자세태도") : ""}
+        ${overallRow}
+      </tbody>
+    </table>
+  </div>
+  ${upwardSection}
+  ${peerSection}
+  ${aiSection}
+</div>
+
+<!-- 목표 카드 팝업 -->
+<div id="goal-card-overlay" onclick="if(event.target===this)closeGoalCard()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;">
+  <div id="goal-card-box" style="background:#fff;border-radius:16px;width:520px;max-width:95vw;box-shadow:0 24px 60px rgba(0,0,0,.3);font-family:inherit;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;background:#1e3a5f;border-radius:16px 16px 0 0;">
+      <h2 style="font-size:16px;font-weight:700;color:#fff;margin:0;">목표 상세 정보</h2>
+      <button onclick="closeGoalCard()" style="background:none;border:none;color:#fff;font-size:24px;cursor:pointer;line-height:1;padding:0 4px;">×</button>
+    </div>
+    <div id="goal-card-body" style="padding:22px;"></div>
+  </div>
+</div>
+
+<style>
+.gc-info-row{display:flex;gap:12px;padding:6px 0;border-bottom:1px solid #e2e8f0;font-size:13px;}
+.gc-info-row span{min-width:80px;color:#64748b;font-weight:600;flex-shrink:0;}
+.gc-info-row b{color:#1e293b;font-weight:400;}
+.gc-tab-bar{display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin:16px 0 0;}
+.gc-tab{padding:8px 18px;font-size:13px;font-weight:600;color:#64748b;background:none;border:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;}
+.gc-tab.active{color:#1e3a5f;border-bottom-color:#1e3a5f;}
+.gc-tab-body{padding:12px 0;}
+.gc-ci{border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:8px;}
+.gc-ci-head{display:flex;justify-content:space-between;margin-bottom:4px;}
+.gc-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-bottom:6px;}
+</style>
+<script>
+var _goalsData = JSON.parse('${JSON.stringify(linkedGoalsMap).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,' ')}');
+var _gcActiveTab = 'checkin';
+var _gcCurrentGoalId = null;
+
+var _statusMap  = { onTrack:'순조로움', offTrack:'지연', done:'완료', notStarted:'미시작' };
+var _levelMap   = { personal:'개인', team:'팀', company:'회사' };
+var _approvalMap= { approved:'승인 완료', requested:'승인 대기', rejected:'반려', draft:'임시저장' };
+var _statusColor= { onTrack:'#16a34a', offTrack:'#ef4444', done:'#2563eb', notStarted:'#94a3b8' };
+
+function _gcProgress(g) {
+  if (g.status === 'done') return 100;
+  if (g.metric && g.metric.targetValue !== g.metric.startValue) {
+    var p = (g.metric.currentValue - g.metric.startValue) / (g.metric.targetValue - g.metric.startValue) * 100;
+    return Math.max(0, Math.min(100, Math.round(p * 100) / 100));
+  }
+  return typeof g.progress === 'number' ? g.progress : 0;
+}
+
+function _gcEsc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _gcBadge(status) {
+  var label = _statusMap[status] || status || '';
+  var color = _statusColor[status] || '#94a3b8';
+  return '<span class="gc-badge" style="background:' + color + '22;color:' + color + ';">' + label + '</span>';
+}
+
+function _gcFmtDate(s) {
+  if (!s) return '';
+  return String(s).replace('T',' ').slice(0,16);
+}
+
+function _gcRenderTab(tab) {
+  _gcActiveTab = tab;
+  var goalId = _gcCurrentGoalId;
+  var g = _goalsData[goalId];
+  if (!g) return;
+  // 탭 버튼 active 갱신
+  document.querySelectorAll('.gc-tab').forEach(function(btn){
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  var checkins  = (g.checkins  || []).slice().sort(function(a,b){ return new Date(b.at||b.date)-new Date(a.at||a.date); });
+  var feedbacks = (g.feedbacks || []).slice().sort(function(a,b){ return new Date(b.at)-new Date(a.at); });
+  var history   = (g.history   || []).slice().reverse();
+  var html = '';
+  if (tab === 'checkin') {
+    html = checkins.length ? checkins.map(function(c){
+      return '<div class="gc-ci"><div class="gc-ci-head"><strong style="font-size:12px;color:#374151;">' + _gcEsc(c.writerName||c.by||'') + '</strong>'
+        + '<span style="font-size:11px;color:#94a3b8;">' + _gcEsc(_gcFmtDate(c.at||c.date)) + '</span></div>'
+        + (c.status ? _gcBadge(c.status) : '')
+        + (c.valueText ? '<div style="font-size:12px;color:#4b5563;margin-bottom:3px;">지표: ' + _gcEsc(c.valueText) + '</div>' : '')
+        + (c.comment||c.note ? '<div style="font-size:12px;color:#4b5563;line-height:1.5;">' + _gcEsc(c.comment||c.note) + '</div>' : '')
+        + '</div>';
+    }).join('') : '<p style="font-size:12px;color:#94a3b8;padding:8px 0;">아직 체크인 기록이 없습니다.</p>';
+  } else if (tab === 'feedback') {
+    html = feedbacks.length ? feedbacks.map(function(f){
+      return '<div class="gc-ci"><div class="gc-ci-head"><strong style="font-size:12px;color:#374151;">' + _gcEsc(f.byName||f.by||'') + '</strong>'
+        + '<span style="font-size:11px;color:#94a3b8;">' + _gcEsc(_gcFmtDate(f.at)) + '</span></div>'
+        + '<div style="font-size:12px;color:#4b5563;line-height:1.5;">' + _gcEsc(f.text) + '</div></div>';
+    }).join('') : '<p style="font-size:12px;color:#94a3b8;padding:8px 0;">아직 피드백이 없습니다.</p>';
+  } else {
+    html = history.length ? history.map(function(h){
+      return '<div class="gc-ci"><div class="gc-ci-head"><strong style="font-size:12px;color:#374151;">' + _gcEsc(h.byName||h.by||'') + '</strong>'
+        + '<span style="font-size:11px;color:#94a3b8;">' + _gcEsc(_gcFmtDate(h.at)) + '</span></div>'
+        + '<div style="font-size:12px;color:#4b5563;">' + _gcEsc(h.summary||'목표 수정') + '</div>'
+        + (h.changes||[]).map(function(ch){ return '<div style="font-size:11.5px;color:#94a3b8;margin-top:2px;">· ' + _gcEsc(ch) + '</div>'; }).join('')
+        + '</div>';
+    }).join('') : '<p style="font-size:12px;color:#94a3b8;padding:8px 0;">변경 이력이 없습니다.</p>';
+  }
+  document.getElementById('gc-tab-body').innerHTML = html;
+}
+
+function showGoalCard(goalId) {
+  var g = _goalsData[goalId];
+  if (!g) return;
+  _gcCurrentGoalId = goalId;
+
+  var prog = _gcProgress(g);
+  var checkins  = (g.checkins  || []);
+  var feedbacks = (g.feedbacks || []);
+  var history   = (g.history   || []);
+
+  var infoRows = [
+    ['목표 레벨',  _levelMap[g.level]  || g.level  || '-'],
+    ['목표 사이클', g.cycleName || g.cycle || '-'],
+    g.parentTitle ? ['상위 목표', g.parentTitle] : null,
+    (g.start||g.end) ? ['기간', _gcEsc((g.start||'')+' ~ '+(g.end||''))] : null,
+    (g.team||g.division) ? ['담당 조직', g.team||g.division] : null,
+    g.ownerName ? ['담당자', g.ownerName] : null,
+    g.metric ? ['지표', g.metric.name] : null,
+    g.metric ? ['시작 값', g.metric.startValue] : null,
+    g.metric ? ['목표 값', g.metric.targetValue] : null,
+    g.description ? ['상세 설명', g.description] : null,
+    g.approvalStatus ? ['승인 상태', _approvalMap[g.approvalStatus]||g.approvalStatus] : null,
+    g.visibility ? ['공개 범위', g.visibility==='partial'?'일부 공개':'전체 공개'] : null,
+  ].filter(Boolean);
+
+  var metricHtml = g.metric
+    ? '<div style="border:1px solid #e2e8f0;border-radius:8px;padding:14px 16px;margin-top:10px;">'
+        + '<strong style="font-size:13px;">' + _gcEsc(g.metric.name) + '</strong>'
+        + '<div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;margin:10px 0 6px;">'
+        + '<div style="height:100%;width:' + prog + '%;background:#2563eb;border-radius:4px;"></div></div>'
+        + '<div style="display:flex;justify-content:space-between;font-size:12px;color:#64748b;">'
+        + '<span>성과 결과: ' + _gcEsc(g.metric.currentValue) + '</span>'
+        + '<strong style="color:#2563eb;">' + prog.toFixed(2) + '%</strong></div>'
+        + '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">시작 ' + _gcEsc(g.metric.startValue) + ' | 목표 ' + _gcEsc(g.metric.targetValue) + '</div>'
+        + '</div>'
+    : '<div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 16px;margin-top:10px;">'
+        + '<div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;margin-bottom:4px;">'
+        + '<div style="height:100%;width:' + prog + '%;background:#2563eb;border-radius:4px;"></div></div>'
+        + '<div style="text-align:right;font-size:12px;font-weight:700;color:#2563eb;">' + prog + '%</div>'
+        + '</div>';
+
+  var html =
+    '<div style="font-size:15px;font-weight:700;margin-bottom:12px;">' + _gcEsc(g.title) + '</div>'
+    + '<div style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 14px;margin-bottom:16px;">'
+    + infoRows.map(function(r){ return '<div class="gc-info-row"><span>' + r[0] + '</span><b>' + _gcEsc(r[1]) + '</b></div>'; }).join('')
+    + '</div>'
+    + '<div style="font-weight:700;margin-bottom:8px;">현재 진행 상태</div>'
+    + (g.status ? _gcBadge(g.status) : '')
+    + metricHtml
+    + '<div class="gc-tab-bar">'
+    + '<button class="gc-tab active" data-tab="checkin" onclick="_gcRenderTab(\'checkin\')">체크인 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + checkins.length + '</span></button>'
+    + '<button class="gc-tab" data-tab="feedback" onclick="_gcRenderTab(\'feedback\')">피드백 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + feedbacks.length + '</span></button>'
+    + '<button class="gc-tab" data-tab="history" onclick="_gcRenderTab(\'history\')">변경 이력 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + history.length + '</span></button>'
+    + '</div>'
+    + '<div id="gc-tab-body" class="gc-tab-body"></div>';
+
+  document.getElementById('goal-card-body').innerHTML = html;
+  _gcRenderTab('checkin');
+  document.getElementById('goal-card-overlay').style.display = 'flex';
+}
+
+function closeGoalCard() {
+  document.getElementById('goal-card-overlay').style.display = 'none';
+}
+
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeGoalCard(); });
+<\/script>
+
+</body>
+</html>`;
 }
 
 function renderPwChangeModal() {
@@ -11141,33 +12977,95 @@ const App = {
       return "D";
     };
 
-    // 역할별 점수 분포 (실제적인 Bell Curve)
+    // 역할별 점수 분포
     const scoreByRole = (role) => {
       const base = { member: [75, 92], teamLead: [80, 95], divisionHead: [82, 96] }[role] || [75, 92];
       return rnd(base[0], base[1]);
     };
 
-    // 평가 항목 채우기 (업적·역량·자세태도 점수를 각각 다르게 생성)
-    const makeReview = (role, commentsPool) => {
-      const mk = () => { const s = scoreByRole(role); return { score: s, grade: scoreToGrade(s) }; };
-      const perf = mk(), comp = mk(), att = mk();
+    // ── 업적 데이터 풀 ─────────────────────────────────────────────────────────
+    // 팀원용 업적
+    const memberAchievements = [
+      { name: "신규 고객 유치 및 관계 강화", goal: "부서 영업 목표 달성 기여", detail: "신규 고객 12개사를 발굴하고 지속적인 관계 관리를 통해 재계약률 95%를 달성하였습니다. 고객 맞춤형 제안서를 개발하여 경쟁사 대비 차별화된 서비스를 제공하였습니다." },
+      { name: "업무 프로세스 개선 및 효율화", goal: "팀 내 업무 처리 시간 단축", detail: "반복적인 수작업 업무를 자동화하여 주당 평균 8시간의 업무 시간을 절감하였습니다. 표준 업무 절차서를 작성하여 신입 구성원 온보딩 기간을 50% 단축하였습니다." },
+      { name: "프로젝트 기한 내 납기 달성", goal: "담당 프로젝트 전건 납기 준수", detail: "총 5건의 프로젝트를 모두 기한 내 납기하였으며, 품질 검수 통과율 100%를 달성하였습니다. 위험 요소를 사전에 식별하고 대응 계획을 수립하여 일정 지연을 방지하였습니다." },
+      { name: "교육 및 역량 개발 활동", goal: "직무 관련 자격증 취득 및 교육 이수", detail: "관련 분야 자격증 1건을 취득하고 사내외 교육 총 40시간을 이수하였습니다. 학습한 내용을 팀 내 지식공유 세션을 통해 전파하여 팀 전체 역량 향상에 기여하였습니다." },
+      { name: "고객 민원 처리 및 만족도 향상", goal: "고객 만족도 점수 90점 이상 유지", detail: "접수된 민원 100%를 48시간 이내 처리하였으며, 분기 고객 만족도 조사에서 92점을 달성하였습니다. 민원 재발 방지를 위한 FAQ 데이터베이스를 구축하였습니다." },
+      { name: "팀 내 협업 문화 활성화 기여", goal: "부서 간 협업 과제 참여 및 성과 창출", detail: "타 부서와의 협업 프로젝트 3건에 참여하여 성공적으로 완수하였습니다. 정기 협업 회의를 주도적으로 운영하여 과제 진행 현황 공유와 이슈 해결을 촉진하였습니다." },
+      { name: "비용 절감 및 예산 관리", goal: "담당 예산 5% 이상 절감 달성", detail: "구매 프로세스 개선과 공급업체 재협상을 통해 연간 예산 대비 7.2% 절감을 실현하였습니다. 월별 예산 집행 현황을 체계적으로 관리하여 불필요한 지출을 최소화하였습니다." },
+      { name: "데이터 분석 기반 의사결정 지원", goal: "정기 보고서 적시 제출 및 품질 향상", detail: "주요 KPI 모니터링 대시보드를 구축하여 실시간 데이터 기반 의사결정을 지원하였습니다. 분기 경영 보고서를 100% 적시 제출하였으며, 데이터 정확도를 전년 대비 15% 개선하였습니다." },
+    ];
+    // 팀장/본부장용 업적
+    const leaderAchievements = [
+      { name: "부서 핵심 목표 달성 및 팀 성과 관리", goal: "연간 KPI 목표 100% 이상 달성", achievementLevel: "목표 대비 108% 달성", detail: "부서 연간 KPI 전 항목에서 목표치를 초과 달성하였습니다. 구성원별 목표를 명확히 설정하고 주기적인 성과 점검을 통해 지속적인 성장을 이끌었습니다." },
+      { name: "신규 사업 개발 및 매출 확대", goal: "신규 매출 10억 이상 창출", achievementLevel: "신규 계약 13억 달성", detail: "신규 거래처 발굴 및 기존 고객 확대를 통해 목표 대비 130%의 신규 매출을 창출하였습니다. 시장 트렌드 분석을 기반으로 한 전략적 영업 활동으로 경쟁사 대비 우위를 확보하였습니다." },
+      { name: "조직 역량 강화 및 인재 육성", goal: "구성원 역량 평가 점수 전년 대비 향상", achievementLevel: "평균 역량점수 전년 대비 8점 상승", detail: "정기 코칭 세션과 직무 교육 프로그램을 운영하여 팀 전체 역량 향상을 이끌었습니다. 고성과자 육성 트랙을 도입하여 핵심 인재 2명을 주요 직위로 승진시켰습니다." },
+      { name: "운영 효율화 및 비용 최적화", goal: "부서 운영 비용 10% 절감", achievementLevel: "12.5% 비용 절감 실현", detail: "업무 자동화 도입과 프로세스 재설계를 통해 운영 비용을 목표 대비 초과 절감하였습니다. 절감된 예산을 핵심 사업 영역에 재투자하여 투자 대비 효과를 극대화하였습니다." },
+      { name: "고객 전략 수립 및 만족도 제고", goal: "고객 만족도 지수 95점 이상 달성", achievementLevel: "분기 평균 96.2점 달성", detail: "고객 니즈 분석을 기반으로 서비스 개선 로드맵을 수립하고 단계적으로 실행하였습니다. 핵심 고객사와의 파트너십을 강화하여 장기 계약 갱신율을 전년 대비 15%p 향상시켰습니다." },
+      { name: "부서 간 협업 체계 구축", goal: "범부서 협업 프로젝트 3건 이상 추진", achievementLevel: "4건 완수", detail: "타 부서와의 협업 거버넌스를 수립하고 공동 KPI를 설정하여 시너지를 창출하였습니다. 협업 과제 4건 모두 기한 내 목표를 달성하였으며, 유관 부서로부터 높은 만족도 평가를 받았습니다." },
+    ];
+
+    // 업적 가중치 배분 (3개 기준)
+    const achWeights3 = [[50, 30, 20], [40, 35, 25], [45, 30, 25], [50, 25, 25], [35, 35, 30]];
+
+    // 점수를 등급 스케일의 정확한 값으로 스냅 (renderGradePicker 호환)
+    const snapToGradeScore = (rawScore, gradeScale) => {
+      const gs = gradeScale && gradeScale.length ? gradeScale : defaultGradeScale();
+      const letter = scoreToGrade(rawScore);
+      const found = gs.find(g => g.grade === letter);
+      return found ? Number(found.score) : Number((gs.find(g => g.grade === "B") || gs[0]).score);
+    };
+
+    // 평가 항목 채우기
+    const makeReview = (role, commentsPool, isLeaderMode) => {
+      const mk = (gradeScale) => {
+        const raw = scoreByRole(role);
+        const snapped = snapToGradeScore(raw, gradeScale);
+        return { score: snapped, grade: scoreToGrade(raw) };
+      };
       const tpl = state.templates;
-      // 항목별 점수도 해당 컴포넌트 점수 부근으로 약간씩 변주
-      const buildItemScores = (items, base) => {
+      const perf = mk(tpl?.performance?.grades);
+      const comp = mk(tpl?.competency?.grades);
+      const att  = mk(tpl?.attitude?.grades);
+
+      // 항목별 점수: 등급 스케일 값으로 스냅 (renderGradePicker 버튼 active 표시용)
+      const buildItemScores = (items, base, gradeScale) => {
         const out = {};
-        (items || []).forEach((item, i) => { const s = clampScore(base + rnd(-3, 3)); out[i] = { score: s, grade: scoreToGrade(s) }; });
+        (items || []).forEach((item, i) => {
+          out[i] = snapToGradeScore(base + rnd(-12, 12), gradeScale);
+        });
         return out;
       };
+
+      // 업적 3개 생성
+      const achPool = isLeaderMode ? leaderAchievements : memberAchievements;
+      const shuffled = [...achPool].sort(() => Math.random() - 0.5).slice(0, 3);
+      const weights = pick(achWeights3);
+      const achScores = weights.map(() => snapToGradeScore(perf.score + rnd(-12, 12), tpl?.performance?.grades));
+      const achievements = shuffled.map((ach, i) => ({
+        ...ach,
+        weight: weights[i],
+        score: achScores[i],
+        grade: scoreToGrade(achScores[i]),
+      }));
+
       return {
         performance: {
           score: perf.score, grade: perf.grade,
           comment: pick(commentsPool),
           itemScores: {},
-          achievements: [{ name: "주요 업무 실적", goal: "팀 목표 달성", detail: pick(commentsPool), weight: 100, score: perf.score, grade: perf.grade }],
+          achievements,
         },
-        competency: { score: comp.score, grade: comp.grade, comment: pick(commentsPool), itemScores: buildItemScores(tpl?.competency?.items, comp.score) },
-        attitude: { score: att.score, grade: att.grade, comment: pick(commentsPool), itemScores: buildItemScores(tpl?.attitude?.items, att.score) },
-        overallFeedback: "",
+        competency: {
+          score: comp.score, grade: comp.grade,
+          comment: pick(commentsPool),
+          itemScores: buildItemScores(tpl?.competency?.items, comp.score, tpl?.competency?.grades),
+        },
+        attitude: {
+          score: att.score, grade: att.grade,
+          comment: pick(commentsPool),
+          itemScores: buildItemScores(tpl?.attitude?.items, att.score, tpl?.attitude?.grades),
+        },
       };
     };
 
@@ -11176,29 +13074,33 @@ const App = {
       const ev = cycle.evaluations[emp.id];
       if (!ev) return;
 
-      // 자기평가
-      ev.self = makeReview(emp.role, selfComments);
+      const isLeader = emp.role === "teamLead" || emp.role === "divisionHead";
+
+      // 자기평가 (업적 평가의견 입력 항목 없음)
+      ev.self = makeReview(emp.role, selfComments, isLeader);
+      delete ev.self.performance.comment;
       ev.status.self = "submitted";
 
       // 1차 평가
       if (emp.evaluator1Id) {
-        ev.first = makeReview(emp.role, evalComments);
+        ev.first = makeReview(emp.role, evalComments, isLeader);
         ev.status.first = "completed";
       }
 
       // 2차 평가 (팀원 + 팀장 모두)
       if (emp.evaluator2Id) {
-        ev.second = makeReview(emp.role, evalComments);
+        ev.second = makeReview(emp.role, evalComments, isLeader);
         ev.status.second = "completed";
       }
     });
 
     // 상향평가 주입
     (cycle.upwardAssignments || []).forEach(a => {
-      const score = rnd(78, 97);
+      const upGs = state.upwardTemplate?.grades;
       a.answer = {
-        itemScores: Object.fromEntries((state.upwardTemplate?.items || []).map((_, i) => [i, { score, grade: scoreToGrade(score) }])),
-        score, grade: scoreToGrade(score),
+        itemScores: Object.fromEntries((state.upwardTemplate?.items || []).map((_, i) => [i, snapToGradeScore(rnd(78, 97), upGs)])),
+        score: snapToGradeScore(rnd(78, 97), upGs),
+        grade: scoreToGrade(rnd(78, 97)),
         comment: pick(upwardComments),
       };
       a.status = "completed";
@@ -11208,10 +13110,11 @@ const App = {
 
     // 동료평가 주입
     (cycle.peerAssignments || []).forEach(a => {
-      const score = rnd(78, 96);
+      const peerGs = state.peerTemplate?.grades;
       a.answer = {
-        itemScores: Object.fromEntries((state.peerTemplate?.items || []).map((_, i) => [i, { score, grade: scoreToGrade(score) }])),
-        score, grade: scoreToGrade(score),
+        itemScores: Object.fromEntries((state.peerTemplate?.items || []).map((_, i) => [i, snapToGradeScore(rnd(78, 96), peerGs)])),
+        score: snapToGradeScore(rnd(78, 96), peerGs),
+        grade: scoreToGrade(rnd(78, 96)),
         comment: pick(peerComments),
       };
       a.status = "completed";
@@ -11810,6 +13713,181 @@ const App = {
     state.ui.flash = "";
     if (tab === "memberDashboard") state.ui.dashboardMemberId = "";
     if (tab === "goals") state.ui.goalViewMode = "goals"; // 탭 재진입 시 기본 뷰로 복귀
+    if (tab === "notices") { state.ui.noticeEditId = null; state.ui.noticeDetailId = null; }
+    saveState();
+    render();
+  },
+  // ── 공지사항 관련 ──────────────────────────────────────────────────
+  viewNotices() {
+    // 읽지 않은 공지 중 가장 최신 것을 바로 팝업으로 오픈
+    const user = currentUser();
+    const notices = (state.notices || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const readIds = new Set((state.noticeReads || {})[user.id] || []);
+    const firstUnread = notices.find(n => !readIds.has(n.id));
+    if (firstUnread) {
+      App.viewNoticeDetail(firstUnread.id);
+    } else {
+      // 읽지 않은 게 없으면 전체 목록 모달 오픈
+      App.openNoticeListModal();
+    }
+  },
+  openNoticeListModal() {
+    state.ui.noticeListModal = true;
+    state.ui.noticeListPage = 0;
+    render();
+  },
+  closeNoticeListModal() {
+    state.ui.noticeListModal = false;
+    render();
+  },
+  setNoticeListPage(page) {
+    state.ui.noticeListPage = page;
+    render();
+  },
+  viewNoticeDetail(id) {
+    const user = currentUser();
+    if (!state.noticeReads) state.noticeReads = {};
+    const reads = state.noticeReads[user.id] || [];
+    if (!reads.includes(id)) reads.push(id);
+    state.noticeReads[user.id] = reads;
+    state.ui.noticeDetailId = id;
+    saveState();
+    render();
+  },
+  closeNoticeDetail() {
+    state.ui.noticeDetailId = null;
+    render();
+  },
+  viewAdminNoticeDetail(id) {
+    state.ui.noticeDetailId = id;
+    state.ui.noticeEditId = null;
+    render();
+  },
+  newNotice() {
+    state.ui.noticeEditId = "new";
+    state.ui.noticeDetailId = null;
+    render();
+  },
+  editNotice(id) {
+    state.ui.noticeEditId = id;
+    state.ui.noticeDetailId = null;
+    render();
+  },
+  cancelNoticeEdit() {
+    state.ui.noticeEditId = null;
+    render();
+  },
+  saveNotice(id) {
+    const title = (document.getElementById("notice_title")?.value || "").trim();
+    const content = document.getElementById("notice_richtext")?.innerHTML || "";
+    if (!title) { window.alert("제목을 입력해 주세요."); return; }
+    const attachments = (window._pendingAttachments || []);
+    if (!state.notices) state.notices = [];
+    if (id === "new") {
+      state.notices.push({ id: `notice-${Date.now()}`, title, content, attachments, createdAt: new Date().toISOString() });
+    } else {
+      const n = state.notices.find(x => x.id === id);
+      if (n) { n.title = title; n.content = content; n.attachments = attachments; }
+    }
+    window._pendingAttachments = [];
+    state.ui.noticeEditId = null;
+    state.ui.flash = "공지사항이 저장되었습니다.";
+    saveState();
+    render();
+  },
+  handleNoticeFileSelect(input) {
+    const files = Array.from(input.files || []);
+    if (!window._pendingAttachments) window._pendingAttachments = [];
+    const MAX = 5 * 1024 * 1024;
+    let skipped = 0;
+    const reads = files.map(file => new Promise(resolve => {
+      if (file.size > MAX) { skipped++; resolve(); return; }
+      const reader = new FileReader();
+      reader.onload = e => {
+        window._pendingAttachments.push({ id: `att-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: file.name, type: file.type, size: file.size, data: e.target.result });
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    }));
+    Promise.all(reads).then(() => {
+      if (skipped) window.alert(`${skipped}개 파일은 5MB를 초과하여 제외되었습니다.`);
+      // 첨부 목록 UI 갱신
+      const listEl = document.getElementById("attach_list");
+      if (listEl) {
+        listEl.innerHTML = (window._pendingAttachments || []).map((a, i) =>
+          `<div id="attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
+            <span style="font-size:13px;flex:1;">📎 ${esc(a.name)}</span>
+            <span style="font-size:11px;color:var(--muted);">${(a.size/1024).toFixed(1)} KB</span>
+            <button class="btn secondary" style="font-size:11px;padding:2px 8px;" onclick="App.removeNoticeAttachment(${i})">삭제</button>
+          </div>`).join("");
+      }
+      input.value = "";
+    });
+  },
+  removeNoticeAttachment(index) {
+    if (!window._pendingAttachments) return;
+    window._pendingAttachments.splice(index, 1);
+    const listEl = document.getElementById("attach_list");
+    if (listEl) {
+      listEl.innerHTML = (window._pendingAttachments || []).map((a, i) =>
+        `<div id="attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
+          <span style="font-size:13px;flex:1;">📎 ${esc(a.name)}</span>
+          <span style="font-size:11px;color:var(--muted);">${(a.size/1024).toFixed(1)} KB</span>
+          <button class="btn secondary" style="font-size:11px;padding:2px 8px;" onclick="App.removeNoticeAttachment(${i})">삭제</button>
+        </div>`).join("");
+    }
+  },
+  // ── 리치텍스트 에디터 헬퍼 ──────────────────────────────────────
+  rteExec(cmd, val) {
+    document.getElementById("notice_richtext")?.focus();
+    document.execCommand(cmd, false, val != null ? val : null);
+  },
+  rteInsertLink() {
+    const url = window.prompt("링크 URL을 입력하세요:", "https://");
+    if (!url) return;
+    document.getElementById("notice_richtext")?.focus();
+    document.execCommand("createLink", false, url);
+  },
+  rteInsertTable() {
+    const input = window.prompt("표 크기를 입력하세요 (행x열, 예: 3x4):", "3x3");
+    if (!input) return;
+    const parts = input.split(/[xX×]/);
+    const rows = Math.max(1, Math.min(20, parseInt(parts[0]) || 3));
+    const cols = Math.max(1, Math.min(20, parseInt(parts[1]) || 3));
+    let html = `<table style="border-collapse:collapse;width:100%;margin:8px 0;"><tbody>`;
+    for (let r = 0; r < rows; r++) {
+      html += "<tr>";
+      for (let c = 0; c < cols; c++) {
+        html += `<td style="border:1px solid #cbd5e1;padding:8px 10px;min-width:60px;">&nbsp;</td>`;
+      }
+      html += "</tr>";
+    }
+    html += `</tbody></table><br>`;
+    document.getElementById("notice_richtext")?.focus();
+    document.execCommand("insertHTML", false, html);
+  },
+  rteInsertImage(input) {
+    const file = input.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { window.alert("이미지는 5MB 이하만 삽입 가능합니다."); input.value = ""; return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById("notice_richtext")?.focus();
+      document.execCommand("insertHTML", false, `<img src="${e.target.result}" style="max-width:100%;height:auto;border-radius:4px;" />`);
+    };
+    reader.readAsDataURL(file);
+    input.value = "";
+  },
+  deleteNotice(id) {
+    if (!window.confirm("이 공지사항을 삭제하시겠습니까?")) return;
+    state.notices = (state.notices || []).filter(n => n.id !== id);
+    // 읽음 기록에서도 제거
+    Object.keys(state.noticeReads || {}).forEach(uid => {
+      state.noticeReads[uid] = (state.noticeReads[uid] || []).filter(x => x !== id);
+    });
+    state.ui.noticeEditId = null;
+    state.ui.noticeDetailId = null;
+    state.ui.flash = "공지사항이 삭제되었습니다.";
     saveState();
     render();
   },
@@ -12182,7 +14260,7 @@ const App = {
     if (max > 0 && target.performance.achievements.length >= max) {
       return window.alert(`업적은 최대 ${max}개까지 추가할 수 있습니다.`);
     }
-    target.performance.achievements.push({ name: "", goal: "", detail: "", weight: 0, score: "", grade: "" });
+    target.performance.achievements.push({ name: "", goal: "", detail: "", weight: 10, score: "", grade: "" });
     saveState();
     render();
   },
@@ -12389,6 +14467,8 @@ const App = {
     evaluation.self = collectReviewFromDom("self", evaluation.self, user);
     if (submit) {
       if (!canEditStage("self")) return window.alert(periodMessage("self", activeCycle()));
+      const weightRangeError = invalidWeightRangeLabel(evaluation.self, user);
+      if (weightRangeError) return window.alert(weightRangeError + "\n가중치는 5% 이상 40% 이하로 입력해야 제출할 수 있습니다.");
       if (hasInvalidPerformanceWeightTotal(evaluation.self, user)) return window.alert("업적평가의 업적 가중치 합계는 100이어야 제출할 수 있습니다.");
       if (hasMissingScores(evaluation.self, user)) return window.alert("모든 평가 항목의 등급을 선택해야 제출할 수 있습니다.");
       const missingSelfResponses = missingSelfResponseLabels(evaluation.self);
@@ -12949,12 +15029,19 @@ const App = {
     const rows = getResultSubmissionScopeUsers(user)
       .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
     if (!rows.length) return window.alert("내보낼 구성원이 없습니다.");
-    const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "추천등급", "조정등급", "배분율 초과 사유"];
+    const useStd = Boolean(activeCycle()?.useScoreStandardization);
+    const stdScores = useStd ? calculateStandardizedScores(rows) : new Map();
+    const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수",
+      ...(useStd ? ["표준화점수"] : []), "추천등급", "조정등급", "배분율 초과 사유", "평가 피드백"];
     const out = [header];
     rows.forEach((emp, i) => {
       const m = memberScoreCells(emp);
+      const stdScore = useStd ? (stdScores.get(emp.id)?.standardizedScore ?? "") : undefined;
       out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
-        ...scoreBlockCells(m), m.score, m.autoGrade, m.orgGrade || m.autoGrade, m.distReason]);
+        ...scoreBlockCells(m), m.score,
+        ...(useStd ? [stdScore] : []),
+        m.autoGrade, m.orgGrade || m.autoGrade, m.distReason,
+        buildEvalFeedbackText(emp)]);
     });
     downloadXlsxRows(out, `종합평가_${(user.division || "본부")}_${todayStamp()}.xlsx`);
   },
@@ -12965,15 +15052,17 @@ const App = {
     const rows = allUsers.filter(isEvaluatee)
       .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
     if (!rows.length) return window.alert("내보낼 구성원이 없습니다.");
+
     const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
-      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종등급"];
+      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종등급", "평가 피드백"];
     const out = [["[구성원 평가 결과]"], header];
     rows.forEach((emp, i) => {
       const m = memberScoreCells(emp);
       out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
         ...scoreBlockCells(m), m.score, m.autoGrade,
         orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
-        m.presidentReason, m.chairmanReason, m.finalGrade]);
+        m.presidentReason, m.chairmanReason, m.finalGrade,
+        buildEvalFeedbackText(emp)]);
     });
     out.push([""]);
     out.push(["[부서별 등급 분포]"]);
@@ -12983,6 +15072,69 @@ const App = {
     downloadXlsxRows(out, `최종승인_${todayStamp()}.xlsx`);
   },
   // ── 최종 결과/리포트 공개: 어드민 전체 구성원 + 조정 정보 ──
+  openEvalSummaryWindow() {
+    const user = currentUser();
+    const tasks = getTasksForUser(user);
+    const html = buildEvalSummaryWindowHTML(user, tasks);
+    const win = window.open("", "_blank");
+    if (!win) return window.alert("팝업이 차단되었습니다. 브라우저 설정에서 팝업 허용 후 다시 시도해 주세요.");
+    win.document.write(html);
+    win.document.close();
+  },
+  openMemberDetailWindow(employeeId, options = {}) {
+    const html = buildMemberDetailWindowHTML(employeeId, options);
+    const win = window.open("", "_blank");
+    if (!win) return window.alert("팝업이 차단되었습니다. 브라우저 설정에서 팝업 허용 후 다시 시도해 주세요.");
+    win.document.write(html);
+    win.document.close();
+  },
+  closeEvalSummaryModal() {},
+  submitEvaluatorFinal() {
+    const user = currentUser();
+    const tasks = getTasksForUser(user);
+    const incomplete = tasks.filter(t => !isCompletedStatus(t.status));
+    if (incomplete.length > 0) {
+      const names = incomplete.slice(0, 5).map(t => `${t.employee.name} ${t.label}`).join(", ");
+      return window.alert(`작성이 완료되지 않은 평가가 ${incomplete.length}건 있습니다.\n모든 평가를 작성 완료 후 최종 제출할 수 있습니다.\n\n미완료: ${names}${incomplete.length > 5 ? ` 외 ${incomplete.length - 5}건` : ""}`);
+    }
+    const cycle = selectedCycle();
+    if (!cycle) return;
+    // 변별도 검증 (설정 켜진 경우)
+    if (cycle.useDiscriminationCheck) {
+      const threshold = Number(cycle.discriminationThreshold ?? 10);
+      const normalTasks = tasks.filter(t => !t.type && (t.stage === "first" || t.stage === "second"));
+      // 스테이지별 → 팀별 그룹화
+      const groups = {};
+      normalTasks.forEach(t => {
+        const key = `${t.stage}__${t.employee.team || t.employee.division || "_"}`;
+        if (!groups[key]) groups[key] = { stage: t.stage, team: t.employee.team || t.employee.division || "_", members: [] };
+        groups[key].members.push(t);
+      });
+      const lowGroups = [];
+      Object.values(groups).forEach(g => {
+        if (g.members.length < 3) return;
+        const scores = g.members.map(t => {
+          const review = evaluations()[t.employee.id]?.[t.stage];
+          return review ? calculateEvaluatorSubtotalScore(t.employee, review) : null;
+        }).filter(s => s !== null);
+        if (scores.length < 3) return;
+        const maxS = Math.max(...scores), minS = Math.min(...scores), diff = maxS - minS;
+        if (diff < threshold) lowGroups.push({ stage: g.stage, team: g.team, count: g.members.length, max: maxS, min: minS, diff });
+      });
+      if (lowGroups.length > 0) {
+        const stageLabel = s => s === "first" ? "1차" : "2차";
+        const detail = lowGroups.map(g => `· [${stageLabel(g.stage)}] ${g.team} (${g.count}명): 최고 ${g.max.toFixed(1)}점 / 최저 ${g.min.toFixed(1)}점 / 차이 ${g.diff.toFixed(1)}점`).join("\n");
+        const proceed = window.confirm(`담당 팀원의 평가 점수 차이가 너무 작습니다.\n구성원 간 성과 차이를 점수에 반영해주세요.\n\n${detail}\n\n그래도 최종 제출하시겠습니까?`);
+        if (!proceed) return;
+      }
+    }
+    if (!window.confirm(`작성한 모든 평가(${tasks.length}건)를 최종 제출하시겠습니까?\n최종 제출 후에는 평가 내용을 수정할 수 없습니다.`)) return;
+    if (!cycle.evaluatorFinalSubmits) cycle.evaluatorFinalSubmits = {};
+    cycle.evaluatorFinalSubmits[user.id] = { submittedAt: new Date().toISOString() };
+    saveState();
+    state.ui.flash = `평가 최종 제출이 완료되었습니다. (${tasks.length}건)`;
+    render();
+  },
   requestApproval() {
     const cycle = selectedCycle();
     if (!cycle) return;
@@ -13004,29 +15156,110 @@ const App = {
     const val = parseInt(document.getElementById("grade_excess_allowance")?.value ?? "1", 10);
     if (isNaN(val) || val < 0) return window.alert("올바른 숫자를 입력해 주세요. (0 이상)");
     cycle.gradeExcessAllowance = val;
+    cycle.useAdjustmentSession = Boolean(document.getElementById("use_adjustment_session")?.checked);
+    cycle.useDiscriminationCheck = Boolean(document.getElementById("use_discrimination_check")?.checked);
+    const thresholdVal = parseInt(document.getElementById("discrimination_threshold")?.value ?? "10", 10);
+    cycle.discriminationThreshold = isNaN(thresholdVal) || thresholdVal < 1 ? 10 : thresholdVal;
+    cycle.useScoreStandardization = Boolean(document.getElementById("use_score_standardization")?.checked);
     saveState();
-    state.ui.flash = `종합평가 제출 설정이 저장되었습니다. 초과 허용 인원: ${val}명`;
+    state.ui.flash = `종합평가 설정이 저장되었습니다.`;
     render();
+  },
+  showStandardizationInfo() {
+    let el = document.getElementById("std-score-info-overlay");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "std-score-info-overlay";
+      el.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;";
+      el.innerHTML = `
+        <div style="background:var(--surface);border-radius:12px;padding:28px 32px;max-width:560px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.25);position:relative;">
+          <button onclick="document.getElementById('std-score-info-overlay').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted);">✕</button>
+          <h3 style="margin:0 0 16px;">표준화 점수 산출 방법</h3>
+          <p style="font-size:13px;color:var(--muted);margin-bottom:16px;">팀마다 평가자(팀장)의 기준이 다를 수 있어 원점수를 그대로 비교하면 불공정할 수 있습니다. 표준화 점수는 팀 내 상대적 위치를 전사 기준으로 환산한 보정 점수입니다.</p>
+          <div style="background:var(--surface-2);border-radius:8px;padding:16px;margin-bottom:16px;font-size:13px;line-height:2;">
+            <strong>① Z점수 계산 (팀 내 상대 위치)</strong><br/>
+            <code style="background:var(--surface);padding:4px 8px;border-radius:4px;display:inline-block;margin:4px 0;">Z = (내 점수 − 팀 평균) ÷ 팀 표준편차</code><br/>
+            <strong>② 전사 기준 표준화점수 변환</strong><br/>
+            <code style="background:var(--surface);padding:4px 8px;border-radius:4px;display:inline-block;margin:4px 0;">표준화점수 = 전사평균 + Z × 전사표준편차</code>
+          </div>
+          <ul style="font-size:13px;color:var(--muted);margin:0;padding-left:18px;line-height:1.8;">
+            <li>팀 인원이 <strong>3명 이상</strong>인 팀에만 적용됩니다.</li>
+            <li>팀 내 점수가 모두 동일한 경우 전사 표준편차를 대신 사용합니다.</li>
+            <li>표준화 점수는 <strong>참고용</strong>이며, 최종 등급은 본부장이 직접 결정합니다.</li>
+          </ul>
+        </div>`;
+      el.addEventListener("click", e => { if (e.target === el) el.style.display = "none"; });
+      document.body.appendChild(el);
+    } else {
+      el.style.display = "flex";
+    }
   },
   exportFinalAdjust() {
     const evaluatees = cycleUsers().filter(isEvaluatee)
       .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
     if (!evaluatees.length) return window.alert("내보낼 구성원이 없습니다.");
     const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
-      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "공개피드백"];
+      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "평가 피드백", "AI 피드백"];
     const out = [["[구성원 평가 결과]"], header];
     evaluatees.forEach((emp, i) => {
       const m = memberScoreCells(emp);
+      const ev = evaluations()[emp.id] || {};
+      const aiFb = ev.aiFeedback;
+      const aiFeedbackText = aiFb?.generatedAt ? (() => {
+        const lines = [];
+        if (aiFb.overall)      lines.push(`종합 피드백: ${aiFb.overall}`);
+        if (aiFb.upward)       lines.push(`\n상향평가 피드백: ${aiFb.upward}`);
+        if (aiFb.peer)         lines.push(`\n동료평가 피드백: ${aiFb.peer}`);
+        if (aiFb.strengths?.length)   lines.push(`\n강점: ${aiFb.strengths.join(", ")}`);
+        if (aiFb.weaknesses?.length)  lines.push(`\n개선점: ${aiFb.weaknesses.join(", ")}`);
+        if (aiFb.suggestions)  lines.push(`\n성장 제언: ${aiFb.suggestions}`);
+        if (aiFb.ref1Title)    lines.push(`\n추천 자료1: ${aiFb.ref1Title}${aiFb.ref1Url ? ` (${aiFb.ref1Url})` : ""}${aiFb.ref1Desc ? ` — ${aiFb.ref1Desc}` : ""}`);
+        if (aiFb.ref2Title)    lines.push(`\n추천 자료2: ${aiFb.ref2Title}${aiFb.ref2Url ? ` (${aiFb.ref2Url})` : ""}${aiFb.ref2Desc ? ` — ${aiFb.ref2Desc}` : ""}`);
+        return lines.join("").trim();
+      })() : "";
       out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
         ...scoreBlockCells(m), m.score, m.autoGrade,
         orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
-        m.presidentReason, m.chairmanReason, m.adminReason, m.finalGrade, m.feedback]);
+        m.presidentReason, m.chairmanReason, m.adminReason, m.finalGrade,
+        buildEvalFeedbackText(emp), aiFeedbackText]);
     });
     out.push([""]);
     out.push(["[부서별 등급 분포]"]);
     deptDistributionExportRows(evaluatees, cycleUsers()).forEach(r => out.push(r));
     // 종합평가 등급 조정 이력 (본부장 원안 + 조정 세션 사유)
     orgAdjustmentHistoryExportRows(evaluatees).forEach(r => out.push(r));
+
+    // AI 평가자 성향 분석
+    const tendency = activeCycle()?.aiEvaluatorTendency;
+    if (tendency?.evaluators && Object.keys(tendency.evaluators).length) {
+      out.push([""]);
+      out.push([`[AI 평가자 성향 분석]${tendency.analysedAt ? `  (분석일시: ${formatDateTime(tendency.analysedAt)})` : ""}`]);
+      out.push(["평가자 이름", "역할", "엄격·관대 점수", "변별도 점수", "성향 레이블", "AI 코칭 의견"]);
+      const leniencyLabel = (score) => {
+        if (score == null) return "";
+        if (score >= 2)  return "매우 관대";
+        if (score >= 0.7) return "관대";
+        if (score > -0.7) return "보통";
+        if (score > -2)  return "엄격";
+        return "매우 엄격";
+      };
+      const discLabel = (score) => {
+        if (score == null) return "";
+        if (score >= 15) return "높음";
+        if (score >= 8)  return "보통";
+        return "낮음";
+      };
+      Object.values(tendency.evaluators)
+        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ko"))
+        .forEach(ev => {
+          const label = `${leniencyLabel(ev.leniencyScore)} / 변별도 ${discLabel(ev.discriminationScore)}`;
+          out.push([ev.name || "", ev.role || "",
+            ev.leniencyScore != null ? ev.leniencyScore : "",
+            ev.discriminationScore != null ? ev.discriminationScore : "",
+            label, ev.coaching || ""]);
+        });
+    }
+
     downloadXlsxRows(out, `최종결과_리포트공개_${todayStamp()}.xlsx`);
   },
   // ── 최종 평가 결과 확인: 조회 범위 구성원(점수·최종등급) ──
@@ -13479,6 +15712,33 @@ const App = {
     syncAdjustmentDraftsFromDom();
     refreshAdminAdjustmentsPanel();
   },
+  setCmpSort(col) {
+    if (state.ui.cmpSortCol === col) {
+      state.ui.cmpSortDir = state.ui.cmpSortDir === "desc" ? "asc" : "desc";
+    } else {
+      state.ui.cmpSortCol = col;
+      state.ui.cmpSortDir = "desc";
+    }
+    render();
+  },
+  // 소규모팀(표준화 불가) 구성원 등급 즉시 저장 및 병합
+  handleSmallTeamGradeChange(employeeId) {
+    const select = document.getElementById(`org_adj_grade_${employeeId}`);
+    if (!select) return;
+    const newGrade = select.value;
+    const ev = evaluations()[employeeId];
+    if (!ev) return;
+    if (!ev.orgAdjustment) ev.orgAdjustment = { grade: "", gradeManual: false, reason: "", submittedBy: "", submittedAt: "", history: [] };
+    if (GRADES.includes(newGrade)) {
+      ev.orgAdjustment.grade = newGrade;
+      ev.orgAdjustment.gradeManual = true;
+    } else {
+      ev.orgAdjustment.grade = "";
+      ev.orgAdjustment.gradeManual = false;
+    }
+    saveState();
+    render();
+  },
   handleOrgAdjustmentGradeChange(employeeId) {
     const select = document.getElementById(`org_adj_grade_${employeeId}`);
     if (!select) return;
@@ -13843,6 +16103,23 @@ const App = {
     saveState();
     state.ui.flash = `${division} 본부의 종합평가를 조정 세션 반영 후 제출 처리했습니다.`;
     render();
+  },
+  cmpFilter() {
+    const name  = (document.getElementById("cmp-filter-name")?.value  || "").trim().toLowerCase();
+    const team  = (document.getElementById("cmp-filter-team")?.value  || "");
+    const title = (document.getElementById("cmp-filter-title")?.value || "");
+    const grade = (document.getElementById("cmp-filter-grade")?.value || "");
+    document.querySelectorAll("#cmp-tbody tr").forEach(tr => {
+      const dn = (tr.dataset.name  || "").toLowerCase();
+      const dt = (tr.dataset.team  || "");
+      const dl = (tr.dataset.title || "");
+      const dg = (tr.dataset.grade || "");
+      const show = (!name  || dn.includes(name))
+                && (!team  || dt === team)
+                && (!title || dl === title)
+                && (!grade || dg === grade);
+      tr.style.display = show ? "" : "none";
+    });
   },
   comprehensiveAutoGrade() {
     const user = currentUser();
@@ -14335,6 +16612,27 @@ const App = {
   closePwChangeModal() {
     state.ui.showPwChangeModal = false;
     state.ui.pwChangeForced = false;
+    render();
+  },
+  openSiteMapModal() {
+    state.ui.showSiteMapModal = true;
+    state.ui.siteMapRole = state.ui.siteMapRole || "overview";
+    render();
+  },
+  closeSiteMapModal() {
+    state.ui.showSiteMapModal = false;
+    render();
+  },
+  setSiteMapRole(role) {
+    state.ui.siteMapRole = role;
+    render();
+  },
+  openSiteMapPagePreview(role, tab) {
+    state.ui.siteMapPreviewPage = { role, tab };
+    render();
+  },
+  closeSiteMapPagePreview() {
+    state.ui.siteMapPreviewPage = null;
     render();
   },
   submitPwChange() {
@@ -15714,6 +18012,17 @@ function hasInvalidPerformanceWeightTotal(review, employee = currentUser()) {
   if (!achievements.length) return false;
   const total = achievements.reduce((sum, item) => sum + Number(item.weight || 0), 0);
   return total !== 100;
+}
+
+function invalidWeightRangeLabel(review, employee = currentUser()) {
+  if (!templateFor(employee, "performance").useWeight) return null;
+  const achievements = review.performance.achievements || [];
+  for (let i = 0; i < achievements.length; i++) {
+    const w = Number(achievements[i].weight ?? 0);
+    if (w < 5)  return `업적 ${i + 1}의 가중치(${w}%)가 최소값(5%) 미만입니다.`;
+    if (w > 40) return `업적 ${i + 1}의 가중치(${w}%)가 최대값(40%)을 초과합니다.`;
+  }
+  return null;
 }
 
 function pickEvaluatorByRolePriority(candidates = [], rolePriority = ["president", "chairman", "divisionHead", "teamLead", "member"]) {
