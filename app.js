@@ -26,6 +26,21 @@ const ROLE_LABELS = {
 
 const EVALUATEE_ROLES = ["member", "teamLead", "divisionHead"];
 
+// ── 참고자료 추천용 "상위 역량 도메인" 태그 ──
+// 평가 템플릿 항목 문구는 팀/사이클마다 바뀔 수 있으므로, 항목 문구 대신 이 안정적인
+// 도메인 태그에 항목을 매핑해두고 참고자료도 이 태그로 분류한다.
+const DOMAIN_TAGS = [
+  "리더십", "코칭/육성", "커뮤니케이션", "협업", "문제해결",
+  "실행력", "책임감/원칙준수", "자기계발", "성과관리", "전문성",
+];
+
+const RESOURCE_TYPES = {
+  course: "사내교육",
+  book: "도서",
+  article: "아티클",
+  video: "영상",
+};
+
 // 평가 사이클 진행 상태 라벨
 const CYCLE_STATUS_LABELS = { active: "진행중", paused: "중지", done: "평가 완료" };
 function cycleStatusLabel(status) { return CYCLE_STATUS_LABELS[status] || (status === "active" ? "진행중" : "중지"); }
@@ -137,6 +152,7 @@ const TAB_LABELS = {
   memberDashboard: "구성원 성장 기록",
   evalDashboard: "평가 운영 현황",
   notices: "공지사항 관리",
+  resourceLibrary: "참고자료 관리",
 };
 
 // 탭별 아이콘 매핑
@@ -148,6 +164,7 @@ const TAB_ICONS = {
   myDashboard: "📒", memberDashboard: "📊",
   evalDashboard: "📊",
   notices: "📢",
+  resourceLibrary: "📚",
 };
 
 // ── 사이트맵(어드민 전용): 계정 유형별 메뉴 구조 안내 ──
@@ -171,6 +188,7 @@ const SITEMAP_TAB_DESC = {
   organization:    "조직도·계정·발령 등 조직 정보를 관리하는 어드민 전용 화면입니다.",
   evalDashboard:   "전체 평가 진행 현황과 통계를 모아보는 어드민 전용 화면입니다.",
   notices:         "전 직원 대상 공지사항을 작성·관리하는 어드민 전용 화면입니다.",
+  resourceLibrary: "AI 피드백에 추천할 자기개발 참고자료(교육·도서·아티클 등)를 등록·관리하는 어드민 전용 화면입니다.",
 };
 
 // 전체 구조 매트릭스에서 사용하는 섹션 순서 (실제 사이드바 그룹핑 기준)
@@ -179,7 +197,7 @@ const SITEMAP_SECTIONS = [
   { label: "평가 관리",      tabs: ["tasks", "resultSubmit", "approval", "results", "admin", "evalDashboard"] },
   { label: "목표 관리",      tabs: ["goals", "goalApproval"] },
   { label: "성장 기록 조회", tabs: ["myDashboard", "memberDashboard"] },
-  { label: "시스템 관리",    tabs: ["organization", "notices"] },
+  { label: "시스템 관리",    tabs: ["organization", "notices", "resourceLibrary"] },
 ];
 
 // 역할별 노출 메뉴 목록. getVisibleTabs()와 동일한 규칙을 따르되,
@@ -196,7 +214,7 @@ function getSiteMapTabs(role) {
   if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("goalApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
-  if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices");
+  if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary");
   return tabs;
 }
 
@@ -264,10 +282,10 @@ function defaultTemplates() {
       question: "역량 행동지표",
       guide: "관련 범주와 규정을 준수하며 정확한 행정 처리로 조직 기반을 관리하는 능력",
       items: [
-        { name: "행정 전문성 및 관리 효율화", guide: "데이터 처리 및 서류 작성 시 오류가 없도록 철저히 검토하여 수행한다.", required: true },
-        { name: "문제 해결", guide: "업무상 문제를 구조화하고 현실적인 해결안을 제시한다.", required: true },
-        { name: "협업", guide: "타 부서와 협업하며 공동 목표 달성을 위해 필요한 정보를 공유한다.", required: true },
-        { name: "실행력", guide: "정해진 일정과 품질 기준을 지키며 업무를 완수한다.", required: true },
+        { name: "행정 전문성 및 관리 효율화", guide: "데이터 처리 및 서류 작성 시 오류가 없도록 철저히 검토하여 수행한다.", required: true, domainTags: ["전문성"] },
+        { name: "문제 해결", guide: "업무상 문제를 구조화하고 현실적인 해결안을 제시한다.", required: true, domainTags: ["문제해결"] },
+        { name: "협업", guide: "타 부서와 협업하며 공동 목표 달성을 위해 필요한 정보를 공유한다.", required: true, domainTags: ["협업"] },
+        { name: "실행력", guide: "정해진 일정과 품질 기준을 지키며 업무를 완수한다.", required: true, domainTags: ["실행력"] },
       ],
       grades: defaultGradeScale(),
       useWeight: false,
@@ -279,16 +297,16 @@ function defaultTemplates() {
       question: "자세·태도",
       guide: "주어진 역할에 책임을 다하고 회사의 원칙과 자원을 소중히 여기며, 맡은 바 업무를 끝까지 완수하는 태도",
       items: [
-        { name: "[책임감/성실] 규정준수", guide: "회사의 프로세스와 규정을 준수한다.", required: true },
-        { name: "[책임감/성실] 이행책임", guide: "맡은 업무와 약속사항은 기한 내에 이행한다.", required: true },
-        { name: "[책임감/성실] 자원 절약", guide: "회사의 비용이나 소모품을 내 물건처럼 아끼며 낭비를 최소화한다.", required: true },
-        { name: "[책임감/성실] 우직함", guide: "다소 번거로운 업무라도 책임감을 갖고 성실히 수행한다.", required: true },
-        { name: "[협업 및 팀워크] 동료 배려", guide: "조직 전체 목표를 위해 본인의 업무가 아니더라도 동료를 자발적으로 돕는다.", required: true },
-        { name: "[협업 및 팀워크] 긍정 소통", guide: "대화 시 항상 친절한 언어를 사용하여 조직 내 원활한 소통을 돕는다.", required: true },
-        { name: "[협업 및 팀워크] 대외 응대", guide: "내외부 고객을 상대할 때 밝고 신속한 태도로 응대하여 신뢰를 준다.", required: true },
-        { name: "[자기발전 및 정직함] 피드백 수용", guide: "상사나 동료의 조언을 성장의 기회로 삼아 실제 행동에 즉시 반영한다.", required: true },
-        { name: "[자기발전 및 정직함] 사실기반 보고", guide: "오류 발생 시 사실을 먼저 말한다.", required: true },
-        { name: "[자기발전 및 정직함] 자기계발", guide: "전문성을 높이기 위해 교육 참여나 학습 활동을 스스로 실천한다.", required: true },
+        { name: "[책임감/성실] 규정준수", guide: "회사의 프로세스와 규정을 준수한다.", required: true, domainTags: ["책임감/원칙준수"] },
+        { name: "[책임감/성실] 이행책임", guide: "맡은 업무와 약속사항은 기한 내에 이행한다.", required: true, domainTags: ["책임감/원칙준수", "실행력"] },
+        { name: "[책임감/성실] 자원 절약", guide: "회사의 비용이나 소모품을 내 물건처럼 아끼며 낭비를 최소화한다.", required: true, domainTags: ["책임감/원칙준수"] },
+        { name: "[책임감/성실] 우직함", guide: "다소 번거로운 업무라도 책임감을 갖고 성실히 수행한다.", required: true, domainTags: ["책임감/원칙준수"] },
+        { name: "[협업 및 팀워크] 동료 배려", guide: "조직 전체 목표를 위해 본인의 업무가 아니더라도 동료를 자발적으로 돕는다.", required: true, domainTags: ["협업"] },
+        { name: "[협업 및 팀워크] 긍정 소통", guide: "대화 시 항상 친절한 언어를 사용하여 조직 내 원활한 소통을 돕는다.", required: true, domainTags: ["커뮤니케이션"] },
+        { name: "[협업 및 팀워크] 대외 응대", guide: "내외부 고객을 상대할 때 밝고 신속한 태도로 응대하여 신뢰를 준다.", required: true, domainTags: ["커뮤니케이션", "협업"] },
+        { name: "[자기발전 및 정직함] 피드백 수용", guide: "상사나 동료의 조언을 성장의 기회로 삼아 실제 행동에 즉시 반영한다.", required: true, domainTags: ["자기계발"] },
+        { name: "[자기발전 및 정직함] 사실기반 보고", guide: "오류 발생 시 사실을 먼저 말한다.", required: true, domainTags: ["책임감/원칙준수"] },
+        { name: "[자기발전 및 정직함] 자기계발", guide: "전문성을 높이기 위해 교육 참여나 학습 활동을 스스로 실천한다.", required: true, domainTags: ["자기계발"] },
       ],
       grades: defaultGradeScale(),
       useWeight: false,
@@ -396,7 +414,7 @@ function fallbackUsers() {
   const erp = (typeof window !== "undefined" && window.HR_IMPORTED_DATA && Array.isArray(window.HR_IMPORTED_DATA.users))
     ? window.HR_IMPORTED_DATA.users : [];
   if (!erp.length) return [
-    { id: "u-admin", employeeNo: "ADMIN", name: "한관리", email: "admin@interojo.com", role: "admin", title: "HR Admin", division: "경영지원본부", team: "인사팀", active: true },
+    { id: "u-admin", employeeNo: "ADMIN", name: "관리자", email: "admin@interojo.com", role: "admin", title: "HR Admin", division: "경영지원본부", team: "인사팀", active: true },
     { id: "u-president", employeeNo: "230128", name: "박수근", email: "superkorean@interojo.com", role: "president", title: "사장", division: "COO", team: "COO", active: true },
     { id: "u-chairman", employeeNo: "CHAIR", name: "노시철", email: "nsc@interojo.com", role: "chairman", title: "회장", division: "임원실", team: "임원실", active: true },
   ];
@@ -465,6 +483,7 @@ function createDefaultState() {
     goals: [],
     notices: [],
     noticeReads: {},
+    refResources: [],
     dataSource: null,
     ui: {
       tab: "home",
@@ -771,6 +790,7 @@ function normalizeState(nextState) {
   nextState.goals = Array.isArray(nextState.goals) ? nextState.goals : [];
   nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
   nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
+  nextState.refResources = normalizeRefResources(nextState.refResources);
   nextState.ui = { ...defaults.ui, ...(nextState.ui || {}) };
   if (!nextState.ui.activeGoalCycleId || !nextState.goalCycles.some(c => c.id === nextState.ui.activeGoalCycleId)) {
     nextState.ui.activeGoalCycleId = nextState.goalCycles[0].id;
@@ -817,6 +837,7 @@ function normalizeUserRoles(users) {
     }
     if (user.name === "박수근") user.role = "president";
     if (user.name === "노시철") user.role = "chairman";
+    if (user.id === "u-admin" && user.name === "한관리") user.name = "관리자";
     delete user.finalEvaluatorId;
   });
 }
@@ -918,10 +939,29 @@ function normalizeTemplateVariant(component, source, fallback, index) {
     id: source?.id || `${component}-${index || "default"}`,
   };
   template.items = Array.isArray(source?.items) && source.items.length
-    ? source.items.map((item) => (typeof item === "string" ? { name: item, guide: "", required: true } : { ...item, required: item.required !== false }))
+    ? source.items.map((item) => (typeof item === "string"
+        ? { name: item, guide: "", required: true, domainTags: [] }
+        : { ...item, required: item.required !== false, domainTags: Array.isArray(item.domainTags) ? item.domainTags.filter((t) => DOMAIN_TAGS.includes(t)) : [] }))
     : fallback.items;
   template.grades = Array.isArray(source?.grades) && source.grades.length ? source.grades : fallback.grades;
   return template;
+}
+
+// ── 참고자료 카탈로그 정규화 ──
+function normalizeRefResources(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((r) => r && r.title)
+    .map((r) => ({
+      id: r.id || `res-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      title: String(r.title || ""),
+      url: String(r.url || ""),
+      type: RESOURCE_TYPES[r.type] ? r.type : "article",
+      domainTags: Array.isArray(r.domainTags) ? r.domainTags.filter((t) => DOMAIN_TAGS.includes(t)) : [],
+      roles: Array.isArray(r.roles) ? r.roles.filter((role) => EVALUATEE_ROLES.includes(role)) : [],
+      desc: String(r.desc || ""),
+      createdAt: r.createdAt || new Date().toISOString(),
+    }));
 }
 
 function normalizeUpwardTemplate(template) {
@@ -1409,7 +1449,7 @@ function buildNavSections(tabs, user) {
   // ── 어드민 전용 메뉴 순서: 나의 평가 → 시스템 관리 → 평가 관리 → 목표 관리 ──
   if (user.role === "admin") {
     const myTabs   = tabs.filter((t) => ["home"].includes(t));
-    const sysTabs  = tabs.filter((t) => ["organization", "notices"].includes(t));
+    const sysTabs  = tabs.filter((t) => ["organization", "notices", "resourceLibrary"].includes(t));
     const setOrder = ["admin", "evalDashboard"];
     const setTabs  = setOrder.filter((t) => tabs.includes(t));
     const goalTabs = tabs.filter((t) => ["goals","goalCycles"].includes(t));
@@ -1768,7 +1808,7 @@ function getVisibleTabs(user) {
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
-  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices");
+  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary");
   return tabs;
 }
 
@@ -1797,6 +1837,7 @@ function getPageDescription(tab, user) {
     myDashboard:    "",
     memberDashboard:"",
     notices:        "공지사항을 등록하고 관리합니다.",
+    resourceLibrary:"AI 피드백에 추천할 자기개발 참고자료를 등록하고 관리합니다.",
   };
   return descriptions[tab] || "";
 }
@@ -1814,6 +1855,7 @@ function renderRoute(user) {
   if (state.ui.tab === "admin") return renderAdmin(user);
   if (state.ui.tab === "organization") return user.role === "admin" ? renderAdminOrganization() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "notices") return user.role === "admin" ? renderNoticesMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "resourceLibrary") return user.role === "admin" ? renderResourceLibrary() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "evalDashboard") return user.role === "admin" ? renderEvalDashboard() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "goals") return user.role === "admin" ? renderGoalsList(user) : renderGoalCycleContent(user);
   if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
@@ -2629,6 +2671,142 @@ function renderNoticesMgmt() {
           ${!notices.length
             ? `<div class="empty" style="padding:32px 0;">등록된 공지사항이 없습니다.</div>`
             : `<div class="cycle-list">${noticeRows}</div>`}
+        </div>
+      </section>
+    </div>`;
+}
+
+function renderResourceLibrary() {
+  const resources = (state.refResources || []).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const editId = state.ui.resourceEditId;
+
+  // ── 등록 / 수정 폼 ──
+  if (editId !== undefined && editId !== null) {
+    const isNew = editId === "new";
+    const r = isNew ? { id: "", title: "", url: "", type: "course", domainTags: [], roles: [], desc: "" }
+                     : (resources.find(x => x.id === editId) || { id: "", title: "", url: "", type: "course", domainTags: [], roles: [], desc: "" });
+    return `
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div><h2>${isNew ? "참고자료 등록" : "참고자료 수정"}</h2></div>
+            <div style="display:flex;gap:8px;">
+              <button class="button ghost" onclick="App.cancelResourceEdit()">취소</button>
+              <button class="button primary" onclick="App.saveResource('${isNew ? "new" : r.id}')">저장</button>
+              ${!isNew ? `<button class="button danger" onclick="App.deleteResource('${r.id}')">삭제</button>` : ""}
+            </div>
+          </div>
+          <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
+            <div class="form-grid">
+              <div class="field">
+                <label for="res_title">제목</label>
+                <input id="res_title" type="text" value="${esc(r.title)}" placeholder="예) 리더십 기본 과정" style="width:100%;" />
+              </div>
+              <div class="field">
+                <label for="res_type">구분</label>
+                <select id="res_type">
+                  ${Object.entries(RESOURCE_TYPES).map(([k, label]) => `<option value="${k}" ${r.type === k ? "selected" : ""}>${label}</option>`).join("")}
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="res_url">URL</label>
+              <input id="res_url" type="url" value="${esc(r.url)}" placeholder="https://..." style="width:100%;" />
+            </div>
+            <div class="field">
+              <label for="res_desc">한 줄 설명 (AI가 참고할 추천 이유)</label>
+              <input id="res_desc" type="text" value="${esc(r.desc)}" placeholder="예) 신임 팀장에게 필요한 리더십 기초를 다루는 사내 교육 과정" style="width:100%;" />
+            </div>
+            <div class="field">
+              <label>대상 역할 <span class="muted" style="font-weight:400;">(선택 안 하면 전체 역할에 노출)</span></label>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+                ${EVALUATEE_ROLES.map((role) => `
+                  <label class="tag-checkbox-pill ${(r.roles||[]).includes(role) ? "active" : ""}">
+                    <input type="checkbox" id="res_role_${role}" value="${role}" ${(r.roles||[]).includes(role) ? "checked" : ""} />
+                    ${ROLE_LABELS[role]}
+                  </label>
+                `).join("")}
+              </div>
+            </div>
+            <div class="field">
+              <label>도메인 태그 <span class="muted" style="font-weight:400;">(이 자료가 어떤 개선 영역에 어울리는지)</span></label>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+                ${DOMAIN_TAGS.map((tag, tagIdx) => `
+                  <label class="tag-checkbox-pill ${(r.domainTags||[]).includes(tag) ? "active" : ""}">
+                    <input type="checkbox" id="res_tag_${tagIdx}" value="${esc(tag)}" ${(r.domainTags||[]).includes(tag) ? "checked" : ""} />
+                    ${esc(tag)}
+                  </label>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>`;
+  }
+
+  // ── 목록 (역할/카테고리 필터) ──
+  const filterRole = state.ui.resourceFilterRole || "";
+  const filterTag = state.ui.resourceFilterTag || "";
+  const filtered = resources.filter((r) =>
+    (!filterRole || !(r.roles || []).length || r.roles.includes(filterRole)) &&
+    (!filterTag || (r.domainTags || []).includes(filterTag))
+  );
+
+  const rows = filtered.map(r => {
+    const tagBadges = (r.domainTags || []).map(t => `<span class="pill" style="background:var(--surface-2);color:var(--muted);font-size:11px;">${esc(t)}</span>`).join(" ");
+    const roleBadges = (r.roles || []).length ? (r.roles.map(role => ROLE_LABELS[role]).join("·")) : "전체";
+    return `
+      <div class="cycle-list-row" style="border-left:4px solid var(--primary);cursor:pointer;" onclick="App.editResource('${r.id}')">
+        <div class="cycle-list-main">
+          <div class="cycle-list-name">
+            <strong>${esc(r.title)}</strong>
+            <span class="pill" style="background:var(--surface-2);color:var(--muted);font-size:11px;">${RESOURCE_TYPES[r.type] || r.type}</span>
+          </div>
+          <div class="cycle-list-meta muted" style="font-size:12px;margin-top:4px;">대상: ${esc(roleBadges)}${tagBadges ? ` &nbsp;·&nbsp; ${tagBadges}` : ""}</div>
+        </div>
+        <div class="cycle-list-actions" onclick="event.stopPropagation()">
+          <button class="button secondary sm" onclick="App.editResource('${r.id}')">수정</button>
+          <button class="button danger sm" onclick="App.deleteResource('${r.id}')">삭제</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>참고자료 관리 <span class="pill blue" style="font-weight:600;">전체 ${resources.length}건</span></h2></div>
+          <div class="toolbar">
+            <button class="button ghost" onclick="App.downloadResourceForm()" title="엑셀(xlsx) 양식을 내려받아 자료를 작성한 뒤 업로드하세요.">📥 엑셀 양식 다운로드</button>
+            <button class="button ghost" onclick="document.getElementById('res_upload_input').click()">📤 엑셀 양식 업로드</button>
+            <input type="file" id="res_upload_input" accept=".csv,.xlsx,.xls" style="display:none;" onchange="App.handleResourceUpload(event)" />
+            <button class="button" onclick="App.newResource()">+ 참고자료 등록</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+            <div class="field" style="min-width:160px;margin:0;">
+              <label for="res_filter_role" style="font-size:11.5px;">역할 필터</label>
+              <select id="res_filter_role" onchange="App.setResourceFilter('role', this.value)">
+                <option value="">전체 역할</option>
+                ${EVALUATEE_ROLES.map((role) => `<option value="${role}" ${filterRole === role ? "selected" : ""}>${ROLE_LABELS[role]}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field" style="min-width:180px;margin:0;">
+              <label for="res_filter_tag" style="font-size:11.5px;">카테고리(도메인 태그) 필터</label>
+              <select id="res_filter_tag" onchange="App.setResourceFilter('tag', this.value)">
+                <option value="">전체 카테고리</option>
+                ${DOMAIN_TAGS.map((tag) => `<option value="${esc(tag)}" ${filterTag === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}
+              </select>
+            </div>
+            ${(filterRole || filterTag) ? `<button class="button ghost sm" style="align-self:flex-end;" onclick="App.resetResourceFilter()">필터 초기화</button>` : ""}
+          </div>
+          ${(filterRole || filterTag) ? `<div class="muted" style="font-size:12px;margin-bottom:10px;">필터 적용 중: 전체 ${resources.length}건 중 ${filtered.length}건 표시</div>` : ""}
+          ${!resources.length
+            ? `<div class="empty" style="padding:32px 0;">등록된 참고자료가 없습니다. 역량/자세태도 평가 항목별로 도움이 될 자료를 등록해 주세요.</div>`
+            : !filtered.length
+              ? `<div class="empty" style="padding:32px 0;">조건에 맞는 참고자료가 없습니다.</div>`
+              : `<div class="cycle-list">${rows}</div>`}
         </div>
       </section>
     </div>`;
@@ -7733,6 +7911,8 @@ function renderTemplateEditor(component, template, templateIndex, templateCount)
 }
 
 function renderTemplateItemEditor(component, templateIndex, item, index) {
+  const isPerformance = component === "performance";
+  const domainTags = Array.isArray(item.domainTags) ? item.domainTags : [];
   return `
     <div class="template-question-card">
       <div class="toolbar" style="justify-content: space-between;">
@@ -7747,6 +7927,18 @@ function renderTemplateItemEditor(component, templateIndex, item, index) {
         <label for="tpl_${component}_${templateIndex}_item_${index}_guide">가이드</label>
         <textarea id="tpl_${component}_${templateIndex}_item_${index}_guide">${esc(item.guide || "")}</textarea>
       </div>
+      ${!isPerformance ? `
+      <div class="field">
+        <label>참고자료 추천용 도메인 태그 <span class="muted" style="font-weight:400;">(저장 시 비어있으면 AI가 자동으로 채워줍니다 · 언제든 직접 수정 가능)</span></label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+          ${DOMAIN_TAGS.map((tag, tagIdx) => `
+            <label class="tag-checkbox-pill ${domainTags.includes(tag) ? "active" : ""}">
+              <input type="checkbox" id="tpl_${component}_${templateIndex}_item_${index}_tag_${tagIdx}" value="${esc(tag)}" ${domainTags.includes(tag) ? "checked" : ""} />
+              ${esc(tag)}
+            </label>
+          `).join("")}
+        </div>
+      </div>` : ""}
     </div>
   `;
 }
@@ -10104,98 +10296,92 @@ ${achSchemaExamples}
 
 // ── AI 피드백 생성 ──────────────────────────────────────────────────────────
 
-function buildRefUrls(ref1Keyword, ref2Keyword) {
-  // 검색 결과 페이지 URL (fallback으로 사용)
-  const r1 = ref1Keyword
-    ? { url: `https://m.multicampus.com/search/course/result?searchText=${encodeURIComponent(ref1Keyword)}`, source: "multicampus.com" }
-    : null;
-  const r2 = ref2Keyword
-    ? { url: `https://www.yes24.com/Product/Search?domain=BOOK&query=${encodeURIComponent(ref2Keyword)}`, source: "yes24.com" }
-    : null;
-  return { r1, r2 };
+// 역량·자세태도 항목 중 이 사람의 평균 대비 유난히 낮은 항목을 찾아 해당 도메인 태그를 반환
+function computeLowScoringDomainTags(employee, evaluation) {
+  const stages = ["first", "second"];
+  const pooled = [];
+  ["competency", "attitude"].forEach((component) => {
+    const template = templateFor(employee, component);
+    if (!template) return;
+    template.items.forEach((item, index) => {
+      const scores = stages
+        .map((stage) => Number(evaluation?.[stage]?.[component]?.itemScores?.[index]))
+        .filter((v) => Number.isFinite(v) && v > 0);
+      if (!scores.length) return;
+      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+      pooled.push({ score: avg, domainTags: Array.isArray(item.domainTags) ? item.domainTags : [] });
+    });
+  });
+  if (pooled.length < 2) return []; // 비교할 항목이 부족하면 판단 보류
+  const overallMean = pooled.reduce((sum, p) => sum + p.score, 0) / pooled.length;
+  const lowItems = pooled
+    .filter((p) => p.score < overallMean)
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 3); // 가장 낮은 항목 최대 3개
+  const tags = new Set();
+  lowItems.forEach((p) => p.domainTags.forEach((t) => tags.add(t)));
+  return [...tags];
 }
 
-async function fetchFirstSearchResult(searchUrl, keyword, domainKeyword, detailPathValidator, signal) {
-  // GPT-4o-search-preview로 검색 결과 페이지 첫 번째 항목 URL 추출
+// 역할 + 도메인 태그로 참고자료 후보를 좁힌다 (없으면 역할 기준까지만 넓혀 폴백)
+function buildResourceCandidates(employee, domainTags) {
+  const all = state.refResources || [];
+  const byRole = all.filter((r) => !r.roles?.length || r.roles.includes(employee.role));
+  const byTag = domainTags.length
+    ? byRole.filter((r) => (r.domainTags || []).some((t) => domainTags.includes(t)))
+    : [];
+  const candidates = byTag.length ? byTag : byRole;
+  const overlapCount = (r) => (r.domainTags || []).filter((t) => domainTags.includes(t)).length;
+  return candidates.slice().sort((a, b) => overlapCount(b) - overlapCount(a)).slice(0, 15);
+}
+
+// 템플릿 항목명+가이드를 보고 어울리는 도메인 태그를 AI가 자동으로 채운다 (비어있는 항목만 대상)
+async function classifyDomainTagsForTemplateItems(component, templateIndex) {
+  const template = templateVariantsForKind(component)[templateIndex];
+  if (!template) return;
+  const targets = template.items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.name?.trim() && (!item.domainTags || item.domainTags.length === 0));
+  if (!targets.length) return;
+
+  const prompt = `다음은 인사평가 항목 목록입니다. 각 항목에 가장 어울리는 도메인 태그를 아래 목록에서 1~2개씩 골라주세요.
+
+[도메인 태그 목록]
+${DOMAIN_TAGS.join(", ")}
+
+[평가 항목]
+${targets.map(({ item, index }) => `${index}. ${item.name} — ${item.guide || ""}`).join("\n")}
+
+반드시 아래 JSON 형식만 출력하세요. 키는 항목 번호(문자열), 값은 도메인 태그 배열입니다. 목록에 없는 태그는 절대 사용하지 마세요.
+{ "0": ["태그1"], "1": ["태그1","태그2"] }`;
+
   try {
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
-      ...(signal ? { signal } : {}),
       body: JSON.stringify({
-        model: "gpt-4o-search-preview",
-        web_search_options: { search_context_size: "high" },
-        messages: [{
-          role: "user",
-          content: `다음 URL을 방문해서 검색 결과 첫 번째 항목의 링크 URL을 알려주세요:
-${searchUrl}
-
-조건:
-1. "${domainKeyword}" 도메인의 상세 페이지 URL이어야 합니다.
-2. 검색 결과 목록 페이지가 아닌, 개별 항목 상세 페이지여야 합니다.
-3. 첫 번째 항목의 URL 하나만 정확하게 알려주세요.`,
-        }],
-        max_tokens: 300,
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 500,
       }),
     });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const annotations = data.choices?.[0]?.message?.annotations || [];
-    const text = data.choices?.[0]?.message?.content || "";
-
-    const tryUrl = (raw) => {
-      try {
-        const u = new URL(raw.trim().replace(/[.,;)>\]'"]+$/, ""));
-        if (!u.hostname.includes(domainKeyword)) return null;
-        if (!detailPathValidator(u)) return null;
-        return u.href;
-      } catch (_) { return null; }
-    };
-
-    for (const ann of annotations) {
-      if (ann.type !== "url_citation") continue;
-      const found = tryUrl(ann.url_citation?.url || "");
-      if (found) return found;
-    }
-    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\]]+/g)) {
-      const found = tryUrl(m[0]);
-      if (found) return found;
-    }
+    if (!response.ok) return;
+    const data = await response.json();
+    const result = JSON.parse(data.choices[0].message.content);
+    let changed = false;
+    targets.forEach(({ index }) => {
+      const tags = Array.isArray(result[String(index)]) ? result[String(index)].filter((t) => DOMAIN_TAGS.includes(t)) : [];
+      if (tags.length && template.items[index]) {
+        template.items[index].domainTags = tags;
+        changed = true;
+      }
+    });
+    if (changed) { saveState(); render(); }
   } catch (e) {
-    if (e.name === "AbortError") throw e;
+    console.warn("도메인 태그 자동 분류 실패", e);
   }
-  return null;
-}
-
-async function resolveRefUrls(employeeId, ref1Keyword, ref2Keyword, signal) {
-  // 각 사이트 검색 결과 첫 번째 항목 URL 조회 (백그라운드)
-  const cycle = activeCycle();
-  const ev = (cycle?.evaluations || {})[employeeId];
-  if (!ev?.aiFeedback) return;
-
-  const wrap = (p) => Promise.race([p, new Promise(r => setTimeout(() => r(null), 25000))]).catch(e => { if (e.name === "AbortError") throw e; return null; });
-
-  const [r1Url, r2Url] = await Promise.all([
-    ref1Keyword ? wrap(fetchFirstSearchResult(
-      `https://m.multicampus.com/search/course/result?searchText=${encodeURIComponent(ref1Keyword)}`,
-      ref1Keyword,
-      "multicampus.com",
-      (u) => u.pathname.includes("courseDetaiInfo") || u.pathname.includes("course") || u.searchParams.has("corsCd"),
-      signal
-    )) : Promise.resolve(null),
-    ref2Keyword ? wrap(fetchFirstSearchResult(
-      `https://www.yes24.com/Product/Search?domain=BOOK&query=${encodeURIComponent(ref2Keyword)}`,
-      ref2Keyword,
-      "yes24.com",
-      (u) => u.pathname.includes("/Product/Goods/") || u.pathname.includes("/Product/"),
-      signal
-    )) : Promise.resolve(null),
-  ]);
-
-  let updated = false;
-  if (r1Url) { ev.aiFeedback.ref1Url = r1Url; ev.aiFeedback.ref1Source = "multicampus.com"; updated = true; }
-  if (r2Url) { ev.aiFeedback.ref2Url = r2Url; ev.aiFeedback.ref2Source = "yes24.com"; updated = true; }
-  if (updated) { saveState(); render(); }
 }
 
 async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
@@ -10209,6 +10395,13 @@ async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
   const title = employee.title || "";
   const finalGrade = calculateFinal(employeeId).finalGrade || "";
   const isDGrade = finalGrade === "D";
+
+  // 참고자료 후보: 역할 + (역량평가에서 유난히 낮은 항목의 도메인 태그)로 사내 카탈로그를 좁힌다.
+  const lowScoreDomainTags = isDGrade ? [] : computeLowScoringDomainTags(employee, evaluation);
+  const candidates = isDGrade ? [] : buildResourceCandidates(employee, lowScoreDomainTags);
+  const candidateListText = candidates.length
+    ? candidates.map((c) => `${c.id} | [${RESOURCE_TYPES[c.type] || c.type}] ${c.title} — ${c.desc || ""}`).join("\n")
+    : "(현재 이 역할/역량에 매칭되는 등록된 참고자료가 없습니다)";
 
   const prompt = isDGrade
     ? `당신은 인사평가 전문가입니다. 아래는 최종 등급 D를 받은 "${name}(${title})" 님에 대한 인사평가 원문 피드백입니다.
@@ -10258,10 +10451,11 @@ ${rawFeedback}
 - strengths: 피드백에서 반복되는 긍정적 키워드 3~4개 (각 10자 이내 단어).
 - weaknesses: 피드백에서 반복되는 개선 필요 키워드 2~3개 (각 10자 이내 단어).
 - suggestions: 역량 개선 가이드, 강점·단점의 향후 개선 방향, 사업목표 달성을 위한 개선 방향 세 가지 내용을 번호나 줄바꿈 없이 하나의 자연스러운 줄글 문단으로 연결하여 구체적으로 작성. 각 방향에 대해 피평가자가 실제로 실행할 수 있는 구체적 행동과 방법을 포함할 것. 한국어 500자 내외.
-- ref1Title: 멀티캠퍼스 교육 사이트 검색창에 입력할 키워드. 피평가자의 개선 역량과 관련된 1~3단어 한국어 검색어 (예: "리더십", "커뮤니케이션", "데이터 분석", "프로젝트 관리"). 사이트 검색창에 바로 입력할 수 있는 짧고 구체적인 단어로 작성.
-- ref1Desc: 이 교육이 피평가자에게 도움이 되는 이유 한 문장 (50자 이내).
-- ref2Title: YES24 도서 사이트 검색창에 입력할 키워드. 피평가자의 개선 역량과 관련된 1~3단어 한국어 검색어 (예: "리더십", "커뮤니케이션 기술", "조직 관리"). 사이트 검색창에 바로 입력할 수 있는 짧고 구체적인 단어로 작성.
-- ref2Desc: 이 도서가 피평가자에게 도움이 되는 이유 한 문장 (50자 이내).
+- refPick1 / refPick2: 아래 [추천 후보 자료] 목록에서 이 사람의 개선 필요 영역에 가장 도움이 될 자료를 최대 2개 골라 그 id를 그대로 적으세요. 목록에 없는 id를 쓰거나 자료를 지어내지 마세요. 적합한 자료가 없거나 후보가 부족하면 빈 문자열("")로 두세요.
+- refPick1Reason / refPick2Reason: 그 자료가 왜 이 사람에게 도움이 되는지 원문 피드백을 근거로 한 문장(50자 이내)으로 작성. refPick이 빈 문자열이면 같이 빈 문자열로 둘 것.
+
+[추천 후보 자료] (id | 구분 | 제목 — 설명)
+${candidateListText}
 
 {
   "overall": "...",
@@ -10270,10 +10464,10 @@ ${rawFeedback}
   "strengths": ["키워드1", "키워드2", "키워드3"],
   "weaknesses": ["키워드1", "키워드2"],
   "suggestions": "...",
-  "ref1Title": "...",
-  "ref1Desc": "...",
-  "ref2Title": "...",
-  "ref2Desc": "..."
+  "refPick1": "...",
+  "refPick1Reason": "...",
+  "refPick2": "...",
+  "refPick2Reason": "..."
 }`;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -10300,9 +10494,9 @@ ${rawFeedback}
   const data = await response.json();
   const result = JSON.parse(data.choices[0].message.content);
 
-  // 참고자료 URL 설정
+  // 참고자료 설정
   if (isDGrade) {
-    // D등급: 실업급여 안내 + 사람인 구직 사이트 고정 링크
+    // D등급: 실업급여 안내 + 사람인 구직 사이트 고정 링크 (자기개발 자료가 아닌 별도 안내이므로 카탈로그 매칭 대상 아님)
     result.ref1Title  = "실업급여 신청 방법";
     result.ref1Url    = "https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SD0000015536";
     result.ref1Source = "gov.kr";
@@ -10312,16 +10506,17 @@ ${rawFeedback}
     result.ref2Source = "saramin.co.kr";
     result.ref2Desc   = result.ref2Desc || "새로운 직장을 탐색할 수 있는 구인구직 사이트";
   } else {
-    // 일반 등급: 검색 결과 페이지를 fallback으로 먼저 설정
-    const { r1, r2 } = buildRefUrls(result.ref1Title, result.ref2Title);
-    result.ref1Url    = r1?.url    || "";
-    result.ref1Source = r1?.source || "multicampus.com";
-    result.ref2Url    = r2?.url    || "";
-    result.ref2Source = r2?.source || "yes24.com";
-    // 백그라운드에서 첫 번째 검색 결과 상세 페이지 URL로 업데이트
-    if (result.ref1Title || result.ref2Title) {
-      resolveRefUrls(employeeId, result.ref1Title, result.ref2Title, signal).catch(() => {});
-    }
+    // 일반 등급: AI가 고른 id를 사내 카탈로그에서 그대로 조회 (카탈로그에 없는 링크는 절대 나갈 수 없음)
+    const pick1 = candidates.find((c) => c.id === result.refPick1);
+    const pick2 = candidates.find((c) => c.id === result.refPick2 && c.id !== result.refPick1);
+    result.ref1Title  = pick1 ? pick1.title : "";
+    result.ref1Url    = pick1 ? pick1.url : "";
+    result.ref1Source = pick1 ? (RESOURCE_TYPES[pick1.type] || pick1.type) : "";
+    result.ref1Desc   = pick1 ? (String(result.refPick1Reason || "").trim() || pick1.desc || "") : "";
+    result.ref2Title  = pick2 ? pick2.title : "";
+    result.ref2Url    = pick2 ? pick2.url : "";
+    result.ref2Source = pick2 ? (RESOURCE_TYPES[pick2.type] || pick2.type) : "";
+    result.ref2Desc   = pick2 ? (String(result.refPick2Reason || "").trim() || pick2.desc || "") : "";
   }
 
   return result;
@@ -11918,7 +12113,7 @@ function renderAIFeedbackModal() {
           ${fieldRow("제언 (역량 개선 가이드 / 강점·단점 개선방향 / 사업목표 달성 방향)", "suggestions", ai.suggestions, 6)}
 
           <h3 style="margin:12px 0 8px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:6px;">📚 참고자료</h3>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">검색 키워드 입력 시 네이버 검색 링크가 자동 생성됩니다.</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">회사가 등록한 참고자료 목록(어드민 → 참고자료 관리) 중 이 사람에게 가장 적합한 자료가 자동으로 채워집니다. 필요하면 아래에서 직접 수정할 수 있습니다.</div>
           ${refCard(1)}
           ${refCard(2)}
         </div>
@@ -12133,6 +12328,29 @@ function parseTemplateRows(rows) {
       if (!c0 || c0.startsWith("예)")) continue;  // 빈 행/예시 행 제외
       result.items.push({ name: c0, guide: c1, required: true });
     }
+  }
+  return result;
+}
+
+// 참고자료 양식 (제목|URL|구분|대상 역할|도메인 태그|한 줄 설명) 2차원 셀 배열 → 참고자료 목록
+function parseResourceRows(rows) {
+  const roleNameToKey = Object.fromEntries(EVALUATEE_ROLES.map((role) => [ROLE_LABELS[role], role]));
+  const typeNameToKey = Object.fromEntries(Object.entries(RESOURCE_TYPES).map(([k, label]) => [label, k]));
+  const result = [];
+  for (const cols of rows) {
+    const c0 = String(cols[0] ?? "").trim();
+    if (!c0 || c0.startsWith("#") || c0 === "제목" || c0.startsWith("예)")) continue;
+    const [titleRaw, urlRaw = "", typeRaw = "", rolesRaw = "", tagsRaw = "", descRaw = ""] = cols.map((v) => String(v ?? "").trim());
+    if (!titleRaw) continue;
+    const type = typeNameToKey[typeRaw] || (RESOURCE_TYPES[typeRaw] ? typeRaw : "article");
+    // 쉼표(,)만 구분자로 사용 — "코칭/육성", "책임감/원칙준수"처럼 태그 이름 자체에 "/"가 들어있으므로 "/"는 구분자로 쓰지 않는다.
+    const roles = rolesRaw
+      ? rolesRaw.split(/[,·]+/).map((s) => s.trim()).map((s) => roleNameToKey[s]).filter(Boolean)
+      : [];
+    const domainTags = tagsRaw
+      ? tagsRaw.split(/[,·]+/).map((s) => s.trim()).filter((t) => DOMAIN_TAGS.includes(t))
+      : [];
+    result.push({ title: titleRaw, url: urlRaw, type, roles, domainTags, desc: descRaw });
   }
   return result;
 }
@@ -12545,14 +12763,24 @@ function syncTemplateEditor(component, templateIndex) {
       .filter(Boolean);
   } else {
     template.items = template.items
-      .map((item, index) => ({
-        name: valueOf(`tpl_${component}_${templateIndex}_item_${index}_name`).trim(),
-        guide: valueOf(`tpl_${component}_${templateIndex}_item_${index}_guide`).trim(),
-        required: true,
-      }))
+      .map((item, index) => {
+        // 도메인 태그 체크박스가 화면에 있을 때만 갱신(없으면 기존 domainTags 유지)
+        const tagCheckboxes = DOMAIN_TAGS
+          .map((tag, tagIdx) => ({ tag, el: document.getElementById(`tpl_${component}_${templateIndex}_item_${index}_tag_${tagIdx}`) }))
+          .filter(({ el }) => el);
+        const domainTags = tagCheckboxes.length
+          ? tagCheckboxes.filter(({ el }) => el.checked).map(({ tag }) => tag)
+          : (Array.isArray(item.domainTags) ? item.domainTags : []);
+        return {
+          name: valueOf(`tpl_${component}_${templateIndex}_item_${index}_name`).trim(),
+          guide: valueOf(`tpl_${component}_${templateIndex}_item_${index}_guide`).trim(),
+          required: true,
+          domainTags,
+        };
+      })
       .filter((item) => item.name || item.guide);
   }
-  if (!template.items.length) template.items.push({ name: "", guide: "", required: true });
+  if (!template.items.length) template.items.push({ name: "", guide: "", required: true, domainTags: [] });
   // 등급별 점수 입력란이 화면에 있을 때만 갱신 (가중치·등급 탭으로 이동했으므로 평소엔 기존 값 유지)
   if (document.getElementById(`tpl_${component}_${templateIndex}_grade_S_score`)) {
     template.grades = GRADES.map((grade) => ({
@@ -13891,6 +14119,126 @@ const App = {
     saveState();
     render();
   },
+  newResource() {
+    state.ui.resourceEditId = "new";
+    render();
+  },
+  editResource(id) {
+    state.ui.resourceEditId = id;
+    render();
+  },
+  cancelResourceEdit() {
+    state.ui.resourceEditId = null;
+    render();
+  },
+  saveResource(id) {
+    const title = (document.getElementById("res_title")?.value || "").trim();
+    if (!title) { window.alert("제목을 입력해 주세요."); return; }
+    const url = (document.getElementById("res_url")?.value || "").trim();
+    const type = document.getElementById("res_type")?.value || "course";
+    const desc = (document.getElementById("res_desc")?.value || "").trim();
+    const roles = EVALUATEE_ROLES.filter((role) => document.getElementById(`res_role_${role}`)?.checked);
+    const domainTags = DOMAIN_TAGS.filter((tag, tagIdx) => document.getElementById(`res_tag_${tagIdx}`)?.checked);
+    if (!state.refResources) state.refResources = [];
+    if (id === "new") {
+      state.refResources.push({
+        id: `res-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        title, url, type, desc, roles, domainTags,
+        createdAt: new Date().toISOString(),
+      });
+    } else {
+      const r = state.refResources.find(x => x.id === id);
+      if (r) Object.assign(r, { title, url, type, desc, roles, domainTags });
+    }
+    state.ui.resourceEditId = null;
+    state.ui.flash = "참고자료가 저장되었습니다.";
+    saveState();
+    render();
+  },
+  deleteResource(id) {
+    if (!window.confirm("이 참고자료를 삭제하시겠습니까?")) return;
+    state.refResources = (state.refResources || []).filter(r => r.id !== id);
+    state.ui.resourceEditId = null;
+    state.ui.flash = "참고자료가 삭제되었습니다.";
+    saveState();
+    render();
+  },
+  setResourceFilter(kind, value) {
+    if (kind === "role") state.ui.resourceFilterRole = value;
+    if (kind === "tag") state.ui.resourceFilterTag = value;
+    render();
+  },
+  resetResourceFilter() {
+    state.ui.resourceFilterRole = "";
+    state.ui.resourceFilterTag = "";
+    render();
+  },
+  downloadResourceForm() {
+    const rows = [
+      ["# 참고자료 등록 양식 (안내 줄은 지우지 않아도 됩니다)", "", "", "", "", ""],
+      ["# 구분: " + Object.values(RESOURCE_TYPES).join(" / "), "", "", "", "", ""],
+      ["# 대상 역할: 팀원, 팀장, 본부장 중 해당하는 것만 쉼표로 구분 (비워두면 전체 역할 대상)", "", "", "", "", ""],
+      ["# 도메인 태그: " + DOMAIN_TAGS.join(", ") + " 중 해당하는 것만 쉼표로 구분", "", "", "", "", ""],
+      ["", "", "", "", "", ""],
+      ["제목", "URL", "구분", "대상 역할", "도메인 태그", "한 줄 설명"],
+      ["예) 리더십 기본 과정", "https://example.com/course", "사내교육", "팀장,본부장", "리더십", "신임 팀장에게 필요한 리더십 기초를 다루는 사내 교육 과정"],
+      ["예) 실행력 강화 워크북", "https://example.com/book", "도서", "", "실행력", "목표 대비 실행 속도를 높이는 방법을 다루는 도서"],
+    ];
+    try {
+      const data = buildXlsx(rows);
+      const blob = new Blob([data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `참고자료_등록양식.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e); window.alert("양식 생성 중 오류가 발생했습니다.");
+    }
+  },
+  handleResourceUpload(event) {
+    const file = event.target?.files?.[0];
+    if (!file) return;
+    const reset = () => { if (event.target) event.target.value = ""; };
+    const name = (file.name || "").toLowerCase();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let rows;
+        if (name.endsWith(".xlsx")) {
+          rows = parseXlsx(new Uint8Array(e.target.result));
+        } else if (name.endsWith(".xls")) {
+          window.alert("구형 .xls는 지원하지 않습니다. 엑셀에서 .xlsx로 저장한 뒤 업로드해 주세요.");
+          reset(); return;
+        } else {
+          const text = decodeCsvBuffer(e.target.result);
+          const delim = detectCsvDelimiter(text);
+          rows = text.split(/\r?\n/).filter(l => l.trim()).map(l => parseCsvLine(l, delim));
+        }
+        const parsed = parseResourceRows(rows);
+        if (!parsed.length) {
+          window.alert("등록할 자료를 찾을 수 없습니다. 양식의 '제목' 아래 행에 자료를 작성했는지 확인해 주세요.");
+          reset(); return;
+        }
+        if (!state.refResources) state.refResources = [];
+        parsed.forEach((r) => {
+          state.refResources.push({
+            id: `res-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            ...r,
+            createdAt: new Date().toISOString(),
+          });
+        });
+        saveState();
+        state.ui.flash = `참고자료 ${parsed.length}건을 업로드했습니다.`;
+        render();
+      } catch (err) {
+        console.error(err);
+        window.alert("파일을 읽는 중 오류가 발생했습니다. 내려받은 .xlsx 양식을 사용했는지 확인해 주세요.");
+      }
+      reset();
+    };
+    reader.readAsArrayBuffer(file);
+  },
   openDashboardMember(id) {
     state.ui.dashboardMemberId = id || "";
     saveState();
@@ -14239,10 +14587,12 @@ const App = {
   },
   saveSelectedTemplate() {
     const component = selectedTemplateComponent();
-    syncTemplateEditor(component, selectedTemplateIndex(component));
+    const templateIndex = selectedTemplateIndex(component);
+    syncTemplateEditor(component, templateIndex);
     saveState();
     state.ui.flash = `${WEIGHT_COMPONENT_LABELS[component]} 템플릿을 저장하였습니다.`;
     render();
+    if (component === "competency" || component === "attitude") classifyDomainTagsForTemplateItems(component, templateIndex);
   },
   pickScore(inputId, score, button) {
     const input = document.getElementById(inputId);
@@ -14365,6 +14715,9 @@ const App = {
         saveState();
         state.ui.flash = `'${newTemplate.label}' 템플릿을 업로드했습니다. (문항 ${parsed.items.length}개)`;
         render();
+        if (component === "competency" || component === "attitude") {
+          classifyDomainTagsForTemplateItems(component, variants.length - 1);
+        }
       } catch (err) {
         console.error(err);
         window.alert("파일을 읽는 중 오류가 발생했습니다. 내려받은 .xlsx 양식을 사용했는지 확인해 주세요.");
@@ -14418,7 +14771,7 @@ const App = {
   },
   addTemplateItem(component, templateIndex) {
     syncTemplateEditor(component, templateIndex);
-    templateVariantsForKind(component)[templateIndex].items.push({ name: "", guide: "", required: true });
+    templateVariantsForKind(component)[templateIndex].items.push({ name: "", guide: "", required: true, domainTags: [] });
     saveState();
     render();
   },
@@ -14426,7 +14779,7 @@ const App = {
     syncTemplateEditor(component, templateIndex);
     const template = templateVariantsForKind(component)[templateIndex];
     template.items.splice(index, 1);
-    if (!template.items.length) template.items.push({ name: "", guide: "", required: true });
+    if (!template.items.length) template.items.push({ name: "", guide: "", required: true, domainTags: [] });
     saveState();
     render();
   },

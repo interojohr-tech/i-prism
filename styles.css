@@ -1397,6 +1397,18 @@ tbody tr:hover td { background: var(--orange-lt); }
 }
 .goal-modal-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
 
+/* 태그/역할 체크박스 필(도메인 태그, 대상 역할 선택 등) */
+/* .field label보다 명시도를 맞추기 위해 label.을 붙임(같은 명시도일 때 나중에 선언된 이 규칙이 우선 적용됨) */
+label.tag-checkbox-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 500; color: var(--ink-2); line-height: 1.2; white-space: nowrap;
+  padding: 3px 8px; border-radius: 11px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface);
+  transition: background .12s, border-color .12s;
+}
+label.tag-checkbox-pill.active { background: var(--primary-lt); border-color: var(--primary-mid); }
+.tag-checkbox-pill input[type="checkbox"] { margin: 0; width: 12px; height: 12px; min-height: 0; flex-shrink: 0; }
+
 /* 사이트맵 - 역할별 메뉴 카드 (클릭 시 예시 화면 미리보기) */
 .sitemap-tab-card { cursor: pointer; transition: background .12s, border-color .12s; }
 .sitemap-tab-card:hover { background: var(--primary-lt); border-color: var(--primary-mid); }
