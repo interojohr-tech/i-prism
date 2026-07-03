@@ -1548,7 +1548,7 @@ function isEvaluatorCandidate(user) {
 
 function buildNavSections(tabs, user) {
   const sections = [];
-  // ── 어드민 전용 메뉴 순서: 나의 평가 → 시스템 관리 → 평가 관리 → 목표 관리 ──
+  // ── 어드민 전용 메뉴 순서: 나의 평가 → 평가 관리 → 목표 관리 → 성장 기록 조회 → 시스템 관리 ──
   if (user.role === "admin") {
     const myTabs   = tabs.filter((t) => ["home"].includes(t));
     const sysTabs  = tabs.filter((t) => ["organization", "notices", "resourceLibrary", "auditLog"].includes(t));
@@ -1557,10 +1557,10 @@ function buildNavSections(tabs, user) {
     const goalTabs = tabs.filter((t) => ["goals","goalCycles"].includes(t));
     const dashTabs = tabs.filter((t) => ["myDashboard","memberDashboard"].includes(t));
     if (myTabs.length)   sections.push({ label: "나의 평가", items: myTabs });
-    if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
     if (setTabs.length)  sections.push({ label: "평가 관리", items: setTabs });
     if (goalTabs.length) sections.push({ label: "목표 관리", items: goalTabs });
     if (dashTabs.length) sections.push({ label: "성장 기록 조회", items: dashTabs });
+    if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
     return sections;
   }
 

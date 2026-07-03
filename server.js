@@ -1,3 +1,9 @@
+// 로컬 개발용 — .env 파일(gitignore 처리됨)에서 OPENAI_API_KEY 등을 읽어온다.
+// override: true로 지정해 이 프로젝트의 .env 값이 항상 우선하도록 한다 — 그렇지 않으면
+// 예전에 시스템/셸에 이미 설정해둔(만료되었을 수 있는) 동일 이름의 환경변수가 계속 이겨서
+// .env를 새로 바꿔도 무시되는 문제가 생긴다. Render 배포본은 .env 파일이 없으므로 이 로직과
+// 무관하게 Render 대시보드에 설정한 환경변수를 그대로 사용한다.
+require("dotenv").config({ override: true });
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
