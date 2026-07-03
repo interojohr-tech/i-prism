@@ -714,8 +714,11 @@ function makeEmptyEvaluation(userId) {
     adjustment: { grade: "", gradeManual: false, feedback: "", reason: "", adjustedAt: "" },
     orgAdjustment: { grade: "", gradeManual: false, reason: "", submittedBy: "", submittedAt: "" },
     published: false,
-    // 2차 평가자가 1차 평가 내용에 문제를 발견했을 때 되돌려보내는 반려 상태.
-    // null이면 반려 상태 아님. firstRejectionHistory에는 과거 반려 이력이 누적된다.
+    // 1차 평가자가 자기평가 내용에 문제를 발견했을 때, 2차 평가자가 1차 평가 내용에
+    // 문제를 발견했을 때 각각 되돌려보내는 반려 상태. null이면 반려 상태 아님.
+    // ...RejectionHistory에는 과거 반려 이력이 누적된다.
+    selfRejection: null,
+    selfRejectionHistory: [],
     firstRejection: null,
     firstRejectionHistory: [],
     aiFeedback: {
@@ -1159,6 +1162,8 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
       if (!cycle.evaluations[user.id].orgAdjustment.gradeManual) cycle.evaluations[user.id].orgAdjustment.grade = "";
       if (cycle.evaluations[user.id].firstRejection === undefined) cycle.evaluations[user.id].firstRejection = null;
       if (!Array.isArray(cycle.evaluations[user.id].firstRejectionHistory)) cycle.evaluations[user.id].firstRejectionHistory = [];
+      if (cycle.evaluations[user.id].selfRejection === undefined) cycle.evaluations[user.id].selfRejection = null;
+      if (!Array.isArray(cycle.evaluations[user.id].selfRejectionHistory)) cycle.evaluations[user.id].selfRejectionHistory = [];
     }
   });
   Object.keys(cycle.evaluations).forEach((userId) => {
@@ -2407,7 +2412,7 @@ function renderDashboardTodos(user, tasks, hasActiveCycle) {
 
   if (hasActiveCycle) {
     if (isEvaluatee(user) && ownEvaluation) {
-      if (ownEvaluation.status.self !== "submitted" && canEditStage("self")) {
+      if (ownEvaluation.status.self !== "submitted" && canEditStage("self", ownEvaluation)) {
         alerts.push(`<button class="task-row alert" onclick="App.setTab('self')"><strong>자기평가를 작성해야 합니다.</strong><span>${esc(cycle.selfEnd)}까지 제출해 주세요.</span></button>`);
       } else if (ownEvaluation.status.self !== "submitted" && cycle.selfStart) {
         alerts.push(`<div class="notice">자기평가 가능 기간은 ${esc(cycle.selfStart)} ~ ${esc(cycle.selfEnd)}입니다.</div>`);
@@ -3000,7 +3005,7 @@ function renderSelfReview(user) {
   if (!isEvaluatee(user)) return `<div class="empty">이 계정은 자기평가 작성 대상이 아닙니다.</div>`;
   const cycle = selectedCycle();
   const evaluation = evaluations()[user.id];
-  const allowed = canEditStage("self");
+  const allowed = canEditStage("self", evaluation);
   const lockedByFirst = evaluation.status.first === "completed";
   return `
     <section class="panel">
@@ -3011,6 +3016,7 @@ function renderSelfReview(user) {
         ${stageStatusBadge(evaluation.status.self)}
       </div>
       <div class="panel-body grid">
+        ${evaluation.selfRejection ? `<div class="notice warn"><strong>⚠ 1차 평가자(${esc(evaluation.selfRejection.byName || "")})가 이 자기평가를 반려했습니다.</strong><br/>반려 사유: ${esc(evaluation.selfRejection.reason || "-")}<br/>내용을 수정한 뒤 다시 "제출하기"를 눌러 제출해 주세요. (자기평가 기간이 지났어도 제출할 수 있습니다.)</div>` : ""}
         ${lockedByFirst ? `<div class="notice warn">1차 평가가 완료되어 자기평가 내용을 변경할 수 없습니다.</div>` : allowed ? "" : `<div class="notice warn">${esc(periodMessage("self", cycle))}</div>`}
         ${SENSITIVE_INPUT_NOTICE_HTML}
         <fieldset ${lockedByFirst ? "disabled" : ""} style="border:none;padding:0;margin:0;">
@@ -3561,6 +3567,7 @@ function renderTaskDetail(task) {
           <button class="button secondary" ${lockedByNext || lockedByFinal ? "disabled" : ""} onclick="App.saveStage('${task.employee.id}', '${task.stage}', false)">임시 저장</button>
           <button class="button" ${allowed && !lockedByNext && !lockedByFinal ? "" : "disabled"} onclick="App.saveStage('${task.employee.id}', '${task.stage}', true)">작성 완료</button>
           ${task.stage === "second" && evaluation.status.first === "completed" && evaluation.status.second !== "completed" ? `<button class="button danger" onclick="App.rejectFirstEvaluation('${task.employee.id}')" title="1차 평가 내용에 문제가 있으면 1차 평가자에게 되돌려보냅니다.">↩ 1차 평가 반려</button>` : ""}
+          ${task.stage === "first" && evaluation.status.self === "submitted" && evaluation.status.first !== "completed" ? `<button class="button danger" onclick="App.rejectSelfEvaluation('${task.employee.id}')" title="자기평가 내용에 문제가 있으면 본인에게 되돌려보냅니다.">↩ 자기평가 반려</button>` : ""}
           ${evaluation.status[task.stage] === "completed" ? '<span class="pill green">완료</span>' : ""}
         </div>
       </div>
@@ -9969,8 +9976,9 @@ function isStageReady(employee, evaluation, stage) {
 function canEditStage(stage, evaluation) {
   const cycle = selectedCycle();
   if (cycle.status !== "active") return false;
-  // 2차 평가자에게 반려되어 재작성 중인 1차 평가는 1차 평가 기간이 이미 지났어도 수정할 수 있어야 한다.
+  // 반려되어 재작성 중인 자기평가/1차 평가는 해당 기간이 이미 지났어도 수정할 수 있어야 한다.
   if (stage === "first" && evaluation?.firstRejection) return true;
+  if (stage === "self" && evaluation?.selfRejection) return true;
   if (stage === "self") return isDateInRange(cycle.selfStart, cycle.selfEnd);
   if (stage === "first") return isDateInRange(cycle.firstStart, cycle.firstEnd);
   if (stage === "second") return isDateInRange(cycle.secondStart, cycle.secondEnd);
@@ -15103,7 +15111,7 @@ const App = {
     const evaluation = evaluations()[user.id];
     evaluation.self = collectReviewFromDom("self", evaluation.self, user);
     if (submit) {
-      if (!canEditStage("self")) return window.alert(periodMessage("self", activeCycle()));
+      if (!canEditStage("self", evaluation)) return window.alert(periodMessage("self", activeCycle()));
       const weightRangeError = invalidWeightRangeLabel(evaluation.self, user);
       if (weightRangeError) return window.alert(weightRangeError + "\n가중치는 5% 이상 40% 이하로 입력해야 제출할 수 있습니다.");
       if (hasInvalidPerformanceWeightTotal(evaluation.self, user)) return window.alert("업적평가의 업적 가중치 합계는 100이어야 제출할 수 있습니다.");
@@ -15111,6 +15119,12 @@ const App = {
       const missingSelfResponses = missingSelfResponseLabels(evaluation.self);
       if (missingSelfResponses.length) return window.alert(`${missingSelfResponses.join(", ")}을(를) 작성해야 제출할 수 있습니다.`);
       evaluation.status.self = "submitted";
+      // 반려 재작성 완료 → 반려 상태 해제(1차 평가자가 다시 검토할 수 있도록)
+      if (evaluation.selfRejection) {
+        evaluation.selfRejectionHistory = Array.isArray(evaluation.selfRejectionHistory) ? evaluation.selfRejectionHistory : [];
+        evaluation.selfRejectionHistory.push({ ...evaluation.selfRejection, resolvedAt: new Date().toISOString() });
+        evaluation.selfRejection = null;
+      }
       // AI 평가 기능이 활성화된 경우 자동으로 업적평가 채점 시작
       if (activeCycle()?.useAIEval) {
         callAIPerformanceEval(user.id).catch(() => {});
@@ -15161,7 +15175,11 @@ const App = {
   // 1차 평가 기간이 이미 지났어도 firstRejection이 있는 동안은 canEditStage가 수정을 허용한다.
   rejectFirstEvaluation(employeeId) {
     const user = currentUser();
-    const employee = userById(employeeId);
+    // cycleUserById로 조회해야 한다 — 화면의 과제 목록(getTasksForUser)이 사이클 스냅샷
+    // 기준으로 evaluator2Id를 판단하므로, 여기서도 같은 기준으로 확인해야 "화면엔 버튼이
+    // 보이는데 반려 시도하면 권한 오류가 뜨는" 불일치가 생기지 않는다. 평가자가 팀장이든
+    // 본부장이든 역할과 무관하게 evaluator2Id로 지정된 사람인지만 확인한다.
+    const employee = cycleUserById(employeeId);
     if (!employee || employee.evaluator2Id !== user.id) return window.alert("2차 평가자만 반려할 수 있습니다.");
     const evaluation = evaluations()[employeeId];
     if (!evaluation) return;
@@ -15173,6 +15191,23 @@ const App = {
     evaluation.firstRejection = { by: user.id, byName: user.name, at: new Date().toISOString(), reason: reason.trim() };
     saveState();
     state.ui.flash = `${employee.name}님의 1차 평가를 반려했습니다.`;
+    render();
+  },
+  // 1차 평가자가 자기평가 내용에 문제가 있다고 판단해 본인(피평가자)에게 되돌려보낸다.
+  rejectSelfEvaluation(employeeId) {
+    const user = currentUser();
+    const employee = cycleUserById(employeeId);
+    if (!employee || employee.evaluator1Id !== user.id) return window.alert("1차 평가자만 반려할 수 있습니다.");
+    const evaluation = evaluations()[employeeId];
+    if (!evaluation) return;
+    if (evaluation.status.self !== "submitted") return window.alert("자기평가가 제출된 건만 반려할 수 있습니다.");
+    if (evaluation.status.first === "completed") return window.alert("이미 1차 평가를 완료했습니다. 반려하려면 먼저 1차 평가 완료를 취소해야 합니다.");
+    const reason = window.prompt(`${employee.name}님의 자기평가를 반려합니다.\n반려 사유를 입력해 주세요.`, "");
+    if (!reason || !reason.trim()) return window.alert("반려하려면 사유를 입력해야 합니다.");
+    evaluation.status.self = "draft";
+    evaluation.selfRejection = { by: user.id, byName: user.name, at: new Date().toISOString(), reason: reason.trim() };
+    saveState();
+    state.ui.flash = `${employee.name}님의 자기평가를 반려했습니다.`;
     render();
   },
   saveBatchTaskScores(submit, silent) {
