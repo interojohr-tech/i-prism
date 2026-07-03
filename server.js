@@ -1,9 +1,15 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const helmet = require("helmet");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ── OpenAI 설정 (서버에만 보관 — 클라이언트로 절대 내려보내지 않음) ──────────────
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_ALLOWED_MODELS = ["gpt-4o-mini"];
+const OPENAI_MAX_TOKENS_CAP = 4000;
 
 // ── Supabase 설정 (환경변수로 주입) ─────────────────────────────────────────
 const SUPABASE_URL   = (process.env.SUPABASE_URL || "").replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "") || undefined;   // https://xxxx.supabase.co
@@ -68,6 +74,24 @@ function writeLocalFile(data) {
 }
 
 // ── 미들웨어 ─────────────────────────────────────────────────────────────────
+// CSP: 이 앱은 인라인 onclick 핸들러·인라인 style을 화면 전반에서 사용하므로
+// script-src/style-src에 'unsafe-inline'이 불가피하다(전면 리팩터 없이는 제거 불가).
+// 대신 나머지 지시어(object-src, frame-ancestors 등)는 엄격하게 잠가 클릭재킹·플러그인 삽입 등은 막는다.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.sheetjs.com", "https://cdn.jsdelivr.net"],
+      scriptSrcAttr: ["'unsafe-inline'"], // 화면 전반의 onclick="..." 인라인 핸들러가 동작하려면 필요
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+}));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.static(path.join(__dirname), { index: false }));
 
@@ -77,15 +101,53 @@ app.get("/", async (req, res) => {
     const stateData = await dbGet();
     const stateJson = stateData ? JSON.stringify(stateData) : "null";
     let html = fs.readFileSync(path.join(__dirname, "index.html"), "utf-8");
-    const openaiKey = process.env.OPENAI_API_KEY || "";
     html = html.replace(
       "</head>",
-      `<script>window.__INITIAL_STATE__ = ${stateJson}; window.__OPENAI_API_KEY__ = ${JSON.stringify(openaiKey)};</script>\n</head>`
+      `<script>window.__INITIAL_STATE__ = ${stateJson};</script>\n</head>`
     );
     res.send(html);
   } catch (e) {
     console.error("상태 로드 오류:", e);
     res.sendFile(path.join(__dirname, "index.html"));
+  }
+});
+
+// ── API: OpenAI 채팅 완성 프록시 (키를 서버에만 보관, 클라이언트로 전달하지 않음) ──
+app.post("/api/ai/chat", async (req, res) => {
+  if (!OPENAI_API_KEY) {
+    return res.status(500).json({ error: { message: "서버에 OPENAI_API_KEY가 설정되어 있지 않습니다." } });
+  }
+  const { model, messages, response_format, temperature, max_tokens } = req.body || {};
+  if (!OPENAI_ALLOWED_MODELS.includes(model)) {
+    return res.status(400).json({ error: { message: `허용되지 않은 model입니다: ${model}` } });
+  }
+  if (!Array.isArray(messages) || !messages.length) {
+    return res.status(400).json({ error: { message: "messages가 필요합니다." } });
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages,
+        ...(response_format ? { response_format } : {}),
+        temperature: typeof temperature === "number" ? temperature : 0.5,
+        max_tokens: Math.min(Number(max_tokens) || 1000, OPENAI_MAX_TOKENS_CAP),
+      }),
+    });
+    clearTimeout(timeout);
+    const data = await upstream.json();
+    res.status(upstream.status).json(data);
+  } catch (e) {
+    console.error("OpenAI 프록시 오류:", e);
+    res.status(502).json({ error: { message: e.name === "AbortError" ? "OpenAI 응답 시간이 초과되었습니다." : e.message } });
   }
 });
 

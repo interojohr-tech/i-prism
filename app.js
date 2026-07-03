@@ -4,7 +4,8 @@ const SESSION_KEY = "company-review-session-v1";
 const ADMIN_ID = "admin";
 const ADMIN_PW = "inter1234!";
 const GRADES = ["S", "A", "B", "C", "D"];
-const OPENAI_API_KEY = window.__OPENAI_API_KEY__ || "";
+// OpenAI 키는 더 이상 클라이언트에 두지 않는다. 모든 AI 호출은 /api/ai/chat(server.js)를 거치며,
+// 키는 서버 환경변수(OPENAI_API_KEY)로만 보관한다.
 let _bulkAbortController = null; // 일괄 AI 생성 강제 중지용
 const COMPONENTS = ["performance", "competency", "attitude"];
 const GRADE_COLORS = {
@@ -704,9 +705,11 @@ function tryLogin(inputId, inputPw) {
   const pw = (inputPw || "").trim();
   if (!id || !pw) return { ok: false, msg: "아이디와 비밀번호를 입력해 주세요." };
 
-  // 어드민 계정
+  // 어드민 계정: 비밀번호를 변경한 적이 있으면 그 값을, 없으면 최초 기본값을 사용
   if (id === ADMIN_ID) {
-    if (pw !== ADMIN_PW) return { ok: false, msg: "비밀번호가 올바르지 않습니다." };
+    const adminUser = state.users.find((u) => u.id === "u-admin" && u.role === "admin");
+    const expectedPw = adminUser?.password || ADMIN_PW;
+    if (pw !== expectedPw) return { ok: false, msg: "비밀번호가 올바르지 않습니다." };
     setSession("u-admin");
     return { ok: true, userId: "u-admin" };
   }
@@ -1272,12 +1275,19 @@ function ensurePeerAssignments(cycle, users = state?.users || []) {
     }));
 }
 
+let _storageFailureAlerted = false;
 function saveState() {
   invalidateCycleCache();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch(e) {
     console.warn("localStorage 저장 실패(용량 초과?)", e);
+    // 저장 실패를 콘솔 경고로만 남기면 사용자는 방금 한 작업이 저장된 줄 알고 넘어가게 된다.
+    // 페이지를 새로고침하기 전까지는 계속 저장이 안 될 가능성이 높으므로, 알림은 세션당 한 번만 띄운다.
+    if (!_storageFailureAlerted) {
+      _storageFailureAlerted = true;
+      window.alert("⚠ 저장에 실패했습니다 (브라우저 저장 공간이 가득 찼을 수 있습니다). 방금 하신 작업이 저장되지 않았을 수 있으니, 불필요한 데이터를 정리하거나 관리자에게 문의해 주세요.");
+    }
   }
 }
 
@@ -1714,6 +1724,7 @@ function render(loginError = "") {
                 <span style="font-size:12px;color:var(--muted);">${ROLE_LABELS[user.role]||""}</span>
               </div>`;
           })()}
+          ${isAdminSession ? `<button class="topbar-bell" onclick="App.openPwChangeModal()" title="어드민 비밀번호 변경">🔒</button>` : ""}
           ${isAdminSession ? `<button class="topbar-bell" onclick="App.openSiteMapModal()" title="시스템 사이트맵 (계정별 메뉴 구조 보기)">🗺️</button>` : ""}
           ${pendingCount > 0 ? `<button class="topbar-bell" onclick="App.setTab('tasks')" title="할 일 ${pendingCount}건">🔔<span class="topbar-bell-badge">${pendingCount}</span></button>` : ""}
           <button class="button secondary logout-btn" onclick="App.doLogout()" title="로그아웃">↩ 로그아웃</button>
@@ -2474,7 +2485,7 @@ function renderNoticesPanel(user) {
         <div style="padding:20px 24px;overflow-y:auto;flex:1;">
           <div style="font-size:14px;line-height:1.8;word-break:break-word;">
             <style>#notice-detail-content img{max-width:100%;height:auto;border-radius:4px;}#notice-detail-content table{border-collapse:collapse;width:100%;}#notice-detail-content td,#notice-detail-content th{border:1px solid #cbd5e1;padding:6px 10px;}</style>
-            <div id="notice-detail-content">${detailNotice.content || ""}</div>
+            <div id="notice-detail-content">${sanitizeNoticeHtml(detailNotice.content)}</div>
           </div>
           ${(detailNotice.attachments||[]).length ? `
             <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--line);">
@@ -2499,7 +2510,7 @@ function renderNoticesMgmt() {
     const isNew = editId === "new";
     const n = isNew ? { id: "", title: "", content: "", attachments: [] } : (notices.find(x => x.id === editId) || { id: "", title: "", content: "", attachments: [] });
     // 편집 시 기존 내용을 SunEditor에 주입하기 위해 전역 변수 세팅
-    window._noticeEditorInitContent = n.content || "";
+    window._noticeEditorInitContent = sanitizeNoticeHtml(n.content);
     window._pendingAttachments = (n.attachments || []).map(a => ({ ...a }));
     const attachHtml = (window._pendingAttachments || []).map((a, i) =>
       `<div id="attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
@@ -2631,7 +2642,7 @@ function renderNoticesMgmt() {
               </div>
             </div>
             <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
-              <div class="sun-editor-editable" style="padding:0;min-height:80px;font-size:14px;line-height:1.7;">${n.content || ""}</div>
+              <div class="sun-editor-editable" style="padding:0;min-height:80px;font-size:14px;line-height:1.7;">${sanitizeNoticeHtml(n.content)}</div>
               ${attachItems ? `<div><div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:8px;">첨부파일</div>${attachItems}</div>` : ""}
             </div>
           </section>
@@ -10259,9 +10270,9 @@ ${achSchemaExamples}
   "totalRationale": "전체 종합 평가 의견 (한국어 500자 이상, 각 업적의 성과 수준 요약·강점·개선 필요 사항·직급 기대 부합도·종합 판단을 구체적으로 서술. 단순 나열이 아닌 논거를 갖춘 평가 의견으로 작성)"
 }`;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("/api/ai/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
         response_format: { type: "json_object" },
@@ -10356,9 +10367,9 @@ ${targets.map(({ item, index }) => `${index}. ${item.name} — ${item.guide || "
 { "0": ["태그1"], "1": ["태그1","태그2"] }`;
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("/api/ai/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
         response_format: { type: "json_object" },
@@ -10470,11 +10481,10 @@ ${candidateListText}
   "refPick2Reason": "..."
 }`;
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetch("/api/ai/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
     },
     ...(signal ? { signal } : {}),
     body: JSON.stringify({
@@ -10920,9 +10930,9 @@ coaching 작성 지침:
   "coaching": "위 지침에 따른 줄글 문단"
 }`;
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetch("/api/ai/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
@@ -12326,7 +12336,7 @@ function parseTemplateRows(rows) {
     if (c0 === "문항명") { inItems = true; continue; }
     if (inItems) {
       if (!c0 || c0.startsWith("예)")) continue;  // 빈 행/예시 행 제외
-      result.items.push({ name: c0, guide: c1, required: true });
+      result.items.push({ name: c0, guide: c1, required: true, domainTags: [] });
     }
   }
   return result;
@@ -12337,6 +12347,7 @@ function parseResourceRows(rows) {
   const roleNameToKey = Object.fromEntries(EVALUATEE_ROLES.map((role) => [ROLE_LABELS[role], role]));
   const typeNameToKey = Object.fromEntries(Object.entries(RESOURCE_TYPES).map(([k, label]) => [label, k]));
   const result = [];
+  let invalidUrlCount = 0;
   for (const cols of rows) {
     const c0 = String(cols[0] ?? "").trim();
     if (!c0 || c0.startsWith("#") || c0 === "제목" || c0.startsWith("예)")) continue;
@@ -12350,8 +12361,11 @@ function parseResourceRows(rows) {
     const domainTags = tagsRaw
       ? tagsRaw.split(/[,·]+/).map((s) => s.trim()).filter((t) => DOMAIN_TAGS.includes(t))
       : [];
-    result.push({ title: titleRaw, url: urlRaw, type, roles, domainTags, desc: descRaw });
+    let url = urlRaw;
+    if (url && !isValidHttpUrl(url)) { url = ""; invalidUrlCount++; }
+    result.push({ title: titleRaw, url, type, roles, domainTags, desc: descRaw });
   }
+  result.invalidUrlCount = invalidUrlCount;
   return result;
 }
 
@@ -12687,6 +12701,29 @@ function esc(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+// http(s) URL 형식인지 확인 (참고자료 URL 등 사용자가 입력한 링크 검증용)
+function isValidHttpUrl(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return false;
+  try {
+    const u = new URL(s);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
+// 공지사항 리치텍스트(사용자가 contenteditable로 입력한 HTML)를 저장/표시 전 정제.
+// 서식(굵게·표·이미지·링크 등)은 남기되 script·on* 이벤트 핸들러·javascript: 링크 등은 제거한다.
+function sanitizeNoticeHtml(html) {
+  if (typeof window.DOMPurify === "undefined") return esc(html); // 라이브러리 로드 실패 시 전체 이스케이프로 안전하게 폴백
+  return window.DOMPurify.sanitize(String(html ?? ""), {
+    ALLOWED_TAGS: ["b","i","u","s","strong","em","p","div","span","br","ul","ol","li","a","img","table","thead","tbody","tr","td","th","font"],
+    ALLOWED_ATTR: ["href","target","rel","src","style","width","height","alt","color","face","size"],
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|data:image\/|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  });
 }
 
 function escAttr(value) {
@@ -13919,8 +13956,8 @@ const App = {
     // 로그인 랜딩 탭: 어드민 → 평가 진행 현황, 그 외 → 대시보드(홈)
     const loggedUser = userById(result.userId) || (result.userId === "u-admin" ? state.users.find(u => u.role === "admin") : null);
     state.ui.tab = loggedUser?.role === "admin" ? "admin" : "home";
-    // 초기 비밀번호(1234@) 사용 계정은 로그인 직후 변경 강제
-    if (loggedUser && loggedUser.role !== "admin" && !loggedUser.password) {
+    // 초기 비밀번호(어드민: 최초 기본값 / 일반: 1234@) 사용 계정은 로그인 직후 변경 강제
+    if (loggedUser && !loggedUser.password) {
       state.ui.showPwChangeModal = true;
       state.ui.pwChangeForced = true;
     } else {
@@ -14007,7 +14044,7 @@ const App = {
   },
   saveNotice(id) {
     const title = (document.getElementById("notice_title")?.value || "").trim();
-    const content = document.getElementById("notice_richtext")?.innerHTML || "";
+    const content = sanitizeNoticeHtml(document.getElementById("notice_richtext")?.innerHTML || "");
     if (!title) { window.alert("제목을 입력해 주세요."); return; }
     const attachments = (window._pendingAttachments || []);
     if (!state.notices) state.notices = [];
@@ -14135,6 +14172,7 @@ const App = {
     const title = (document.getElementById("res_title")?.value || "").trim();
     if (!title) { window.alert("제목을 입력해 주세요."); return; }
     const url = (document.getElementById("res_url")?.value || "").trim();
+    if (url && !isValidHttpUrl(url)) { window.alert("URL 형식이 올바르지 않습니다. http:// 또는 https://로 시작하는 주소를 입력해 주세요."); return; }
     const type = document.getElementById("res_type")?.value || "course";
     const desc = (document.getElementById("res_desc")?.value || "").trim();
     const roles = EVALUATEE_ROLES.filter((role) => document.getElementById(`res_role_${role}`)?.checked);
@@ -14229,7 +14267,8 @@ const App = {
           });
         });
         saveState();
-        state.ui.flash = `참고자료 ${parsed.length}건을 업로드했습니다.`;
+        state.ui.flash = `참고자료 ${parsed.length}건을 업로드했습니다.`
+          + (parsed.invalidUrlCount ? ` (URL 형식이 올바르지 않아 ${parsed.invalidUrlCount}건은 URL을 비워뒀습니다. 확인 후 직접 입력해 주세요.)` : "");
         render();
       } catch (err) {
         console.error(err);
@@ -15942,14 +15981,22 @@ const App = {
     render();
   },
   saveTemplates() {
+    // 0~100 범위를 벗어나는 값(음수·비정상적으로 큰 값)이 그대로 저장되어 전체 점수 계산이
+    // 조용히 왜곡되는 것을 막기 위해 저장 전 범위를 강제한다.
+    const clampWeight = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+    const roleSumWarnings = [];
     ["member", "teamLead", "divisionHead"].forEach((role) => {
+      let sum = 0;
       WEIGHT_COMPONENTS.forEach((component) => {
-        state.roleWeights[role][component] = Number(valueOf(`weight_${role}_${component}`) || 0);
+        const v = clampWeight(valueOf(`weight_${role}_${component}`));
+        state.roleWeights[role][component] = v;
+        sum += v;
       });
+      if (sum !== 0 && sum !== 100) roleSumWarnings.push(`${ROLE_LABELS[role] || role}(${sum}%)`);
       // 평가자 가중치 저장 (③ 가중치 페이지의 입력값)
-      const firstVal = Number(valueOf(`evalw_${role}_first`) || 0);
-      const secondVal = Number(valueOf(`evalw_${role}_second`) || 0);
-      const aiVal = Number(valueOf(`evalw_${role}_ai`) || 0);
+      const firstVal = clampWeight(valueOf(`evalw_${role}_first`));
+      const secondVal = clampWeight(valueOf(`evalw_${role}_second`));
+      const aiVal = clampWeight(valueOf(`evalw_${role}_ai`));
       if (firstVal > 0 || secondVal > 0) {
         state.evaluatorWeights[role] = state.evaluatorWeights[role] || {};
         state.evaluatorWeights[role].first = firstVal;
@@ -15962,7 +16009,8 @@ const App = {
     collectTemplateAssignmentsFromDom();
     collectDivisionBulkTemplateAssignmentsFromDom();
     saveState();
-    state.ui.flash = "가중치 · 템플릿 설정을 저장하였습니다.";
+    state.ui.flash = "가중치 · 템플릿 설정을 저장하였습니다."
+      + (roleSumWarnings.length ? ` ⚠ 다음 역할은 가중치 합이 100%가 아닙니다: ${roleSumWarnings.join(", ")}` : "");
     render();
   },
   applyDivisionTemplates(division) {
@@ -19825,6 +19873,17 @@ try {
   console.error("render() 오류:", e);
   document.getElementById("app").innerHTML = `<div style="padding:40px;color:red;font-family:monospace;white-space:pre-wrap;"><strong>초기 렌더링 오류</strong>\n\n${e.stack || e.message}</div>`;
 }
+
+// 다른 탭/창에서 같은 데이터를 저장하면(localStorage 변경) 이 탭이 뒤늦게 저장할 때
+// 그 변경 내용을 조용히 덮어쓸 수 있다. #app 재렌더링과 무관하게 남아있도록 body에 직접 배너를 붙인다.
+window.addEventListener("storage", (e) => {
+  if (e.key !== STORAGE_KEY || document.getElementById("_stale_data_banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "_stale_data_banner";
+  banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;padding:10px 16px;text-align:center;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.2);";
+  banner.innerHTML = `<span>⚠ 다른 탭/창에서 이 시스템의 데이터가 변경되었습니다. 지금 저장하면 그 변경 내용을 덮어쓸 수 있습니다.</span><button style="background:#fff;color:#dc2626;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer;" onclick="window.location.reload()">새로고침</button>`;
+  document.body.prepend(banner);
+});
 
 // 앱 시작 시: stuck된 pending AI 평가를 초기화하고 미완료 AI 평가 자동 재시작
 (function resumePendingAIEvals() {
