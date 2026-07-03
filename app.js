@@ -1,3 +1,35 @@
+// ══════════════════════════════════════════════════════════════════════════
+// I-PRISM app.js 코드 색인 (작성 시점 기준 대략적인 줄 번호 — 이후 수정으로 조금씩
+// 밀릴 수 있으니, 정확한 위치는 아래 함수/섹션 이름을 에디터에서 검색해서 찾을 것)
+//
+//   상수/설정값 (등급, 색상, 탭 라벨·아이콘, 사이트맵 구조 등) ............ 1
+//   makeEmptyEvaluation / 로그인·세션 관리 (tryLogin, getSession 등) .... 660
+//   참고자료 카탈로그 정규화, 사이트맵 렌더 ............................ 990
+//   loadState / normalizeState (상태 로드·마이그레이션) ................ 790
+//   render() 메인 진입점, renderRoute (탭별 화면 라우팅) ................ 1690
+//   HOME 대시보드, 공지사항, 감사 로그(auditLog) 화면 ................... 1930
+//   참고자료 관리(어드민) 화면 .......................................... 2790
+//   평가 입력 화면: 자기평가/1·2차평가/상향·동료평가/문항별 일괄평가 .... 2970
+//   종합평가(본부장) 화면 — 표준화 점수, 소규모팀 처리, 등급 배분 ....... 3850
+//   평가 진행 현황 대시보드, 독려 메일 ................................. 4610
+//   최종 승인(사장/회장) 화면 ........................................... 5010
+//   어드민: 사이클 목록·설정, 가중치·등급 기준 ......................... 5700
+//   어드민: 조정 세션 모달, 평가권한(1·2차/상향/동료 배정), 상대평가 그룹 6140
+//   어드민: 조직 관리(조직도, 구성원 추가/엑셀 업로드, 퇴사자 처리) ..... 6970
+//   어드민: 평가 템플릿 관리(문항 편집, 엑셀 업로드) .................... 7660
+//   어드민: 리포트 설정 / 피드백 관리 / 최종 결과·리포트 공개 조정 ...... 8350
+//   엑셀 다운로드 공통 유틸 ............................................. 9440
+//   getTasksForUser, calculateFinal 등 점수·등급 계산 핵심 로직 ......... 9790
+//   AI 업적평가 자동채점 / AI 피드백 생성(callAIFeedbackAPI 등) ......... 10310
+//   각종 모달(평가자 성향분석, 평가 진행현황·피평가자 현황 새 창) ....... 10890
+//   엑셀(xlsx) 자체 구현: ZIP 압축해제·CRC32·DEFLATE (외부 라이브러리 없음) 12545
+//   const App = { ... } — 화면의 모든 onclick="App.xxx()" 핸들러 본체 ... 13375
+//   목표(goals) 관리 화면, 나의/구성원 성장 기록(대시보드) 화면 ......... 19010
+//   부트스트랩: 자동저장 / 세션 자동 로그아웃 / 중복클릭 방지 가드 ...... 20280
+//
+// 참고: 화면(HTML)을 만드는 함수는 거의 다 render로 시작하고, 사용자 액션
+// 처리(저장·제출·삭제 등)는 거의 다 위 App 객체 안의 메서드다.
+// ══════════════════════════════════════════════════════════════════════════
 const STORAGE_KEY = "company-review-system-v2";
 const SCHEMA_VERSION = 4;
 const SESSION_KEY = "company-review-session-v1";
@@ -133,6 +165,10 @@ const STAGE_LABELS = {
   peer: "동료평가",
 };
 
+// 평가 의견은 AI 피드백 생성에 그대로 활용되므로, 건강·가족관계 등 평가와 무관한
+// 민감한 개인정보는 적지 않도록 안내한다.
+const SENSITIVE_INPUT_NOTICE_HTML = `<div class="notice info" style="font-size:12px;">평가 의견에는 업무 성과와 관련된 내용만 작성해 주세요. 건강·가족관계 등 평가와 무관한 민감한 개인정보는 입력하지 않도록 주의해 주세요.</div>`;
+
 const TAB_LABELS = {
   home: "HOME",
   self: "내 평가",
@@ -154,6 +190,7 @@ const TAB_LABELS = {
   evalDashboard: "평가 운영 현황",
   notices: "공지사항 관리",
   resourceLibrary: "참고자료 관리",
+  auditLog: "감사 로그",
 };
 
 // 탭별 아이콘 매핑
@@ -166,6 +203,7 @@ const TAB_ICONS = {
   evalDashboard: "📊",
   notices: "📢",
   resourceLibrary: "📚",
+  auditLog: "🛡️",
 };
 
 // ── 사이트맵(어드민 전용): 계정 유형별 메뉴 구조 안내 ──
@@ -198,7 +236,7 @@ const SITEMAP_SECTIONS = [
   { label: "평가 관리",      tabs: ["tasks", "resultSubmit", "approval", "results", "admin", "evalDashboard"] },
   { label: "목표 관리",      tabs: ["goals", "goalApproval"] },
   { label: "성장 기록 조회", tabs: ["myDashboard", "memberDashboard"] },
-  { label: "시스템 관리",    tabs: ["organization", "notices", "resourceLibrary"] },
+  { label: "시스템 관리",    tabs: ["organization", "notices", "resourceLibrary", "auditLog"] },
 ];
 
 // 역할별 노출 메뉴 목록. getVisibleTabs()와 동일한 규칙을 따르되,
@@ -215,7 +253,7 @@ function getSiteMapTabs(role) {
   if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("goalApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
-  if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary");
+  if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary", "auditLog");
   return tabs;
 }
 
@@ -258,6 +296,22 @@ const WEIGHT_COMPONENT_LABELS = {
 const TEMPLATE_KINDS = [...COMPONENTS, "upward", "peer"];
 
 let state = loadState();
+backfillFinalSnapshotsForLockedCycles();
+
+// 이미 "완료" 상태로 잠긴 사이클인데 아직 finalSnapshot이 없는 경우(이 고정 기능 도입 이전에
+// 완료 처리된 사이클) 최초 1회 스냅샷을 만들어둔다. normalizeState() 내부에서는 calculateFinal이
+// 참조하는 전역 state가 아직 할당 전이라 호출할 수 없으므로, state 할당 직후 별도로 실행한다.
+function backfillFinalSnapshotsForLockedCycles() {
+  let changed = false;
+  (state.cycles || []).forEach((cycle) => {
+    if (cycle.status !== "done") return;
+    const evals = Object.values(cycle.evaluations || {});
+    if (!evals.length || evals.every((ev) => ev.finalSnapshot)) return;
+    freezeFinalResultsForCycle(cycle);
+    changed = true;
+  });
+  if (changed) saveState();
+}
 
 function defaultTemplates() {
   return {
@@ -485,6 +539,7 @@ function createDefaultState() {
     notices: [],
     noticeReads: {},
     refResources: [],
+    auditLog: [],
     dataSource: null,
     ui: {
       tab: "home",
@@ -659,6 +714,10 @@ function makeEmptyEvaluation(userId) {
     adjustment: { grade: "", gradeManual: false, feedback: "", reason: "", adjustedAt: "" },
     orgAdjustment: { grade: "", gradeManual: false, reason: "", submittedBy: "", submittedAt: "" },
     published: false,
+    // 2차 평가자가 1차 평가 내용에 문제를 발견했을 때 되돌려보내는 반려 상태.
+    // null이면 반려 상태 아님. firstRejectionHistory에는 과거 반려 이력이 누적된다.
+    firstRejection: null,
+    firstRejectionHistory: [],
     aiFeedback: {
       overall: "", upward: "", peer: "",
       strengths: [], weaknesses: [],
@@ -698,6 +757,16 @@ function isLoggedIn() {
   try {
     return Boolean(state && userById(session.userId));
   } catch(e) { return true; } // state 미로드 상태면 일단 통과
+}
+
+// 실제 로그인한 세션이 어드민인지 여부 (state.currentUserId로 다른 계정을 미리보기 중이어도
+// 로그인 세션 자체가 어드민이어야 true). 계정 전환 관련 기능은 반드시 이 확인을 거쳐야 한다 —
+// 그렇지 않으면 일반 직원이 devtools 콘솔에서 App.switchToAccount(...)를 직접 호출해
+// 다른 직원의 평가 데이터를 열람할 수 있다.
+function isAdminSession() {
+  const session = getSession();
+  const sessionUser = session?.userId ? userById(session.userId) : null;
+  return sessionUser?.role === "admin";
 }
 
 function tryLogin(inputId, inputPw) {
@@ -794,6 +863,7 @@ function normalizeState(nextState) {
   nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
   nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
   nextState.refResources = normalizeRefResources(nextState.refResources);
+  nextState.auditLog = Array.isArray(nextState.auditLog) ? nextState.auditLog : [];
   nextState.ui = { ...defaults.ui, ...(nextState.ui || {}) };
   if (!nextState.ui.activeGoalCycleId || !nextState.goalCycles.some(c => c.id === nextState.ui.activeGoalCycleId)) {
     nextState.ui.activeGoalCycleId = nextState.goalCycles[0].id;
@@ -1087,6 +1157,8 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
       };
       if (!Array.isArray(cycle.evaluations[user.id].orgAdjustment.history)) cycle.evaluations[user.id].orgAdjustment.history = [];
       if (!cycle.evaluations[user.id].orgAdjustment.gradeManual) cycle.evaluations[user.id].orgAdjustment.grade = "";
+      if (cycle.evaluations[user.id].firstRejection === undefined) cycle.evaluations[user.id].firstRejection = null;
+      if (!Array.isArray(cycle.evaluations[user.id].firstRejectionHistory)) cycle.evaluations[user.id].firstRejectionHistory = [];
     }
   });
   Object.keys(cycle.evaluations).forEach((userId) => {
@@ -1275,6 +1347,21 @@ function ensurePeerAssignments(cycle, users = state?.users || []) {
     }));
 }
 
+// 등급 조정 외에는 이력이 남지 않던 액션(사이클 상태 변경, 상대평가 그룹 잠금해제, 결과
+// 다운로드 등)을 위한 공용 감사 로그. 최대 2000건까지만 보관해 무한정 커지지 않게 한다.
+function logAudit(action, detail) {
+  const user = currentUser();
+  state.auditLog = Array.isArray(state.auditLog) ? state.auditLog : [];
+  state.auditLog.push({
+    at: new Date().toISOString(),
+    by: user?.id || "",
+    byName: user?.name || "",
+    action,
+    detail: detail || "",
+  });
+  if (state.auditLog.length > 2000) state.auditLog = state.auditLog.slice(-2000);
+}
+
 let _storageFailureAlerted = false;
 function saveState() {
   invalidateCycleCache();
@@ -1459,7 +1546,7 @@ function buildNavSections(tabs, user) {
   // ── 어드민 전용 메뉴 순서: 나의 평가 → 시스템 관리 → 평가 관리 → 목표 관리 ──
   if (user.role === "admin") {
     const myTabs   = tabs.filter((t) => ["home"].includes(t));
-    const sysTabs  = tabs.filter((t) => ["organization", "notices", "resourceLibrary"].includes(t));
+    const sysTabs  = tabs.filter((t) => ["organization", "notices", "resourceLibrary", "auditLog"].includes(t));
     const setOrder = ["admin", "evalDashboard"];
     const setTabs  = setOrder.filter((t) => tabs.includes(t));
     const goalTabs = tabs.filter((t) => ["goals","goalCycles"].includes(t));
@@ -1672,8 +1759,7 @@ function render(loginError = "") {
   const pendingCount = getTasksForUser(user).filter((t) => !isCompletedStatus(t.status)).length;
 
   // 로그인한 세션이 어드민인지 확인 (타 계정으로 전환 중이어도 어드민이면 사이트맵 아이콘 표시)
-  const sessionUserForTopbar = session?.userId ? (userById(session.userId) || state.users.find(u => u.role === "admin" && u.id === session.userId)) : null;
-  const isAdminSession = sessionUserForTopbar?.role === "admin";
+  const isAdminSessionActive = isAdminSession();
 
   document.getElementById("app").innerHTML = `
     <div class="shell">
@@ -1700,10 +1786,7 @@ function render(loginError = "") {
         <div class="topbar-right">
           ${(() => {
             // 로그인한 세션이 어드민인지 확인 (타 계정으로 전환 중이어도 어드민이면 스위처 표시)
-            const session = getSession();
-            const sessionUser = session?.userId ? (userById(session.userId) || state.users.find(u => u.role === "admin" && u.id === session.userId)) : null;
-            const isAdminSession = sessionUser?.role === "admin";
-            if (isAdminSession) return `
+            if (isAdminSessionActive) return `
               <div class="account-switcher" id="acct-switcher-wrap">
                 <div style="position:relative;">
                   <input id="userSwitchSearch" placeholder="계정 검색 (이름)…"
@@ -1724,8 +1807,8 @@ function render(loginError = "") {
                 <span style="font-size:12px;color:var(--muted);">${ROLE_LABELS[user.role]||""}</span>
               </div>`;
           })()}
-          ${isAdminSession ? `<button class="topbar-bell" onclick="App.openPwChangeModal()" title="어드민 비밀번호 변경">🔒</button>` : ""}
-          ${isAdminSession ? `<button class="topbar-bell" onclick="App.openSiteMapModal()" title="시스템 사이트맵 (계정별 메뉴 구조 보기)">🗺️</button>` : ""}
+          ${isAdminSessionActive ? `<button class="topbar-bell" onclick="App.openPwChangeModal()" title="어드민 비밀번호 변경">🔒</button>` : ""}
+          ${isAdminSessionActive ? `<button class="topbar-bell" onclick="App.openSiteMapModal()" title="시스템 사이트맵 (계정별 메뉴 구조 보기)">🗺️</button>` : ""}
           ${pendingCount > 0 ? `<button class="topbar-bell" onclick="App.setTab('tasks')" title="할 일 ${pendingCount}건">🔔<span class="topbar-bell-badge">${pendingCount}</span></button>` : ""}
           <button class="button secondary logout-btn" onclick="App.doLogout()" title="로그아웃">↩ 로그아웃</button>
         </div>
@@ -1819,7 +1902,7 @@ function getVisibleTabs(user) {
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
-  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary");
+  if (user.role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary", "auditLog");
   return tabs;
 }
 
@@ -1849,6 +1932,7 @@ function getPageDescription(tab, user) {
     memberDashboard:"",
     notices:        "공지사항을 등록하고 관리합니다.",
     resourceLibrary:"AI 피드백에 추천할 자기개발 참고자료를 등록하고 관리합니다.",
+    auditLog:       "사이클 상태 변경·상대평가 확정 취소·결과 다운로드 등 주요 작업의 이력을 조회합니다.",
   };
   return descriptions[tab] || "";
 }
@@ -1867,6 +1951,7 @@ function renderRoute(user) {
   if (state.ui.tab === "organization") return user.role === "admin" ? renderAdminOrganization() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "notices") return user.role === "admin" ? renderNoticesMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "resourceLibrary") return user.role === "admin" ? renderResourceLibrary() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "auditLog") return user.role === "admin" ? renderAuditLog() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "evalDashboard") return user.role === "admin" ? renderEvalDashboard() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "goals") return user.role === "admin" ? renderGoalsList(user) : renderGoalCycleContent(user);
   if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
@@ -2687,6 +2772,50 @@ function renderNoticesMgmt() {
     </div>`;
 }
 
+const AUDIT_ACTION_LABELS = {
+  cycle_status_change: "사이클 상태 변경",
+  relative_group_unlock: "상대평가 확정 취소",
+  download: "결과 다운로드",
+};
+
+function renderAuditLog() {
+  const entries = (state.auditLog || []).slice().reverse(); // 최신순
+  const actionOptions = [...new Set(entries.map((e) => e.action))];
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>감사 로그</h2>
+          <p class="muted">사이클 상태 변경 · 상대평가 확정 취소 · 결과 다운로드 등 등급 조정 이력 외의 주요 작업 이력입니다. (총 ${entries.length}건, 최근 2000건까지 보관)</p>
+        </div>
+      </div>
+      <div class="panel-body grid">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <input id="audit_filter_name" type="text" placeholder="실행자 이름 검색..."
+            oninput="App.filterAuditLog()" style="padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;min-width:180px;" />
+          <select id="audit_filter_action" onchange="App.filterAuditLog()" style="padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;">
+            <option value="">액션 전체</option>
+            ${actionOptions.map((a) => `<option value="${esc(a)}">${esc(AUDIT_ACTION_LABELS[a] || a)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th style="white-space:nowrap;">일시</th><th>실행자</th><th>액션</th><th>상세 내용</th></tr></thead>
+            <tbody id="audit-log-tbody">
+              ${entries.length ? entries.map((e) => `
+                <tr data-name="${esc((e.byName || "").toLowerCase())}" data-action="${esc(e.action || "")}">
+                  <td style="white-space:nowrap;font-size:12.5px;">${esc(formatDateTime(e.at))}</td>
+                  <td>${esc(e.byName || e.by || "-")}</td>
+                  <td><span class="pill">${esc(AUDIT_ACTION_LABELS[e.action] || e.action)}</span></td>
+                  <td style="font-size:13px;">${esc(e.detail || "")}</td>
+                </tr>`).join("") : `<tr><td colspan="4" class="empty">기록된 이력이 없습니다.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
+}
+
 function renderResourceLibrary() {
   const resources = (state.refResources || []).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   const editId = state.ui.resourceEditId;
@@ -2883,6 +3012,7 @@ function renderSelfReview(user) {
       </div>
       <div class="panel-body grid">
         ${lockedByFirst ? `<div class="notice warn">1차 평가가 완료되어 자기평가 내용을 변경할 수 없습니다.</div>` : allowed ? "" : `<div class="notice warn">${esc(periodMessage("self", cycle))}</div>`}
+        ${SENSITIVE_INPUT_NOTICE_HTML}
         <fieldset ${lockedByFirst ? "disabled" : ""} style="border:none;padding:0;margin:0;">
           ${renderEvaluationForm("self", evaluation.self, user, "self")}
         </fieldset>
@@ -3192,6 +3322,7 @@ function renderBatchTaskEvaluation(user, tasks) {
         </div>
       </div>
       <div class="panel-body grid">
+        ${SENSITIVE_INPUT_NOTICE_HTML}
         ${sections.map((section) => renderBatchQuestionSection(section)).join("")}
       </div>
     </section>
@@ -3384,7 +3515,7 @@ function renderTaskList(user, tasks, selectedKey) {
 }
 
 function renderTaskButton(task, className) {
-  const editable = task.type === "upward" ? canEditUpward() : task.type === "peer" ? canEditPeer() : canEditStage(task.stage);
+  const editable = task.type === "upward" ? canEditUpward() : task.type === "peer" ? canEditPeer() : canEditStage(task.stage, evaluations()[task.employee.id]);
   return `
     <button class="task-row ${className}" onclick="App.openTask(${jsLiteral(task.key)})">
       <strong>${esc(task.employee.name)} · ${esc(task.label)}</strong>
@@ -3399,7 +3530,7 @@ function renderTaskDetail(task) {
   if (task.type === "peer") return renderPeerTaskDetail(task);
   const cycle = selectedCycle();
   const evaluation = evaluations()[task.employee.id];
-  const allowed = task.ready && canEditStage(task.stage);
+  const allowed = task.ready && canEditStage(task.stage, evaluation);
   if (task.stage !== "self") alignPerformanceAchievements(evaluation[task.stage], evaluation.self, task.stage, evaluation.first);
   const showSelfReference = task.stage === "first" || task.stage === "second";
   const lockedByNext = task.stage === "first" && evaluation.status.second === "completed";
@@ -3418,15 +3549,18 @@ function renderTaskDetail(task) {
         </div>
       </div>
       <div class="panel-body grid">
+        ${task.stage === "first" && evaluation.firstRejection ? `<div class="notice warn"><strong>⚠ 2차 평가자(${esc(evaluation.firstRejection.byName || "")})가 이 평가를 반려했습니다.</strong><br/>반려 사유: ${esc(evaluation.firstRejection.reason || "-")}<br/>내용을 수정한 뒤 다시 "작성 완료"를 눌러 제출해 주세요. (1차 평가 기간이 지났어도 제출할 수 있습니다.)</div>` : ""}
         ${lockedByFinal ? `<div class="notice ok">✅ 평가 최종 제출이 완료되어 수정할 수 없습니다.</div>` :
           lockedByNext ? `<div class="notice warn">2차 평가가 완료되어 1차 평가 내용을 변경할 수 없습니다.</div>`
           : allowed ? "" : `<div class="notice warn">${esc(task.ready ? periodMessage(task.stage, cycle) : "이전 차수 평가 또는 자기평가 제출이 완료되어야 평가할 수 있습니다.")}</div>`}
+        ${SENSITIVE_INPUT_NOTICE_HTML}
         <fieldset ${lockedByNext || lockedByFinal ? "disabled" : ""} style="border:none;padding:0;margin:0;">
           ${renderEvaluationForm(task.stage, evaluation[task.stage], task.employee, task.stage)}
         </fieldset>
         <div class="toolbar">
           <button class="button secondary" ${lockedByNext || lockedByFinal ? "disabled" : ""} onclick="App.saveStage('${task.employee.id}', '${task.stage}', false)">임시 저장</button>
           <button class="button" ${allowed && !lockedByNext && !lockedByFinal ? "" : "disabled"} onclick="App.saveStage('${task.employee.id}', '${task.stage}', true)">작성 완료</button>
+          ${task.stage === "second" && evaluation.status.first === "completed" && evaluation.status.second !== "completed" ? `<button class="button danger" onclick="App.rejectFirstEvaluation('${task.employee.id}')" title="1차 평가 내용에 문제가 있으면 1차 평가자에게 되돌려보냅니다.">↩ 1차 평가 반려</button>` : ""}
           ${evaluation.status[task.stage] === "completed" ? '<span class="pill green">완료</span>' : ""}
         </div>
       </div>
@@ -3460,6 +3594,7 @@ function renderUpwardTaskDetail(task) {
             <div><strong>평가 대상 조직장</strong><p class="muted">${esc(target.name)} · ${ROLE_LABELS[target.role]}</p></div>
           </div>
         </div>
+        ${SENSITIVE_INPUT_NOTICE_HTML}
         <fieldset ${finalSubmitted ? "disabled" : ""} style="border:none;padding:0;margin:0;">
           ${renderUpwardEvaluationForm(assignment)}
         </fieldset>
@@ -3499,6 +3634,7 @@ function renderPeerTaskDetail(task) {
             <div><strong>동료평가 대상</strong><p class="muted">${esc(target.name)} · ${ROLE_LABELS[target.role]}</p></div>
           </div>
         </div>
+        ${SENSITIVE_INPUT_NOTICE_HTML}
         <fieldset ${finalSubmitted ? "disabled" : ""} style="border:none;padding:0;margin:0;">
           ${renderPeerEvaluationForm(assignment)}
         </fieldset>
@@ -3810,7 +3946,15 @@ function renderResultSubmission(user) {
       return s != null ? s : (result.rawScore ?? -1);
     }
     if (cmpSortCol === "score") return result.rawScore ?? -1;
-    if (cmpSortCol === "grade") return GRADES.indexOf(result.autoGrade ?? "");
+    if (cmpSortCol === "grade") {
+      // 표준화 불가(소규모팀)로 본부장이 직접 등급을 배정한 인원은 "추천 등급" 열에
+      // 그 배정 등급이 표시되므로, 정렬도 그 값을 기준으로 해야 화면과 일치한다.
+      const ev = evaluations()[emp.id];
+      const info = stdScores.get(emp.id);
+      const isSmallTeamMerged = useStd && info?.canStandardize === false && ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade);
+      const grade = isSmallTeamMerged ? ev.orgAdjustment.grade : result.autoGrade;
+      return GRADES.indexOf(grade ?? "");
+    }
     return -1;
   };
 
@@ -3833,14 +3977,17 @@ function renderResultSubmission(user) {
     return Boolean(ev?.orgAdjustment?.gradeManual);
   }) : sortedRows;
 
-  // 현재 등급 배분 통계
+  // 현재 등급 배분 통계 — 표준화 불가(소규모팀) 미배정 인원은 아직 등급 배분 목록에
+  // 합류하지 않은 상태이므로 집계·총원에서 제외하고, 본부장이 직접 등급을 배정해 정상 목록에
+  // 합류하는 순간부터 총원과 집계에 포함한다 (normalRows와 동일한 기준).
   const gradeCounts = Object.fromEntries(GRADES.map((g) => [g, 0]));
-  sortedRows.forEach((employee) => {
+  normalRows.forEach((employee) => {
     const ev = evaluations()[employee.id];
     const g = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : calculateFinal(employee.id).autoGrade;
     if (GRADES.includes(g)) gradeCounts[g]++;
   });
   const total = sortedRows.length;
+  const distTotal = normalRows.length;
   const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
   const gradeDistBar = GRADES.map((g) => {
     const pct = total ? Math.round((gradeCounts[g] / total) * 100) : 0;
@@ -3888,13 +4035,13 @@ function renderResultSubmission(user) {
         </div>
 
         <!-- 등급 배분 현황 (실시간 업데이트) -->
-        <div class="component-card" id="grade-dist-panel" data-head-grade="${esc(headGrade)}" data-total="${total}">
+        <div class="component-card" id="grade-dist-panel" data-head-grade="${esc(headGrade)}" data-total="${distTotal}">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
             <h3 style="margin:0;">등급 배분 현황</h3>
             <span style="font-size:12px;color:var(--muted);">본부장 등급 <strong>${gradeBadge(headGrade)}</strong> 기준</span>
           </div>
           <div id="grade-dist-bars" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">
-            ${renderGradeDistCards(gradeCounts, total, headGrade)}
+            ${renderGradeDistCards(gradeCounts, distTotal, headGrade)}
           </div>
         </div>
 
@@ -4023,7 +4170,7 @@ function renderResultSubmission(user) {
                         if (isSubmitted || submission?.needsAdjustmentSession) {
                           return gradeBadge(lockedGrade || curGrade);
                         }
-                        return `<select id="org_adj_grade_${employee.id}" data-auto-grade="${esc(result.autoGrade)}" data-previous="${esc(curGrade)}"
+                        return `<select id="org_adj_grade_${employee.id}" data-auto-grade="${esc(result.autoGrade)}" data-previous="${esc(curGrade)}" ${isSmallTeamMerged ? 'data-small-team-merged="1"' : ""}
                             onchange="App.handleOrgAdjustmentGradeChange('${employee.id}');App.refreshComprehensiveStats();"
                             style="width:90px;font-weight:700;">
                             ${GRADES.map((g) => `<option value="${g}" ${curGrade === g ? "selected" : ""}>${g}</option>`).join("")}
@@ -4177,6 +4324,16 @@ function getResultSubmissionScopeUsers(user) {
 
 function getOrgAdjustmentGrade(evaluation, result) {
   return evaluation?.orgAdjustment?.gradeManual && GRADES.includes(evaluation.orgAdjustment.grade) ? evaluation.orgAdjustment.grade : result.autoGrade;
+}
+
+// 종합평가 등급 select의 현재 값이 "수동 배정"인지 판단한다. 표준화 불가(소규모팀) 인원은
+// autoGrade 자체가 통계적으로 무의미한 값이라, 우연히 선택한 등급과 같아도 반드시 수동
+// 배정으로 취급해야 한다 — 그렇지 않으면 제출 시 gradeManual이 false로 초기화되어
+// "팀 인원 부족" 목록으로 되돌아가 버린다.
+function isOrgGradeSelectionManual(employeeId, selectedGrade, autoGrade, stdInfoMap) {
+  if (!GRADES.includes(selectedGrade)) return false;
+  if (stdInfoMap?.get(employeeId)?.canStandardize === false) return true;
+  return selectedGrade !== autoGrade;
 }
 
 function orgGradeSelect(id, selected, employeeId, autoGrade) {
@@ -6015,6 +6172,10 @@ function renderAdjustmentSessionModal(division) {
   const rec = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
   const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""))
     .sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
+  // 표준화 불가(소규모팀) 인원: 종합점수 기반 추천등급이 통계적으로 무의미하므로
+  // 표시·1단계 제한 판단 모두에서 예외 처리한다.
+  const useStdSession = Boolean(cycle?.useScoreStandardization);
+  const stdInfoMapSession = useStdSession ? calculateStandardizedScores(members) : new Map();
   // 본부장 등급 기준 배분 가이드
   const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
   const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
@@ -6045,14 +6206,15 @@ function renderAdjustmentSessionModal(division) {
                   // 기본값: 종합평가 제출 등급 우선, 없으면 기존 조정 등급 → autoGrade 순
                   const submittedGrade = rec?.submittedGrades?.[emp.id];
                   const cur = submittedGrade || getAdjustmentGrade(ev, result);
+                  const isSmallTeam = stdInfoMapSession.get(emp.id)?.canStandardize === false;
                   return `<tr>
                     <td><strong style="color:var(--primary);">${idx + 1}</strong></td>
                     <td><button onclick="App.openMemberDetailWindow('${emp.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);text-decoration:underline;">${esc(emp.name)}</strong></button><br/><span class="muted" style="font-size:11px;">${esc(emp.team || "")} ${esc(emp.employeeNo || "")}</span></td>
                     <td>${renderStageComponentScores(emp, ev, { hiddenStages: [], hideExtras: true })}</td>
                     <td>${peerScoreCellHtml(emp)}</td>
                     <td class="score" style="font-size:16px;">${result.scoreText}</td>
-                    <td>${gradeBadge(result.autoGrade)}</td>
-                    <td><select id="sess_grade_${emp.id}" data-default="${esc(cur)}" onchange="App.refreshSessionDist('${esc(division)}')" style="width:72px;font-weight:700;">${GRADES.map((g) => `<option value="${g}" ${cur === g ? "selected" : ""}>${g}</option>`).join("")}</select></td>
+                    <td>${isSmallTeam ? `<span class="muted" style="font-size:12px;">팀 인원 부족</span>` : gradeBadge(result.autoGrade)}</td>
+                    <td><select id="sess_grade_${emp.id}" data-default="${esc(cur)}" ${isSmallTeam ? 'data-small-team="1"' : ""} onchange="App.refreshSessionDist('${esc(division)}')" style="width:72px;font-weight:700;">${GRADES.map((g) => `<option value="${g}" ${cur === g ? "selected" : ""}>${g}</option>`).join("")}</select></td>
                   </tr>`;
                 }).join("")}
               </tbody>
@@ -9804,9 +9966,11 @@ function isStageReady(employee, evaluation, stage) {
   return false;
 }
 
-function canEditStage(stage) {
+function canEditStage(stage, evaluation) {
   const cycle = selectedCycle();
   if (cycle.status !== "active") return false;
+  // 2차 평가자에게 반려되어 재작성 중인 1차 평가는 1차 평가 기간이 이미 지났어도 수정할 수 있어야 한다.
+  if (stage === "first" && evaluation?.firstRejection) return true;
   if (stage === "self") return isDateInRange(cycle.selfStart, cycle.selfEnd);
   if (stage === "first") return isDateInRange(cycle.firstStart, cycle.firstEnd);
   if (stage === "second") return isDateInRange(cycle.secondStart, cycle.secondEnd);
@@ -9925,6 +10089,15 @@ function calculateFinal(userId) {
   const evaluation = evaluations()[userId];
   if (!employee || !evaluation) return { rawScore: null, scoreText: "-", autoGrade: "D", finalGrade: "D", componentScores: emptyComponentScores() };
 
+  // 평가 완료(잠김) 사이클이고 확정 시점에 고정해둔 스냅샷이 있으면 그대로 반환한다.
+  // 그렇지 않으면(진행 중 사이클이거나 아직 스냅샷이 없으면) 아래처럼 현재 설정으로 계산한다.
+  // 스냅샷이 없으면 이후 전역 가중치·등급기준·배분비율이 바뀔 때 이미 확정 공개한 과거 결과까지
+  // 조용히 바뀌어버리는 문제가 있어, 완료 시점(freezeFinalResultsForCycle)에 한 번 고정해둔다.
+  const cycleForSnapshot = activeCycle();
+  if (cycleForSnapshot?.status === "done" && evaluation.finalSnapshot) {
+    return { ...evaluation.finalSnapshot };
+  }
+
   const result = calculateScoreResult(employee, evaluation);
   const autoGrade = employee.role === "member" ? relativeGradeForMember(employee, result.rawScore) : gradeByScore(result.rawScore);
   const orgAdjustment = evaluation.orgAdjustment || {};
@@ -9944,6 +10117,30 @@ function calculateScoreResult(employee, evaluation) {
   const result = computeScoreResult(employee, evaluation);
   _scoreResultCache.set(employee.id, result);
   return result;
+}
+
+// 사이클이 "평가 완료" 상태로 전환되는 시점에 각 피평가자의 최종 점수·등급을
+// evaluation.finalSnapshot에 고정해둔다. 이후 전역 가중치·등급기준·배분비율이
+// 바뀌어도 이미 확정 공개한 이 사이클의 결과는 재계산되지 않고 스냅샷 그대로 유지된다.
+function freezeFinalResultsForCycle(cycle) {
+  if (!cycle) return;
+  withCycle(cycle.id, () => {
+    const users = cycleUsers(cycle).filter((user) => isEvaluatee(user));
+    users.forEach((user) => {
+      const evaluation = (cycle.evaluations || {})[user.id];
+      if (!evaluation) return;
+      const result = calculateFinal(user.id);
+      evaluation.finalSnapshot = {
+        rawScore: result.rawScore,
+        scoreText: result.scoreText,
+        componentScores: result.componentScores,
+        autoGrade: result.autoGrade,
+        orgGrade: result.orgGrade,
+        finalGrade: result.finalGrade,
+        frozenAt: new Date().toISOString(),
+      };
+    });
+  });
 }
 
 function computeScoreResult(employee, evaluation) {
@@ -12348,24 +12545,33 @@ function parseResourceRows(rows) {
   const typeNameToKey = Object.fromEntries(Object.entries(RESOURCE_TYPES).map(([k, label]) => [label, k]));
   const result = [];
   let invalidUrlCount = 0;
-  for (const cols of rows) {
+  const rowIssues = []; // 몇 번째 행이 왜 걸러졌는지/일부만 반영됐는지 보여주기 위한 상세 기록
+  rows.forEach((cols, idx) => {
+    const rowNum = idx + 1; // 엑셀에서 보이는 실제 행 번호와 맞춤
     const c0 = String(cols[0] ?? "").trim();
-    if (!c0 || c0.startsWith("#") || c0 === "제목" || c0.startsWith("예)")) continue;
+    if (!c0 || c0.startsWith("#") || c0 === "제목" || c0.startsWith("예)")) return;
     const [titleRaw, urlRaw = "", typeRaw = "", rolesRaw = "", tagsRaw = "", descRaw = ""] = cols.map((v) => String(v ?? "").trim());
-    if (!titleRaw) continue;
+    if (!titleRaw) { rowIssues.push({ row: rowNum, message: "제목이 비어 있어 이 행은 건너뛰었습니다." }); return; }
     const type = typeNameToKey[typeRaw] || (RESOURCE_TYPES[typeRaw] ? typeRaw : "article");
     // 쉼표(,)만 구분자로 사용 — "코칭/육성", "책임감/원칙준수"처럼 태그 이름 자체에 "/"가 들어있으므로 "/"는 구분자로 쓰지 않는다.
-    const roles = rolesRaw
-      ? rolesRaw.split(/[,·]+/).map((s) => s.trim()).map((s) => roleNameToKey[s]).filter(Boolean)
-      : [];
-    const domainTags = tagsRaw
-      ? tagsRaw.split(/[,·]+/).map((s) => s.trim()).filter((t) => DOMAIN_TAGS.includes(t))
-      : [];
+    const rolesSplit = rolesRaw ? rolesRaw.split(/[,·]+/).map((s) => s.trim()).filter(Boolean) : [];
+    const roles = rolesSplit.map((s) => roleNameToKey[s]).filter(Boolean);
+    const unknownRoles = rolesSplit.filter((s) => !roleNameToKey[s]);
+    const tagsSplit = tagsRaw ? tagsRaw.split(/[,·]+/).map((s) => s.trim()).filter(Boolean) : [];
+    const domainTags = tagsSplit.filter((t) => DOMAIN_TAGS.includes(t));
+    const unknownTags = tagsSplit.filter((t) => !DOMAIN_TAGS.includes(t));
     let url = urlRaw;
-    if (url && !isValidHttpUrl(url)) { url = ""; invalidUrlCount++; }
+    if (url && !isValidHttpUrl(url)) {
+      url = "";
+      invalidUrlCount++;
+      rowIssues.push({ row: rowNum, message: `"${titleRaw}": URL 형식이 올바르지 않아 URL을 비워두었습니다.` });
+    }
+    if (unknownRoles.length) rowIssues.push({ row: rowNum, message: `"${titleRaw}": 알 수 없는 역할("${unknownRoles.join(", ")}")은 무시했습니다.` });
+    if (unknownTags.length) rowIssues.push({ row: rowNum, message: `"${titleRaw}": 알 수 없는 도메인 태그("${unknownTags.join(", ")}")는 무시했습니다.` });
     result.push({ title: titleRaw, url, type, roles, domainTags, desc: descRaw });
-  }
+  });
   result.invalidUrlCount = invalidUrlCount;
+  result.rowIssues = rowIssues;
   return result;
 }
 
@@ -12558,6 +12764,21 @@ function unzip(bytes) {
     cd += 46 + nameLen + extraLen + commentLen;
   }
   return out;
+}
+
+// 업로드 파일 공통 검증: 확장자 문자열만 보고 신뢰하지 않도록 용량 상한과 실제 파일
+// 포맷(매직 바이트)을 함께 확인한다. .xlsx는 ZIP 컨테이너이므로 "PK" 시그니처로 시작해야 한다.
+const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+function validateUploadFileSize(file) {
+  if (file.size > MAX_UPLOAD_FILE_BYTES) {
+    return `파일 용량이 너무 큽니다. (${(file.size / 1024 / 1024).toFixed(1)}MB) 최대 ${MAX_UPLOAD_FILE_BYTES / 1024 / 1024}MB까지 업로드할 수 있습니다.`;
+  }
+  return "";
+}
+function isValidXlsxMagicBytes(arrayBuffer) {
+  if (!arrayBuffer || arrayBuffer.byteLength < 4) return false;
+  const b = new Uint8Array(arrayBuffer, 0, 4);
+  return b[0] === 0x50 && b[1] === 0x4B; // "PK"
 }
 
 // xlsx → 2D 배열 (첫 시트)
@@ -13443,6 +13664,8 @@ const App = {
     const rg = cycle.relativeGroups[userId] || {};
     rg.locked = false;
     cycle.relativeGroups[userId] = rg;
+    const u = userById(userId);
+    logAudit("relative_group_unlock", `${u?.name || userId}(${u?.employeeNo || ""}) 상대평가 확정 취소`);
     saveState();
     render();
   },
@@ -13490,6 +13713,7 @@ const App = {
       rg.locked = false;
       cycle.relativeGroups[u.id] = rg;
     });
+    logAudit("relative_group_unlock", `${div} ${team} 팀 전체(${members.length}명) 상대평가 확정 취소`);
     saveState();
     state.ui.flash = `${team} 팀 확정이 취소되었습니다.`;
     render();
@@ -14238,12 +14462,18 @@ const App = {
     const file = event.target?.files?.[0];
     if (!file) return;
     const reset = () => { if (event.target) event.target.value = ""; };
+    const sizeError = validateUploadFileSize(file);
+    if (sizeError) { window.alert(sizeError); reset(); return; }
     const name = (file.name || "").toLowerCase();
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         let rows;
         if (name.endsWith(".xlsx")) {
+          if (!isValidXlsxMagicBytes(e.target.result)) {
+            window.alert("파일 형식이 올바르지 않습니다. 확장자만 바꾼 파일이 아닌 실제 엑셀(.xlsx) 파일을 업로드해 주세요.");
+            reset(); return;
+          }
           rows = parseXlsx(new Uint8Array(e.target.result));
         } else if (name.endsWith(".xls")) {
           window.alert("구형 .xls는 지원하지 않습니다. 엑셀에서 .xlsx로 저장한 뒤 업로드해 주세요.");
@@ -14267,8 +14497,12 @@ const App = {
           });
         });
         saveState();
-        state.ui.flash = `참고자료 ${parsed.length}건을 업로드했습니다.`
-          + (parsed.invalidUrlCount ? ` (URL 형식이 올바르지 않아 ${parsed.invalidUrlCount}건은 URL을 비워뒀습니다. 확인 후 직접 입력해 주세요.)` : "");
+        const issues = parsed.rowIssues || [];
+        const issueText = issues.length
+          ? `\n\n[행별 안내]\n${issues.slice(0, 15).map((i) => `${i.row}행 — ${i.message}`).join("\n")}${issues.length > 15 ? `\n외 ${issues.length - 15}건` : ""}`
+          : "";
+        state.ui.flash = `참고자료 ${parsed.length}건을 업로드했습니다.` + (issues.length ? ` (안내 ${issues.length}건 — 상세는 콘솔 또는 목록에서 확인해 주세요.)` : "");
+        if (issueText) window.alert(`참고자료 ${parsed.length}건을 업로드했습니다.${issueText}`);
         render();
       } catch (err) {
         console.error(err);
@@ -14296,6 +14530,7 @@ const App = {
     });
   },
   filterCurrentAccount(query) {
+    if (!isAdminSession()) return;
     const q = String(query || "").trim().toLowerCase();
     const dropdown = document.getElementById("acct-dropdown");
     if (!dropdown) return;
@@ -14354,7 +14589,7 @@ const App = {
     }
   },
   switchToAccount(userId) {
-    if (!userId) return;
+    if (!userId || !isAdminSession()) return;
     state.currentUserId = userId;
     const nextUser = currentUser();
     const nextTabs = getVisibleTabs(nextUser);
@@ -14505,11 +14740,15 @@ const App = {
     const cycle = state.cycles.find(c => c.id === state.activeCycleId) || state.cycles[0];
     const v = valueOf("dash_cycle_status");
     if (!v) return;
+    const wasDone = cycle.status === "done";
+    const prevStatus = cycle.status;
     if (v === "active") {
       if (blockIfRelativeGroupUnconfirmed(cycle)) { render(); return; }
       state.cycles.forEach(c => { if (c.id !== cycle.id && c.status === "active") c.status = "paused"; });
     }
     cycle.status = v;
+    if (v === "done" && !wasDone) freezeFinalResultsForCycle(cycle);
+    if (prevStatus !== v) logAudit("cycle_status_change", `${cycle.name}: ${cycleStatusLabel(prevStatus)} → ${cycleStatusLabel(v)}`);
     saveState();
     state.ui.flash = cycle.status === "active" ? "평가를 진행 상태로 변경했습니다."
       : cycle.status === "done" ? "평가 완료 상태로 변경했습니다. (결과 공개 설정만 가능)"
@@ -14716,12 +14955,18 @@ const App = {
     const file = event.target?.files?.[0];
     if (!file) return;
     const reset = () => { if (event.target) event.target.value = ""; };
+    const sizeError = validateUploadFileSize(file);
+    if (sizeError) { window.alert(sizeError); reset(); return; }
     const name = (file.name || "").toLowerCase();
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         let parsed;
         if (name.endsWith(".xlsx")) {
+          if (!isValidXlsxMagicBytes(e.target.result)) {
+            window.alert("파일 형식이 올바르지 않습니다. 확장자만 바꾼 파일이 아닌 실제 엑셀(.xlsx) 파일을 업로드해 주세요.");
+            reset(); return;
+          }
           const rows = parseXlsx(new Uint8Array(e.target.result));
           parsed = parseTemplateRows(rows);
         } else if (name.endsWith(".xls")) {
@@ -14853,7 +15098,7 @@ const App = {
     saveState();
     render();
   },
-  saveSelf(submit) {
+  saveSelf(submit, silent) {
     const user = currentUser();
     const evaluation = evaluations()[user.id];
     evaluation.self = collectReviewFromDom("self", evaluation.self, user);
@@ -14872,9 +15117,9 @@ const App = {
       }
     }
     saveState();
-    render();
+    if (!silent) render();
   },
-  saveStage(employeeId, stage, submit) {
+  saveStage(employeeId, stage, submit, silent) {
     const employee = userById(employeeId);
     const evaluation = evaluations()[employeeId];
     alignPerformanceAchievements(evaluation[stage], evaluation.self, stage, evaluation.first);
@@ -14888,7 +15133,7 @@ const App = {
     }
     evaluation[stage].overallFeedback = "";
     if (submit) {
-      if (!canEditStage(stage)) return window.alert(periodMessage(stage, activeCycle()));
+      if (!canEditStage(stage, evaluation)) return window.alert(periodMessage(stage, activeCycle()));
       // 업적 가중치 합계 검증 (평가자 및 자기평가 공통)
       const perfTemplate = templateFor(employee, "performance");
       if (perfTemplate?.useWeight) {
@@ -14902,11 +15147,35 @@ const App = {
       const missingComments = missingReviewCommentLabels(evaluation[stage]);
       if (missingComments.length) return window.alert(`${missingComments.join(", ")}을(를) 작성해야 제출할 수 있습니다.`);
       evaluation.status[stage] = "completed";
+      // 반려 재작성 완료 → 반려 상태 해제(2차 평가자가 다시 검토할 수 있도록)
+      if (stage === "first" && evaluation.firstRejection) {
+        evaluation.firstRejectionHistory = Array.isArray(evaluation.firstRejectionHistory) ? evaluation.firstRejectionHistory : [];
+        evaluation.firstRejectionHistory.push({ ...evaluation.firstRejection, resolvedAt: new Date().toISOString() });
+        evaluation.firstRejection = null;
+      }
     }
     saveState();
+    if (!silent) render();
+  },
+  // 2차 평가자가 1차 평가 내용에 문제가 있다고 판단해 1차 평가자에게 되돌려보낸다.
+  // 1차 평가 기간이 이미 지났어도 firstRejection이 있는 동안은 canEditStage가 수정을 허용한다.
+  rejectFirstEvaluation(employeeId) {
+    const user = currentUser();
+    const employee = userById(employeeId);
+    if (!employee || employee.evaluator2Id !== user.id) return window.alert("2차 평가자만 반려할 수 있습니다.");
+    const evaluation = evaluations()[employeeId];
+    if (!evaluation) return;
+    if (evaluation.status.first !== "completed") return window.alert("1차 평가가 완료된 건만 반려할 수 있습니다.");
+    if (evaluation.status.second === "completed") return window.alert("이미 2차 평가를 완료했습니다. 반려하려면 먼저 2차 평가 완료를 취소해야 합니다.");
+    const reason = window.prompt(`${employee.name}님의 1차 평가를 반려합니다.\n반려 사유를 입력해 주세요.`, "");
+    if (!reason || !reason.trim()) return window.alert("반려하려면 사유를 입력해야 합니다.");
+    evaluation.status.first = "pending";
+    evaluation.firstRejection = { by: user.id, byName: user.name, at: new Date().toISOString(), reason: reason.trim() };
+    saveState();
+    state.ui.flash = `${employee.name}님의 1차 평가를 반려했습니다.`;
     render();
   },
-  saveBatchTaskScores(submit) {
+  saveBatchTaskScores(submit, silent) {
     const tasks = getTasksForUser(currentUser());
     const normalTasks = tasks.filter((task) => !task.type);
     const upwardTasks = tasks.filter((task) => task.type === "upward");
@@ -15018,10 +15287,12 @@ const App = {
       });
     }
     saveState();
-    state.ui.flash = submit ? "입력된 일괄 평가를 저장하고 완료 가능한 평가는 완료 처리했습니다." : "입력된 일괄 평가를 저장했습니다.";
-    render();
+    if (!silent) {
+      state.ui.flash = submit ? "입력된 일괄 평가를 저장하고 완료 가능한 평가는 완료 처리했습니다." : "입력된 일괄 평가를 저장했습니다.";
+      render();
+    }
   },
-  saveUpward(assignmentId, submit) {
+  saveUpward(assignmentId, submit, silent) {
     const assignment = getUpwardAssignmentById(assignmentId);
     if (!assignment) return window.alert("상향평가 배정을 찾을 수 없습니다. 평가권한 관리에서 배정을 다시 확인해 주세요.");
     const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
@@ -15042,14 +15313,16 @@ const App = {
     } else if (!isCompletedStatus(targetAssignment.status)) {
       targetAssignment.status = "draft";
     }
-    state.ui.tab = "tasks";
-    state.ui.taskViewMode = "person";
-    state.ui.selectedTaskKey = `upward:${targetAssignment.id}`;
-    state.ui.flash = submit ? "상향평가를 제출했습니다." : "상향평가를 저장했습니다.";
+    if (!silent) {
+      state.ui.tab = "tasks";
+      state.ui.taskViewMode = "person";
+      state.ui.selectedTaskKey = `upward:${targetAssignment.id}`;
+      state.ui.flash = submit ? "상향평가를 제출했습니다." : "상향평가를 저장했습니다.";
+    }
     saveState();
-    render();
+    if (!silent) render();
   },
-  savePeer(assignmentId, submit) {
+  savePeer(assignmentId, submit, silent) {
     const assignment = getPeerAssignmentById(assignmentId);
     if (!assignment) return window.alert("동료평가 배정을 찾을 수 없습니다. 평가권한 관리에서 배정을 다시 확인해 주세요.");
     const evaluator = cycleUserById(assignment.evaluatorId) || userById(assignment.evaluatorId);
@@ -15070,12 +15343,14 @@ const App = {
     } else if (!isCompletedStatus(targetAssignment.status)) {
       targetAssignment.status = "draft";
     }
-    state.ui.tab = "tasks";
-    state.ui.taskViewMode = "person";
-    state.ui.selectedTaskKey = `peer:${targetAssignment.id}`;
-    state.ui.flash = submit ? "동료평가를 제출했습니다." : "동료평가를 저장했습니다.";
+    if (!silent) {
+      state.ui.tab = "tasks";
+      state.ui.taskViewMode = "person";
+      state.ui.selectedTaskKey = `peer:${targetAssignment.id}`;
+      state.ui.flash = submit ? "동료평가를 제출했습니다." : "동료평가를 저장했습니다.";
+    }
     saveState();
-    render();
+    if (!silent) render();
   },
   saveEvaluators(employeeId) {
     const employee = cycleUserById(employeeId);
@@ -15435,6 +15710,7 @@ const App = {
         m.autoGrade, m.orgGrade || m.autoGrade, m.distReason,
         buildEvalFeedbackText(emp)]);
     });
+    logAudit("download", `종합평가 결과 다운로드 (${user.division || "본부"}, ${rows.length}명)`);
     downloadXlsxRows(out, `종합평가_${(user.division || "본부")}_${todayStamp()}.xlsx`);
   },
   // ── 최종 승인: 사장/회장 조회 범위 구성원 전체 ──
@@ -15461,6 +15737,7 @@ const App = {
     deptDistributionExportRows(rows, allUsers).forEach(r => out.push(r));
     // 종합평가 등급 조정 이력 (본부장 원안 + 조정 세션 사유)
     orgAdjustmentHistoryExportRows(rows).forEach(r => out.push(r));
+    logAudit("download", `최종승인 결과 다운로드 (${rows.length}명)`);
     downloadXlsxRows(out, `최종승인_${todayStamp()}.xlsx`);
   },
   // ── 최종 결과/리포트 공개: 어드민 전체 구성원 + 조정 정보 ──
@@ -15652,6 +15929,8 @@ const App = {
         });
     }
 
+    // 개인 실명 + AI 피드백 전문까지 포함되는 가장 민감한 다운로드이므로 반드시 기록한다.
+    logAudit("download", `최종결과/리포트공개 다운로드 (AI 피드백 포함, ${evaluatees.length}명)`);
     downloadXlsxRows(out, `최종결과_리포트공개_${todayStamp()}.xlsx`);
   },
   // ── 최종 평가 결과 확인: 조회 범위 구성원(점수·최종등급) ──
@@ -15667,6 +15946,7 @@ const App = {
       out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
         ...scoreBlockCells(m), m.score, m.finalGrade]);
     });
+    logAudit("download", `최종평가결과 다운로드 (${rows.length}명)`);
     downloadXlsxRows(out, `최종평가결과_${todayStamp()}.xlsx`);
   },
   // ── 멤버 대시보드: 선택한 구성원 1명의 정보(인적사항 + 목표 + 평가 결과)를 하나로 ──
@@ -15675,6 +15955,7 @@ const App = {
     const id = memberId || state.ui.dashboardMemberId || "";
     const target = dashboardViewableUsers(viewer).find((u) => u.id === id);
     if (!target) return window.alert("내보낼 구성원을 선택해 주세요.");
+    logAudit("download", `구성원 성장 기록 다운로드 (대상: ${target.name})`);
     downloadMemberDashboardXlsx(target, false);
   },
   // ── 나의 대시보드: 내 정보 + 목표 + 공개된 평가 결과 ──
@@ -15703,6 +15984,8 @@ const App = {
     const file = event.target?.files?.[0];
     if (!file) return;
     const reset = () => { if (event.target) event.target.value = ""; };
+    const sizeError = validateUploadFileSize(file);
+    if (sizeError) { window.alert(sizeError); reset(); return; }
     const name = (file.name || "").toLowerCase();
     if (!name.endsWith(".xlsx")) {
       window.alert("내려받은 .xlsx 양식만 업로드할 수 있습니다.");
@@ -15711,6 +15994,10 @@ const App = {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
+        if (!isValidXlsxMagicBytes(e.target.result)) {
+          window.alert("파일 형식이 올바르지 않습니다. 확장자만 바꾼 파일이 아닌 실제 엑셀(.xlsx) 파일을 업로드해 주세요.");
+          reset(); return;
+        }
         const rows = parseXlsx(new Uint8Array(e.target.result));
         // 헤더 행 찾기 (첫 칸이 '이름')
         const headerIdx = rows.findIndex((r) => String(r[0] || "").trim() === "이름");
@@ -15719,11 +16006,12 @@ const App = {
         const added = [];
         const skipped = [];
         for (let i = headerIdx + 1; i < rows.length; i++) {
+          const rowNum = i + 1; // 엑셀에서 보이는 실제 행 번호
           const r = rows[i].map((c) => String(c == null ? "" : c).trim());
           const nm = r[0] || "";
           if (!nm || nm.startsWith("예)")) continue;       // 빈 행·예시 행 건너뜀
           const email = r[2] || "";
-          if (!email) { skipped.push(`${nm}(이메일 없음)`); continue; }
+          if (!email) { skipped.push(`${rowNum}행 ${nm}(이메일 없음)`); continue; }
           const roleRaw = r[5] || "";
           const role = roleByLabel[roleRaw] || (["admin","chairman","president","divisionHead","teamLead","member"].includes(roleRaw) ? roleRaw : "member");
           state.users.push({
@@ -15750,6 +16038,7 @@ const App = {
         saveState();
         refreshCurrentUserSwitch();
         refreshOrganizationPanel(`${added.length}명의 구성원을 추가했습니다.${skipped.length ? ` (건너뜀 ${skipped.length}건)` : ""}`);
+        if (skipped.length) window.alert(`${added.length}명을 추가했습니다.\n\n[건너뛴 행]\n${skipped.slice(0, 20).join("\n")}${skipped.length > 20 ? `\n외 ${skipped.length - 20}건` : ""}`);
       } catch (err) {
         console.error(err);
         window.alert("파일을 읽는 중 오류가 발생했습니다. 내려받은 .xlsx 양식을 사용했는지 확인해 주세요.");
@@ -16143,14 +16432,33 @@ const App = {
   handleOrgAdjustmentGradeChange(employeeId) {
     const select = document.getElementById(`org_adj_grade_${employeeId}`);
     if (!select) return;
-    const autoGrade = select.dataset.autoGrade || "";
     const newGrade = select.value;
+    // 표준화 불가(소규모팀)로 합류한 인원은 추천 등급 자체가 통계적으로 무의미하므로
+    // 1단계 제한과 조정 사유 입력 없이 본부장이 자유롭게 등급을 조정할 수 있어야 한다.
+    if (select.dataset.smallTeamMerged) {
+      select.dataset.previous = newGrade;
+      return;
+    }
+    const autoGrade = select.dataset.autoGrade || "";
     if (!isGradeAdjWithinOneStep(autoGrade, newGrade)) {
       const idx = GRADES.indexOf(autoGrade);
       const allowed = GRADES.filter((_, i) => Math.abs(i - idx) <= 1).join(", ");
       window.alert(`추천 등급(${autoGrade})에서 최대 1단계까지만 조정할 수 있습니다.\n선택 가능한 등급: ${allowed}`);
       select.value = select.dataset.previous || autoGrade;
       return;
+    }
+    // 추천 등급과 다르게 조정하는 경우에는 사유를 반드시 입력받는다(입력 없이는 빈 문자열로
+    // 저장되던 문제를 막기 위함). 입력을 취소하거나 비워두면 이전 값으로 되돌린다.
+    if (newGrade !== autoGrade) {
+      const reason = window.prompt(`추천 등급(${autoGrade})에서 ${newGrade}(으)로 조정합니다.\n조정 사유를 입력해 주세요.`, select.dataset.reason || "");
+      if (!reason || !reason.trim()) {
+        window.alert("등급을 조정하려면 조정 사유를 입력해야 합니다.");
+        select.value = select.dataset.previous || autoGrade;
+        return;
+      }
+      select.dataset.reason = reason.trim();
+    } else {
+      select.dataset.reason = "";
     }
     select.dataset.previous = newGrade;
   },
@@ -16170,6 +16478,21 @@ const App = {
       });
       if (ungraded.length) {
         return window.alert(`등급이 배분되지 않은 구성원이 있습니다: ${ungraded.map((e) => e.name).join(", ")}`);
+      }
+      // 팀 인원 부족(2명 이하)으로 표준화 점수를 산출할 수 없는 구성원은 자동 추천 등급이
+      // 없으므로, 본부장이 직접 등급을 배정하기 전까지는 종합평가를 제출할 수 없다.
+      const useStdSubmit = Boolean(activeCycle()?.useScoreStandardization);
+      if (useStdSubmit) {
+        const stdScoresSubmit = calculateStandardizedScores(rows);
+        const smallTeamUngraded = rows.filter((employee) => {
+          const info = stdScoresSubmit.get(employee.id);
+          if (info?.canStandardize !== false) return false;
+          const ev = evaluations()[employee.id];
+          return !ev?.orgAdjustment?.gradeManual;
+        });
+        if (smallTeamUngraded.length) {
+          return window.alert(`아래 구성원은 팀 인원이 2명 이하로 표준화 점수를 산출할 수 없어 본부장이 직접 등급을 배정해야 제출할 수 있습니다.\n\n${smallTeamUngraded.map((e) => e.name).join(", ")}`);
+        }
       }
       // 등급 배분율 가이드 검증
       const headGradeCheck = (() => { const r = calculateFinal(user.id); return (r && GRADES.includes(r.finalGrade)) ? r.finalGrade : "B"; })();
@@ -16211,6 +16534,7 @@ const App = {
         const excessAllowance = selectedCycle()?.gradeExcessAllowance ?? 1;
         // 커스텀 모달로 처리 전에 현재 select 값을 ev.orgAdjustment에 먼저 저장
         // (render() 후 DOM이 재빌드되면 select가 autoGrade로 초기화되는 것을 방지)
+        const stdInfoMapModal = useStdSubmit ? calculateStandardizedScores(rows) : new Map();
         rows.forEach((employee) => {
           const ev = evaluations()[employee.id];
           if (!ev) return;
@@ -16218,7 +16542,7 @@ const App = {
           if (!sel) return;
           const result = calculateFinal(employee.id);
           const selectedGrade = sel.value;
-          const hasManual = GRADES.includes(selectedGrade) && selectedGrade !== result.autoGrade;
+          const hasManual = isOrgGradeSelectionManual(employee.id, selectedGrade, result.autoGrade, stdInfoMapModal);
           ev.orgAdjustment.gradeManual = hasManual;
           ev.orgAdjustment.grade = hasManual ? selectedGrade : "";
         });
@@ -16234,6 +16558,7 @@ const App = {
       }
     }
     // org 조정 저장
+    const stdInfoMapSave = Boolean(activeCycle()?.useScoreStandardization) ? calculateStandardizedScores(rows) : new Map();
     rows.forEach((employee) => {
       const ev = evaluations()[employee.id];
       if (!ev) return;
@@ -16241,10 +16566,10 @@ const App = {
       const result = calculateFinal(employee.id);
       if (select) {
         const selectedGrade = select.value;
-        const hasManual = GRADES.includes(selectedGrade) && selectedGrade !== result.autoGrade;
+        const hasManual = isOrgGradeSelectionManual(employee.id, selectedGrade, result.autoGrade, stdInfoMapSave);
         ev.orgAdjustment.gradeManual = hasManual;
         ev.orgAdjustment.grade = hasManual ? selectedGrade : "";
-        ev.orgAdjustment.reason = "";
+        ev.orgAdjustment.reason = hasManual ? (select.dataset.reason || "") : "";
       }
     });
     const submittedAt = new Date().toISOString();
@@ -16336,6 +16661,7 @@ const App = {
     if (user.role !== "divisionHead") return;
     const rows = getResultSubmissionScopeUsers(user);
     // 등급 저장 (select가 있으면 DOM 값, 없으면 이미 사전 저장된 orgAdjustment 값 사용)
+    const stdInfoMapMinor = Boolean(activeCycle()?.useScoreStandardization) ? calculateStandardizedScores(rows) : new Map();
     const submittedGrades = {};
     rows.forEach((employee) => {
       const ev = evaluations()[employee.id];
@@ -16344,10 +16670,10 @@ const App = {
       const result = calculateFinal(employee.id);
       if (select) {
         const selectedGrade = select.value;
-        const hasManual = GRADES.includes(selectedGrade) && selectedGrade !== result.autoGrade;
+        const hasManual = isOrgGradeSelectionManual(employee.id, selectedGrade, result.autoGrade, stdInfoMapMinor);
         ev.orgAdjustment.gradeManual = hasManual;
         ev.orgAdjustment.grade = hasManual ? selectedGrade : "";
-        ev.orgAdjustment.reason = "";
+        ev.orgAdjustment.reason = hasManual ? (select.dataset.reason || "") : "";
         submittedGrades[employee.id] = selectedGrade;
       } else {
         // render() 후 select가 재빌드됐을 경우 — 사전 저장된 값 사용
@@ -16460,11 +16786,16 @@ const App = {
     const record = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
     if (!record) return window.alert("대상 본부 기록을 찾을 수 없습니다.");
     const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
+    const useStdComplete = Boolean(cycle?.useScoreStandardization);
+    const stdInfoMapComplete = useStdComplete ? calculateStandardizedScores(members) : new Map();
     // 모달에서 조정한 등급을 orgAdjustment에 반영
+    // 표준화 불가(소규모팀)로 평가자가 직접 등급을 입력한 인원은 종합점수 기반 추천등급이
+    // 통계적으로 무의미하므로 1단계 제한을 적용하지 않는다.
     const overStepNames = [];
     members.forEach((emp) => {
       const sel = document.getElementById(`sess_grade_${emp.id}`);
       if (!sel) return;
+      if (stdInfoMapComplete.get(emp.id)?.canStandardize === false) return;
       const result = calculateFinal(emp.id);
       const baseGrade = result.autoGrade;
       if (!isGradeAdjWithinOneStep(baseGrade, sel.value)) overStepNames.push(`${emp.name}(추천:${baseGrade}→선택:${sel.value})`);
@@ -16479,7 +16810,7 @@ const App = {
       const ev = evaluations()[emp.id];
       const result = calculateFinal(emp.id);
       const selected = sel.value;
-      const hasManual = GRADES.includes(selected) && selected !== result.autoGrade;
+      const hasManual = isOrgGradeSelectionManual(emp.id, selected, result.autoGrade, stdInfoMapComplete);
       ev.orgAdjustment.gradeManual = hasManual;
       ev.orgAdjustment.grade = hasManual ? selected : "";
     });
@@ -16519,6 +16850,14 @@ const App = {
                 && (!team  || dt === team)
                 && (!title || dl === title)
                 && (!grade || dg === grade);
+      tr.style.display = show ? "" : "none";
+    });
+  },
+  filterAuditLog() {
+    const name = (document.getElementById("audit_filter_name")?.value || "").trim().toLowerCase();
+    const action = document.getElementById("audit_filter_action")?.value || "";
+    document.querySelectorAll("#audit-log-tbody tr[data-name]").forEach((tr) => {
+      const show = (!name || (tr.dataset.name || "").includes(name)) && (!action || tr.dataset.action === action);
       tr.style.display = show ? "" : "none";
     });
   },
@@ -17238,7 +17577,7 @@ const App = {
         h1{font-size:20px;margin:0 0 4px;}
         .sub{color:#6b7280;font-size:13px;margin:0 0 16px;}
         .sums{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
-        .sum{flex:1;min-width:240px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;font-size:13px;}
+        .sum{flex:1;min-width:240px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;font-size:13px;overflow-wrap:break-word;word-break:break-word;}
         .sum strong{color:#2454c6;font-size:14px;}
         .sum .meta{color:#6b7280;font-size:12px;margin-left:6px;}
         .sum div{margin-top:4px;}
@@ -17951,9 +18290,15 @@ const App = {
     if (!file.name.toLowerCase().endsWith(".xlsx")) {
       window.alert(".xlsx 파일만 업로드할 수 있습니다. 내려받은 양식을 사용해 주세요."); reset(); return;
     }
+    const sizeError = validateUploadFileSize(file);
+    if (sizeError) { window.alert(sizeError); reset(); return; }
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
+        if (!isValidXlsxMagicBytes(e.target.result)) {
+          window.alert("파일 형식이 올바르지 않습니다. 확장자만 바꾼 파일이 아닌 실제 엑셀(.xlsx) 파일을 업로드해 주세요.");
+          reset(); return;
+        }
         const rows = parseXlsx(new Uint8Array(e.target.result));
         const user = currentUser();
         const cycle = activeGoalCycle();
@@ -19866,12 +20211,43 @@ function renderGoalCycleEditModal() {
     </div>`;
 }
 
+// 저장/제출/잠금/삭제/내보내기 등 상태를 바꾸는 액션 버튼을 빠르게 두 번 누르면
+// 동일한 호출이 중복 실행될 수 있다(중복 저장, AI 채점 중복 호출 등). 함수명과 호출
+// 인자가 완전히 같은 호출이 짧은 시간 안에 다시 들어오면 무시한다 — 인자까지 같아야
+// 막으므로, 자동저장(마지막 인자로 silent=true를 넘김)과 사용자의 실제 클릭은
+// 인자 구성이 달라 서로 방해하지 않는다.
+(function installDoubleSubmitGuard() {
+  const GUARD_PATTERN = /^(save|submit|complete|confirm|lock|unlock|request|export|delete|apply)/i;
+  const GUARD_MS = 600;
+  const lastCallAt = new Map();
+  Object.keys(App).forEach((key) => {
+    if (typeof App[key] !== "function" || !GUARD_PATTERN.test(key)) return;
+    const original = App[key];
+    App[key] = function (...args) {
+      const guardKey = `${key}::${JSON.stringify(args)}`;
+      const now = Date.now();
+      if (lastCallAt.has(guardKey) && now - lastCallAt.get(guardKey) < GUARD_MS) return;
+      lastCallAt.set(guardKey, now);
+      return original.apply(this, args);
+    };
+  });
+})();
+
 window.App = App;
 try {
   render();
 } catch(e) {
   console.error("render() 오류:", e);
-  document.getElementById("app").innerHTML = `<div style="padding:40px;color:red;font-family:monospace;white-space:pre-wrap;"><strong>초기 렌더링 오류</strong>\n\n${e.stack || e.message}</div>`;
+  // 일반 사용자에게 파일 경로가 담긴 raw 스택트레이스를 그대로 노출하지 않는다.
+  // 관리자 세션인 경우에는 디버깅 편의를 위해 상세 내용을 함께 보여준다.
+  let isAdmin = false;
+  try { isAdmin = isAdminSession(); } catch (_) {}
+  document.getElementById("app").innerHTML = `<div style="padding:40px;font-family:sans-serif;">
+    <strong style="color:#c6352b;font-size:16px;">화면을 불러오는 중 오류가 발생했습니다.</strong>
+    <p style="color:#475569;">새로고침해도 같은 문제가 반복되면 관리자(인사총무팀)에게 문의해 주세요.</p>
+    <button onclick="window.location.reload()" style="padding:8px 16px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;cursor:pointer;">새로고침</button>
+    ${isAdmin ? `<pre style="margin-top:24px;padding:16px;background:#f1f5f9;border-radius:8px;color:#c6352b;font-family:monospace;font-size:12px;white-space:pre-wrap;">${esc((e && (e.stack || e.message)) || String(e))}</pre>` : ""}
+  </div>`;
 }
 
 // 다른 탭/창에서 같은 데이터를 저장하면(localStorage 변경) 이 탭이 뒤늦게 저장할 때
@@ -19929,3 +20305,47 @@ window.addEventListener("storage", (e) => {
     render();
   })();
 })();
+
+// ── 자동 저장: 저장/제출 버튼을 누르기 전에 새로고침·창닫기를 해도 입력 중이던 내용이
+// 사라지지 않도록, 평가 입력 화면에서 주기적으로 현재 DOM의 값을 상태에 조용히 반영한다.
+// render()를 호출하지 않아 입력 중인 포커스·커서 위치(한글 조합 중 포함)를 방해하지 않는다.
+function autosaveCurrentInput() {
+  if (!isLoggedIn()) return;
+  try {
+    if (state.ui.tab === "self") {
+      App.saveSelf(false, true);
+      return;
+    }
+    if (state.ui.tab === "tasks") {
+      const user = currentUser();
+      const tasks = getTasksForUser(user);
+      if (!tasks.length) return;
+      if ((state.ui.taskViewMode || "person") === "question") {
+        App.saveBatchTaskScores(false, true);
+        return;
+      }
+      const selected = tasks.find((t) => t.key === state.ui.selectedTaskKey) || tasks[0];
+      if (selected.type === "upward") App.saveUpward(selected.assignment.id, false, true);
+      else if (selected.type === "peer") App.savePeer(selected.assignment.id, false, true);
+      else App.saveStage(selected.employee.id, selected.stage, false, true);
+    }
+  } catch (e) { console.warn("자동 저장 중 오류:", e); }
+}
+setInterval(autosaveCurrentInput, 20000);
+window.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") autosaveCurrentInput(); });
+window.addEventListener("pagehide", autosaveCurrentInput);
+
+// ── 세션 자동 로그아웃: 자리를 비운 채 로그인 상태가 계속 유지되는 것을 막기 위해
+// 일정 시간 동안 마우스·키보드 활동이 없으면 자동으로 로그아웃한다.
+const IDLE_LOGOUT_MS = 30 * 60 * 1000; // 30분
+let _lastActivityAt = Date.now();
+["mousedown", "keydown", "scroll", "touchstart"].forEach((evt) => {
+  window.addEventListener(evt, () => { _lastActivityAt = Date.now(); }, { passive: true, capture: true });
+});
+setInterval(() => {
+  if (!isLoggedIn()) return;
+  if (Date.now() - _lastActivityAt >= IDLE_LOGOUT_MS) {
+    clearSession();
+    render("장시간 활동이 없어 자동으로 로그아웃되었습니다. 다시 로그인해 주세요.");
+  }
+}, 30000);
