@@ -805,7 +805,7 @@ function renderLoginPage(errorMsg = "") {
       <div class="login-card">
         <div class="login-logo">
           <div class="login-logo-wordmark">I-PRISM</div>
-          <div class="login-logo-subtitle">Interojo Performance Review<br />&amp; Improvement System</div>
+          <div class="login-logo-subtitle">Interojo Performance Review<br />&amp; Improvement SysteM</div>
         </div>
         <form class="login-form" onsubmit="event.preventDefault(); App.doLogin();">
           <div class="field">
@@ -940,7 +940,11 @@ function alignUsersToOrganizationNodes(users, nodes) {
     if (!node && user.team) node = (byName.get(user.team) || [])[0];
     if (!node && user.division) node = (byName.get(user.division) || [])[0];
     if (!node && user.orgRoot) node = (byName.get(user.orgRoot) || [])[0];
-    if (!node) node = byId["org-root-interojo"];
+    // 어떤 이름으로도 매칭되지 않으면(예: 특정 부서 없이 최상위에 소속된 임원) 트리의 실제
+    // 루트 노드로 보낸다. 예전에는 이 아이디를 "org-root-interojo"로 고정해뒀는데, 조직도 노드
+    // 아이디 체계가 바뀌면 매칭에 계속 실패해 해당 인원이 조직도에서 "미지정"으로 빠지는
+    // 문제가 있었다.
+    if (!node) node = nodes.find((n) => n.type === "root") || nodes[0];
     if (node) syncUserFieldsToOrganizationNode(user, node, nodes);
   });
 }
@@ -1872,6 +1876,15 @@ function render(loginError = "") {
     ${state.ui.siteMapPreviewPage ? renderSiteMapPagePreviewModal() : ""}
     ${state.ui.adjustmentSessionDivision && !state.ui.cycleDetailModal ? renderAdjustmentSessionModal(state.ui.adjustmentSessionDivision) : ""}
   `;
+
+  // flash 메시지(저장 완료 등)는 화면 상단 팝업으로 잠시 떠 있다가 자동으로 사라진다.
+  clearTimeout(window._flashTimer);
+  if (state.ui.flash) {
+    window._flashTimer = setTimeout(() => {
+      state.ui.flash = "";
+      render();
+    }, 2200);
+  }
 
   // 공지사항 리치텍스트 에디터 초기화 (contenteditable)
   requestAnimationFrame(() => {
@@ -14820,6 +14833,7 @@ const App = {
     cycle.feedbackEnd = valueOf("cycle_feedbackEnd");
     if (document.getElementById("cycle_referenceDate")) cycle.referenceDate = valueOf("cycle_referenceDate");
     saveState();
+    state.ui.flash = "저장되었습니다.";
     render();
   },
   openTask(taskKey) {
@@ -15125,8 +15139,11 @@ const App = {
         evaluation.selfRejectionHistory.push({ ...evaluation.selfRejection, resolvedAt: new Date().toISOString() });
         evaluation.selfRejection = null;
       }
-      // AI 평가 기능이 활성화된 경우 자동으로 업적평가 채점 시작
+      // AI 평가 기능이 활성화된 경우 자동으로 업적평가 채점 시작.
+      // 반려 후 재작성이든 기간 내 재제출이든, 새로 제출된 자기평가 내용을 기준으로
+      // 다시 채점되어야 하므로 이전 AI 채점 결과(done/failed 등)는 먼저 초기화한다.
       if (activeCycle()?.useAIEval) {
+        evaluation.aiEval = null;
         callAIPerformanceEval(user.id).catch(() => {});
       }
     }
@@ -15399,6 +15416,7 @@ const App = {
     if (!collectUpwardAssignmentsFromDom()) return;
     if (!collectPeerAssignmentsFromDom()) return;
     saveState();
+    state.ui.flash = `${employee.name}님의 평가자 배정을 저장했습니다.`;
     render();
   },
   saveEvaluationRights() {
@@ -18155,6 +18173,11 @@ const App = {
   setGoalDetailTab(tab) { state.ui.goalDetailTab = tab; saveState(); render(); },
   // 업적평가 ↔ 목표 연결
   openGoalLinkPicker(prefix, index, type = "personal") {
+    // 목표 연결 모달을 열면 화면 전체가 다시 그려지므로, 그 전에 입력 중이던 내용을
+    // 먼저 상태에 반영해 두지 않으면 저장하지 않은 내용이 사라진다.
+    const user = currentUser();
+    const ev = evaluations()[user.id];
+    if (ev) ev[prefix] = collectReviewFromDom(prefix, ev[prefix] || {}, user);
     state.ui.goalLinkPicker = { prefix, index, type };
     saveState(); render();
   },
@@ -20297,10 +20320,19 @@ window.addEventListener("storage", (e) => {
 });
 
 // 앱 시작 시: stuck된 pending AI 평가를 초기화하고 미완료 AI 평가 자동 재시작
+//
+// 주의: state(localStorage)에는 전 직원의 평가 데이터가 통째로 들어있어, 이 작업을 모든
+// 사용자의 브라우저에서 무조건 실행하면 235명이 로그인할 때마다 각자의 브라우저가 전사
+// 데이터를 대상으로 동일한 재시도를 중복 수행하게 되어(+ 실패한 항목은 상태가 "failed"로
+// 남아 계속 재시도 대상이 됨) 페이지 로드 시 대량의 API 호출과 saveState()(전체 상태
+// JSON 직렬화) 호출이 몰려 앱 전체가 느려지는 원인이 된다. 그래서 이 백그라운드 재시도는
+// 관리자 세션에서만, 그리고 지난 사이클까지 전부가 아니라 현재 진행 중인 사이클에 한해서만
+// 수행한다.
 (function resumePendingAIEvals() {
+  if (!isLoggedIn() || !isAdminSession()) return;
   let needsSave = false;
   (state.cycles || []).forEach(cycle => {
-    if (!cycle.useAIEval) return;
+    if (!cycle.useAIEval || cycle.status !== "active") return;
     const evals = cycle.evaluations || {};
     Object.keys(evals).forEach(uid => {
       const ev = evals[uid];
@@ -20317,7 +20349,7 @@ window.addEventListener("storage", (e) => {
   (async () => {
     const pending = [];
     for (const cycle of (state.cycles || [])) {
-      if (!cycle.useAIEval) continue;
+      if (!cycle.useAIEval || cycle.status !== "active") continue;
       const evals = cycle.evaluations || {};
       for (const uid of Object.keys(evals)) {
         const ev = evals[uid];

@@ -477,11 +477,11 @@ window.HR_IMPORTED_DATA = {
       "title": "대표이사",
       "position": "대표이사",
       "grade": "",
-      "dept": "임원실",
-      "division": "(주)인터로조",
+      "dept": "",
+      "division": "",
       "active": true,
       "joinDate": "2000-10-25",
-      "orgNodeId": "org-임원실"
+      "orgNodeId": "org-인터로조"
     },
     {
       "id": "u-220106",
@@ -1028,38 +1028,6 @@ window.HR_IMPORTED_DATA = {
       "orgNodeId": "org-공정기술팀"
     },
     {
-      "id": "u-210310",
-      "employeeNo": "210310",
-      "name": "심재윤",
-      "email": "jysim@postech.ac.kr",
-      "phone": "010-3019-0584",
-      "role": "member",
-      "title": "임원(비상근)",
-      "position": "임원(비상근)",
-      "grade": "",
-      "dept": "임원실",
-      "division": "(주)인터로조",
-      "active": true,
-      "joinDate": "2021-03-29",
-      "orgNodeId": "org-임원실"
-    },
-    {
-      "id": "u-250307",
-      "employeeNo": "250307",
-      "name": "안희준",
-      "email": "hjuneahn@gmail.com",
-      "phone": "010-9283-5405",
-      "role": "member",
-      "title": "임원(비상근)",
-      "position": "임원(비상근)",
-      "grade": "",
-      "dept": "임원실",
-      "division": "(주)인터로조",
-      "active": true,
-      "joinDate": "2025-03-28",
-      "orgNodeId": "org-임원실"
-    },
-    {
       "id": "u-130123",
       "employeeNo": "130123",
       "name": "지명순",
@@ -1289,7 +1257,7 @@ window.HR_IMPORTED_DATA = {
       "name": "최인규",
       "email": "ikchoi@interojo.com",
       "phone": "010-3227-1246",
-      "role": "member",
+      "role": "teamLead",
       "title": "팀장(대행)",
       "position": "팀장(대행)",
       "grade": "G3",
@@ -1385,7 +1353,7 @@ window.HR_IMPORTED_DATA = {
       "name": "김진기",
       "email": "jgkim@interojo.com",
       "phone": "010-4655-1987",
-      "role": "member",
+      "role": "teamLead",
       "title": "팀장(대행)",
       "position": "팀장(대행)",
       "grade": "G3",
@@ -1405,11 +1373,11 @@ window.HR_IMPORTED_DATA = {
       "title": "과장",
       "position": "",
       "grade": "G3",
-      "dept": "생산2팀/분리",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2026-03-09",
-      "orgNodeId": "org-생산2팀분리"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-130801",
@@ -1437,11 +1405,11 @@ window.HR_IMPORTED_DATA = {
       "title": "과장",
       "position": "",
       "grade": "G3",
-      "dept": "생산2팀/최종검사",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2008-09-04",
-      "orgNodeId": "org-생산2팀최종검사"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-200308",
@@ -1661,11 +1629,11 @@ window.HR_IMPORTED_DATA = {
       "title": "과장",
       "position": "",
       "grade": "G3",
-      "dept": "생산3팀/사출",
-      "division": "생산3팀",
+      "dept": "생산3팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2014-02-17",
-      "orgNodeId": "org-생산3팀사출"
+      "orgNodeId": "org-생산3팀"
     },
     {
       "id": "u-231201",
@@ -1721,7 +1689,7 @@ window.HR_IMPORTED_DATA = {
       "name": "전하경",
       "email": "jhkopen@interojo.com",
       "phone": "010-3082-3511",
-      "role": "member",
+      "role": "teamLead",
       "title": "팀장(대행)",
       "position": "팀장(대행)",
       "grade": "G3",
@@ -1913,7 +1881,7 @@ window.HR_IMPORTED_DATA = {
       "name": "이상혁",
       "email": "shlee2@interojo.com",
       "phone": "010-6366-0905",
-      "role": "member",
+      "role": "teamLead",
       "title": "팀장(대행)",
       "position": "팀장(대행)",
       "grade": "G2",
@@ -2557,11 +2525,11 @@ window.HR_IMPORTED_DATA = {
       "title": "대리",
       "position": "",
       "grade": "G2",
-      "dept": "생산3팀/사출",
-      "division": "생산3팀",
+      "dept": "생산3팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2022-04-06",
-      "orgNodeId": "org-생산3팀사출"
+      "orgNodeId": "org-생산3팀"
     },
     {
       "id": "u-220516",
@@ -2713,7 +2681,7 @@ window.HR_IMPORTED_DATA = {
       "name": "김영균",
       "email": "ygkim2@interojo.com",
       "phone": "010-4737-4698",
-      "role": "member",
+      "role": "teamLead",
       "title": "팀장(대행)",
       "position": "팀장(대행)",
       "grade": "G4",
@@ -3373,11 +3341,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "생산1팀/사출",
-      "division": "생산1팀",
+      "dept": "생산1팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2013-11-01",
-      "orgNodeId": "org-생산1팀사출"
+      "orgNodeId": "org-생산1팀"
     },
     {
       "id": "u-81201",
@@ -3389,11 +3357,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "계장",
       "grade": "",
-      "dept": "생산1팀/최종검사",
-      "division": "생산1팀",
+      "dept": "생산1팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2008-12-01",
-      "orgNodeId": "org-생산1팀최종검사"
+      "orgNodeId": "org-생산1팀"
     },
     {
       "id": "u-60702",
@@ -3405,11 +3373,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/검사",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2006-07-03",
-      "orgNodeId": "org-생산2팀검사"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-81102",
@@ -3421,11 +3389,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/검사",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2008-11-01",
-      "orgNodeId": "org-생산2팀검사"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-201103",
@@ -3437,11 +3405,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/접착",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2020-11-01",
-      "orgNodeId": "org-생산2팀접착"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-171014",
@@ -3453,11 +3421,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "원료생산팀/사출",
-      "division": "원료생산팀",
+      "dept": "원료생산팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2017-10-01",
-      "orgNodeId": "org-원료생산팀사출"
+      "orgNodeId": "org-원료생산팀"
     },
     {
       "id": "u-190308",
@@ -3469,11 +3437,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "원료생산팀/조색",
-      "division": "원료생산팀",
+      "dept": "원료생산팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2019-03-01",
-      "orgNodeId": "org-원료생산팀조색"
+      "orgNodeId": "org-원료생산팀"
     },
     {
       "id": "u-150903",
@@ -3485,11 +3453,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "포장/물류팀(1)",
-      "division": "포장/물류팀",
+      "dept": "포장/물류팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2015-09-01",
-      "orgNodeId": "org-포장물류팀1"
+      "orgNodeId": "org-포장물류팀"
     },
     {
       "id": "u-130719",
@@ -3501,11 +3469,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "포장/물류팀(2)",
-      "division": "포장/물류팀",
+      "dept": "포장/물류팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2013-07-01",
-      "orgNodeId": "org-포장물류팀2"
+      "orgNodeId": "org-포장물류팀"
     },
     {
       "id": "u-221132",
@@ -3517,11 +3485,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "포장/물류팀(2)",
-      "division": "포장/물류팀",
+      "dept": "포장/물류팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2022-11-28",
-      "orgNodeId": "org-포장물류팀2"
+      "orgNodeId": "org-포장물류팀"
     },
     {
       "id": "u-240410",
@@ -3533,11 +3501,11 @@ window.HR_IMPORTED_DATA = {
       "title": "계장",
       "position": "",
       "grade": "",
-      "dept": "생산기획팀/외주",
-      "division": "생산기획팀",
+      "dept": "생산기획팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2024-04-04",
-      "orgNodeId": "org-생산기획팀외주"
+      "orgNodeId": "org-생산기획팀"
     },
     {
       "id": "u-180201",
@@ -3549,11 +3517,11 @@ window.HR_IMPORTED_DATA = {
       "title": "사원",
       "position": "",
       "grade": "",
-      "dept": "포장/물류팀(3)",
-      "division": "포장/물류팀",
+      "dept": "포장/물류팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2018-02-01",
-      "orgNodeId": "org-포장물류팀3"
+      "orgNodeId": "org-포장물류팀"
     },
     {
       "id": "u-250837",
@@ -3565,11 +3533,11 @@ window.HR_IMPORTED_DATA = {
       "title": "사원",
       "position": "",
       "grade": "",
-      "dept": "포장/물류팀(3)",
-      "division": "포장/물류팀",
+      "dept": "포장/물류팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2025-08-20",
-      "orgNodeId": "org-포장물류팀3"
+      "orgNodeId": "org-포장물류팀"
     },
     {
       "id": "u-250917",
@@ -3581,27 +3549,11 @@ window.HR_IMPORTED_DATA = {
       "title": "사원",
       "position": "",
       "grade": "",
-      "dept": "포장/물류팀(3)",
-      "division": "포장/물류팀",
+      "dept": "포장/물류팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2025-09-08",
-      "orgNodeId": "org-포장물류팀3"
-    },
-    {
-      "id": "u-250306",
-      "employeeNo": "250306",
-      "name": "김용직",
-      "email": "",
-      "phone": "",
-      "role": "member",
-      "title": "임원(비상근)",
-      "position": "임원(비상근)",
-      "grade": "",
-      "dept": "임원실",
-      "division": "(주)인터로조",
-      "active": true,
-      "joinDate": "2025-03-28",
-      "orgNodeId": "org-임원실"
+      "orgNodeId": "org-포장물류팀"
     },
     {
       "id": "u-120203",
@@ -3613,11 +3565,11 @@ window.HR_IMPORTED_DATA = {
       "title": "선임",
       "position": "선임",
       "grade": "",
-      "dept": "생산1팀/접착검사",
-      "division": "생산1팀",
+      "dept": "생산1팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2012-02-01",
-      "orgNodeId": "org-생산1팀접착검사"
+      "orgNodeId": "org-생산1팀"
     },
     {
       "id": "u-31001",
@@ -3629,11 +3581,11 @@ window.HR_IMPORTED_DATA = {
       "title": "선임",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/사출",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2006-03-02",
-      "orgNodeId": "org-생산2팀사출"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-140213",
@@ -3645,11 +3597,11 @@ window.HR_IMPORTED_DATA = {
       "title": "선임",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/사출",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2014-02-17",
-      "orgNodeId": "org-생산2팀사출"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-160604",
@@ -3661,11 +3613,11 @@ window.HR_IMPORTED_DATA = {
       "title": "선임",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/사출",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2016-06-01",
-      "orgNodeId": "org-생산2팀사출"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-10404",
@@ -3677,11 +3629,11 @@ window.HR_IMPORTED_DATA = {
       "title": "선임",
       "position": "",
       "grade": "",
-      "dept": "생산2팀/최종검사",
-      "division": "생산2팀",
+      "dept": "생산2팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2001-04-30",
-      "orgNodeId": "org-생산2팀최종검사"
+      "orgNodeId": "org-생산2팀"
     },
     {
       "id": "u-50101",
@@ -3693,124 +3645,16 @@ window.HR_IMPORTED_DATA = {
       "title": "선임",
       "position": "",
       "grade": "",
-      "dept": "생산3팀/검사",
-      "division": "생산3팀",
+      "dept": "생산3팀",
+      "division": "생산본부",
       "active": true,
       "joinDate": "2005-01-01",
-      "orgNodeId": "org-생산3팀검사"
-    },
-    {
-      "id": "u-220102",
-      "employeeNo": "220102",
-      "name": "윤희태",
-      "email": "yht20001222@gmail.com",
-      "phone": "",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2022-01-01",
-      "orgNodeId": "org-경영지원본부"
-    },
-    {
-      "id": "u-220103",
-      "employeeNo": "220103",
-      "name": "손예진",
-      "email": "syjin43306757@gmail.com",
-      "phone": "",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2022-01-01",
-      "orgNodeId": "org-경영지원본부"
-    },
-    {
-      "id": "u-220104",
-      "employeeNo": "220104",
-      "name": "유기강",
-      "email": "fg20809@gmail.com",
-      "phone": "",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2022-01-01",
-      "orgNodeId": "org-경영지원본부"
-    },
-    {
-      "id": "u-230230",
-      "employeeNo": "230230",
-      "name": "최홍록",
-      "email": "",
-      "phone": "",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2023-02-01",
-      "orgNodeId": "org-경영지원본부"
-    },
-    {
-      "id": "u-250902",
-      "employeeNo": "250902",
-      "name": "이준환",
-      "email": "leejh0568@naver.com",
-      "phone": "010-2054-0568",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2025-09-01",
-      "orgNodeId": "org-경영지원본부"
-    },
-    {
-      "id": "u-260202",
-      "employeeNo": "260202",
-      "name": "이강남",
-      "email": "tini0303@naver.com",
-      "phone": "010-8745-5770",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2026-02-02",
-      "orgNodeId": "org-경영지원본부"
-    },
-    {
-      "id": "u-260401",
-      "employeeNo": "260401",
-      "name": "기경옥",
-      "email": "a01075884230@gmail.com",
-      "phone": "010-8779-4930",
-      "role": "member",
-      "title": "기타",
-      "position": "",
-      "grade": "",
-      "dept": "경영지원본부",
-      "division": "COO",
-      "active": true,
-      "joinDate": "2026-04-06",
-      "orgNodeId": "org-경영지원본부"
+      "orgNodeId": "org-생산3팀"
     }
+
+
+
+
   ],
   "organizationNodes": [
     {
@@ -3818,12 +3662,6 @@ window.HR_IMPORTED_DATA = {
       "name": "인터로조",
       "parentId": "",
       "type": "root"
-    },
-    {
-      "id": "org-임원실",
-      "name": "임원실",
-      "parentId": "org-인터로조",
-      "type": "division"
     },
     {
       "id": "org-COO",
@@ -3970,62 +3808,20 @@ window.HR_IMPORTED_DATA = {
       "type": "team"
     },
     {
-      "id": "org-인사팀",
-      "name": "인사팀",
-      "parentId": "org-경영지원본부",
-      "type": "team"
-    },
-    {
       "id": "org-정보전략팀",
       "name": "정보전략팀",
       "parentId": "org-경영지원본부",
       "type": "team"
     },
     {
-      "id": "org-총무팀",
-      "name": "총무팀",
-      "parentId": "org-경영지원본부",
-      "type": "team"
-    },
-    {
-      "id": "org-구매팀",
-      "name": "구매팀",
-      "parentId": "org-경영지원본부",
-      "type": "team"
-    },
-    {
-      "id": "org-물류팀",
-      "name": "물류팀",
-      "parentId": "org-경영지원본부",
-      "type": "team"
-    },
-    {
       "id": "org-구매혁신팀",
       "name": "구매혁신팀",
-      "parentId": "org-경영지원본부",
+      "parentId": "org-생산본부",
       "type": "team"
     },
     {
       "id": "org-소재연구팀",
       "name": "소재연구팀",
-      "parentId": "org-기술연구소",
-      "type": "team"
-    },
-    {
-      "id": "org-제품연구팀",
-      "name": "제품연구팀",
-      "parentId": "org-기술연구소",
-      "type": "team"
-    },
-    {
-      "id": "org-생산기술팀",
-      "name": "생산기술팀",
-      "parentId": "org-기술연구소",
-      "type": "team"
-    },
-    {
-      "id": "org-기술기획팀",
-      "name": "기술기획팀",
       "parentId": "org-기술연구소",
       "type": "team"
     },
@@ -4054,72 +3850,6 @@ window.HR_IMPORTED_DATA = {
       "type": "team"
     },
     {
-      "id": "org-테크니션팀",
-      "name": "테크니션팀",
-      "parentId": "org-생산본부",
-      "type": "team"
-    },
-    {
-      "id": "org-생산1팀공정",
-      "name": "생산1팀/공정",
-      "parentId": "org-생산1팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산1팀품질검사",
-      "name": "생산1팀/품질검사",
-      "parentId": "org-생산1팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산1팀품질검사2",
-      "name": "생산1팀/품질검사2",
-      "parentId": "org-생산1팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀공정",
-      "name": "생산2팀/공정",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀설비",
-      "name": "생산2팀/설비",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀품질검사",
-      "name": "생산2팀/품질검사",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀품질검사2",
-      "name": "생산2팀/품질검사2",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀품질검사3",
-      "name": "생산2팀/품질검사3",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산3팀공정",
-      "name": "생산3팀/공정",
-      "parentId": "org-생산3팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산3팀검사",
-      "name": "생산3팀/검사",
-      "parentId": "org-생산3팀",
-      "type": "team"
-    },
-    {
       "id": "org-사출기술팀",
       "name": "사출기술팀",
       "parentId": "org-생산기술본부",
@@ -4128,12 +3858,6 @@ window.HR_IMPORTED_DATA = {
     {
       "id": "org-공정기술팀",
       "name": "공정기술팀",
-      "parentId": "org-생산기술본부",
-      "type": "team"
-    },
-    {
-      "id": "org-설비기술팀",
-      "name": "설비기술팀",
       "parentId": "org-생산기술본부",
       "type": "team"
     },
@@ -4174,60 +3898,6 @@ window.HR_IMPORTED_DATA = {
       "type": "team"
     },
     {
-      "id": "org-영업지원팀",
-      "name": "영업지원팀",
-      "parentId": "org-클라렌사업본부",
-      "type": "team"
-    },
-    {
-      "id": "org-마케팅팀",
-      "name": "마케팅팀",
-      "parentId": "org-클라렌사업본부",
-      "type": "team"
-    },
-    {
-      "id": "org-고객서비스팀",
-      "name": "고객서비스팀",
-      "parentId": "org-클라렌사업본부",
-      "type": "team"
-    },
-    {
-      "id": "org-플랜트십시스템",
-      "name": "플랜트십시스템",
-      "parentId": "org-클라렌사업본부",
-      "type": "team"
-    },
-    {
-      "id": "org-체험관",
-      "name": "체험관",
-      "parentId": "org-클라렌사업본부",
-      "type": "team"
-    },
-    {
-      "id": "org-안과마케팅팀",
-      "name": "안과마케팅팀",
-      "parentId": "org-안과사업담당",
-      "type": "team"
-    },
-    {
-      "id": "org-경영지원팀",
-      "name": "경영지원팀",
-      "parentId": "org-안과사업담당",
-      "type": "team"
-    },
-    {
-      "id": "org-임상사업팀",
-      "name": "임상사업팀",
-      "parentId": "org-임상교육원",
-      "type": "team"
-    },
-    {
-      "id": "org-임상운영팀",
-      "name": "임상운영팀",
-      "parentId": "org-임상교육원",
-      "type": "team"
-    },
-    {
       "id": "org-인사총무팀",
       "name": "인사총무팀",
       "parentId": "org-경영지원본부",
@@ -4252,60 +3922,6 @@ window.HR_IMPORTED_DATA = {
       "type": "team"
     },
     {
-      "id": "org-생산1팀사출",
-      "name": "생산1팀/사출",
-      "parentId": "org-생산1팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산1팀접착검사",
-      "name": "생산1팀/접착검사",
-      "parentId": "org-생산1팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산1팀최종검사",
-      "name": "생산1팀/최종검사",
-      "parentId": "org-생산1팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀검사",
-      "name": "생산2팀/검사",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀분리",
-      "name": "생산2팀/분리",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀사출",
-      "name": "생산2팀/사출",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀접착",
-      "name": "생산2팀/접착",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산2팀최종검사",
-      "name": "생산2팀/최종검사",
-      "parentId": "org-생산2팀",
-      "type": "team"
-    },
-    {
-      "id": "org-생산3팀사출",
-      "name": "생산3팀/사출",
-      "parentId": "org-생산3팀",
-      "type": "team"
-    },
-    {
       "id": "org-렌즈설계팀",
       "name": "렌즈설계팀",
       "parentId": "org-생산기술본부",
@@ -4321,12 +3937,6 @@ window.HR_IMPORTED_DATA = {
       "id": "org-장비기술팀",
       "name": "장비기술팀",
       "parentId": "org-생산기술본부",
-      "type": "team"
-    },
-    {
-      "id": "org-생산기획팀외주",
-      "name": "생산기획팀/외주",
-      "parentId": "org-생산기획팀",
       "type": "team"
     },
     {
@@ -4356,19 +3966,7 @@ window.HR_IMPORTED_DATA = {
     {
       "id": "org-융합기술팀",
       "name": "융합기술팀",
-      "parentId": "org-COO",
-      "type": "team"
-    },
-    {
-      "id": "org-원료생산팀사출",
-      "name": "원료생산팀/사출",
-      "parentId": "org-원료생산팀",
-      "type": "team"
-    },
-    {
-      "id": "org-원료생산팀조색",
-      "name": "원료생산팀/조색",
-      "parentId": "org-원료생산팀",
+      "parentId": "org-기술연구소",
       "type": "team"
     },
     {
@@ -4394,26 +3992,8 @@ window.HR_IMPORTED_DATA = {
       "name": "플래그십스토어담당",
       "parentId": "org-클라렌사업본부",
       "type": "team"
-    },
-    {
-      "id": "org-포장물류팀1",
-      "name": "포장/물류팀(1)",
-      "parentId": "org-포장물류팀",
-      "type": "team"
-    },
-    {
-      "id": "org-포장물류팀2",
-      "name": "포장/물류팀(2)",
-      "parentId": "org-포장물류팀",
-      "type": "team"
-    },
-    {
-      "id": "org-포장물류팀3",
-      "name": "포장/물류팀(3)",
-      "parentId": "org-포장물류팀",
-      "type": "team"
     }
   ]
 };
 
-window.HR_IMPORTED_DATA.hrExtra = {"230128": {"joinDate": "2023-01-01", "workStatus": "근무"}, "220208": {"joinDate": "2022-02-21", "workStatus": "근무"}, "80304": {"joinDate": "2008-03-25", "workStatus": "근무"}, "1005": {"joinDate": "2000-10-25", "workStatus": "근무"}, "220301": {"joinDate": "2022-03-02", "workStatus": "근무"}, "220202": {"joinDate": "2022-02-03", "workStatus": "근무"}, "250701": {"joinDate": "2025-07-01", "workStatus": "근무"}, "190401": {"joinDate": "2019-04-01", "workStatus": "근무"}, "231207": {"joinDate": "2023-12-18", "workStatus": "근무"}, "250418": {"joinDate": "2025-04-14", "workStatus": "근무"}, "61201": {"joinDate": "2006-12-04", "workStatus": "근무"}, "110701": {"joinDate": "2011-07-07", "workStatus": "근무"}, "240201": {"joinDate": "2024-02-01", "workStatus": "근무"}, "260302": {"joinDate": "2026-03-16", "workStatus": "근무"}, "70102": {"joinDate": "2007-01-08", "workStatus": "근무"}, "220201": {"joinDate": "2022-02-03", "workStatus": "근무"}, "260413": {"joinDate": "2026-04-20", "workStatus": "근무"}, "231209": {"joinDate": "2023-12-28", "workStatus": "근무"}, "120306": {"joinDate": "2012-03-19", "workStatus": "근무"}, "230925": {"joinDate": "2023-09-18", "workStatus": "근무"}, "260106": {"joinDate": "2026-01-05", "workStatus": "근무"}, "120916": {"joinDate": "2012-09-17", "workStatus": "근무"}, "230227": {"joinDate": "2023-02-08", "workStatus": "근무"}, "230618": {"joinDate": "2023-06-12", "workStatus": "근무"}, "90501": {"joinDate": "2009-05-04", "workStatus": "근무"}, "70201": {"joinDate": "2007-02-01", "workStatus": "근무"}, "250305": {"joinDate": "2025-03-12", "workStatus": "근무"}, "260412": {"joinDate": "2026-04-20", "workStatus": "근무"}, "1001": {"joinDate": "2000-10-25", "workStatus": "근무"}, "220106": {"joinDate": "2022-01-03", "workStatus": "근무"}, "240706": {"joinDate": "2024-07-24", "workStatus": "근무"}, "240915": {"joinDate": "2024-09-09", "workStatus": "근무"}, "250502": {"joinDate": "2025-05-12", "workStatus": "근무"}, "231105": {"joinDate": "2023-11-13", "workStatus": "근무"}, "250419": {"joinDate": "2025-04-14", "workStatus": "근무"}, "200102": {"joinDate": "2020-01-01", "workStatus": "근무"}, "210713": {"joinDate": "2021-07-05", "workStatus": "근무"}, "230527": {"joinDate": "2023-05-22", "workStatus": "근무"}, "240413": {"joinDate": "2024-04-22", "workStatus": "근무"}, "251106": {"joinDate": "2025-11-10", "workStatus": "근무"}, "260150": {"joinDate": "2026-02-02", "workStatus": "근무"}, "61001": {"joinDate": "2006-10-23", "workStatus": "근무"}, "220934": {"joinDate": "2022-09-19", "workStatus": "근무"}, "250401": {"joinDate": "2025-04-01", "workStatus": "근무"}, "240318": {"joinDate": "2024-03-11", "workStatus": "근무"}, "260310": {"joinDate": "2026-03-23", "workStatus": "근무"}, "250403": {"joinDate": "2025-04-01", "workStatus": "근무"}, "240107": {"joinDate": "2024-01-29", "workStatus": "근무"}, "130513": {"joinDate": "2013-06-01", "workStatus": "근무"}, "251203": {"joinDate": "2025-12-22", "workStatus": "근무"}, "110703": {"joinDate": "2011-07-13", "workStatus": "근무"}, "250114": {"joinDate": "2025-01-13", "workStatus": "근무"}, "120308": {"joinDate": "2012-03-26", "workStatus": "근무"}, "111101": {"joinDate": "2011-11-01", "workStatus": "근무"}, "120206": {"joinDate": "2012-02-01", "workStatus": "근무"}, "160228": {"joinDate": "2016-02-22", "workStatus": "근무"}, "140303": {"joinDate": "2014-03-17", "workStatus": "근무"}, "220132": {"joinDate": "2022-01-24", "workStatus": "근무"}, "231001": {"joinDate": "2023-10-04", "workStatus": "근무"}, "250927": {"joinDate": "2025-09-22", "workStatus": "근무"}, "160415": {"joinDate": "2016-04-18", "workStatus": "근무"}, "130641": {"joinDate": "2013-06-10", "workStatus": "근무"}, "260149": {"joinDate": "2026-01-26", "workStatus": "근무"}, "210310": {"joinDate": "2021-03-29", "workStatus": "근무"}, "250307": {"joinDate": "2025-03-28", "workStatus": "근무"}, "130123": {"joinDate": "2013-01-23", "workStatus": "근무"}, "120809": {"joinDate": "2012-08-01", "workStatus": "근무"}, "140605": {"joinDate": "2014-06-09", "workStatus": "근무"}, "260418": {"joinDate": "2026-04-20", "workStatus": "근무"}, "231208": {"joinDate": "2023-12-18", "workStatus": "근무"}, "181219": {"joinDate": "2018-12-01", "workStatus": "휴직"}, "210202": {"joinDate": "2021-02-01", "workStatus": "근무"}, "220824": {"joinDate": "2022-08-08", "workStatus": "근무"}, "130504": {"joinDate": "2013-05-01", "workStatus": "근무"}, "210734": {"joinDate": "2021-07-19", "workStatus": "근무"}, "121013": {"joinDate": "2012-10-15", "workStatus": "근무"}, "220719": {"joinDate": "2022-07-21", "workStatus": "근무"}, "251204": {"joinDate": "2025-12-08", "workStatus": "근무"}, "251011": {"joinDate": "2025-10-13", "workStatus": "근무"}, "251210": {"joinDate": "2025-12-08", "workStatus": "근무"}, "131227": {"joinDate": "2013-12-26", "workStatus": "근무"}, "150106": {"joinDate": "2015-01-01", "workStatus": "근무"}, "250737": {"joinDate": "2025-07-21", "workStatus": "근무"}, "250304": {"joinDate": "2025-03-11", "workStatus": "근무"}, "150413": {"joinDate": "2015-04-21", "workStatus": "근무"}, "180114": {"joinDate": "2018-01-03", "workStatus": "근무"}, "140305": {"joinDate": "2014-03-17", "workStatus": "근무"}, "260301": {"joinDate": "2026-03-09", "workStatus": "근무"}, "130801": {"joinDate": "2013-08-01", "workStatus": "근무"}, "80901": {"joinDate": "2008-09-04", "workStatus": "근무"}, "200308": {"joinDate": "2020-03-09", "workStatus": "근무"}, "220127": {"joinDate": "2022-01-17", "workStatus": "근무"}, "220931": {"joinDate": "2022-09-13", "workStatus": "근무"}, "220940": {"joinDate": "2022-09-26", "workStatus": "근무"}, "260105": {"joinDate": "2026-01-19", "workStatus": "근무"}, "160417": {"joinDate": "2016-04-25", "workStatus": "근무"}, "170722": {"joinDate": "2017-07-10", "workStatus": "휴직"}, "230408": {"joinDate": "2023-04-10", "workStatus": "근무"}, "100511": {"joinDate": "2010-05-01", "workStatus": "근무"}, "150408": {"joinDate": "2015-04-13", "workStatus": "근무"}, "170916": {"joinDate": "2017-09-25", "workStatus": "근무"}, "231035": {"joinDate": "2023-10-23", "workStatus": "근무"}, "21101": {"joinDate": "2002-11-01", "workStatus": "근무"}, "121119": {"joinDate": "2012-11-06", "workStatus": "근무"}, "140210": {"joinDate": "2014-02-17", "workStatus": "근무"}, "231201": {"joinDate": "2023-12-04", "workStatus": "근무"}, "251001": {"joinDate": "2025-10-13", "workStatus": "근무"}, "251137": {"joinDate": "2025-11-24", "workStatus": "근무"}, "130802": {"joinDate": "2013-08-01", "workStatus": "근무"}, "150214": {"joinDate": "2015-02-01", "workStatus": "근무"}, "191127": {"joinDate": "2019-11-18", "workStatus": "근무"}, "240523": {"joinDate": "2024-05-29", "workStatus": "휴직"}, "240705": {"joinDate": "2024-07-15", "workStatus": "근무"}, "230415": {"joinDate": "2023-04-17", "workStatus": "근무"}, "221122": {"joinDate": "2022-11-21", "workStatus": "근무"}, "240134": {"joinDate": "2024-01-17", "workStatus": "근무"}, "240707": {"joinDate": "2024-07-25", "workStatus": "근무"}, "250420": {"joinDate": "2025-04-15", "workStatus": "근무"}, "190213": {"joinDate": "2019-02-11", "workStatus": "근무"}, "260311": {"joinDate": "2026-03-30", "workStatus": "근무"}, "240921": {"joinDate": "2024-09-23", "workStatus": "근무"}, "220933": {"joinDate": "2022-09-13", "workStatus": "근무"}, "260601": {"joinDate": "2026-06-01", "workStatus": "근무"}, "260509": {"joinDate": "2026-05-26", "workStatus": "근무"}, "260510": {"joinDate": "2026-05-26", "workStatus": "근무"}, "240521": {"joinDate": "2024-05-07", "workStatus": "근무"}, "181218": {"joinDate": "2018-12-01", "workStatus": "근무"}, "210715": {"joinDate": "2021-07-12", "workStatus": "근무"}, "230319": {"joinDate": "2023-03-02", "workStatus": "근무"}, "250901": {"joinDate": "2025-09-01", "workStatus": "근무"}, "211111": {"joinDate": "2021-11-08", "workStatus": "근무"}, "201218": {"joinDate": "2020-12-17", "workStatus": "근무"}, "210513": {"joinDate": "2021-05-31", "workStatus": "근무"}, "190215": {"joinDate": "2019-02-20", "workStatus": "근무"}, "220901": {"joinDate": "2022-09-01", "workStatus": "근무"}, "241201": {"joinDate": "2024-12-09", "workStatus": "근무"}, "170914": {"joinDate": "2017-09-11", "workStatus": "휴직"}, "260604": {"joinDate": "2026-06-08", "workStatus": "근무"}, "230226": {"joinDate": "2023-02-06", "workStatus": "근무"}, "250738": {"joinDate": "2025-07-21", "workStatus": "휴직"}, "260507": {"joinDate": "2026-05-11", "workStatus": "근무"}, "180320": {"joinDate": "2018-03-19", "workStatus": "근무"}, "180815": {"joinDate": "2018-08-08", "workStatus": "휴직"}, "210610": {"joinDate": "2021-06-16", "workStatus": "근무"}, "240401": {"joinDate": "2024-04-01", "workStatus": "근무"}, "260216": {"joinDate": "2026-02-09", "workStatus": "근무"}, "200703": {"joinDate": "2020-07-14", "workStatus": "근무"}, "220718": {"joinDate": "2022-07-14", "workStatus": "근무"}, "200103": {"joinDate": "2020-01-01", "workStatus": "근무"}, "220402": {"joinDate": "2022-04-01", "workStatus": "근무"}, "231108": {"joinDate": "2023-11-14", "workStatus": "근무"}, "240219": {"joinDate": "2024-02-19", "workStatus": "근무"}, "180214": {"joinDate": "2018-02-05", "workStatus": "근무"}, "201204": {"joinDate": "2020-12-08", "workStatus": "근무"}, "250910": {"joinDate": "2025-09-08", "workStatus": "근무"}, "160907": {"joinDate": "2016-09-01", "workStatus": "근무"}, "260426": {"joinDate": "2026-04-27", "workStatus": "근무"}, "160501": {"joinDate": "2016-05-10", "workStatus": "근무"}, "180509": {"joinDate": "2018-05-08", "workStatus": "근무"}, "220314": {"joinDate": "2022-03-10", "workStatus": "근무"}, "251201": {"joinDate": "2025-12-08", "workStatus": "근무"}, "230513": {"joinDate": "2023-05-08", "workStatus": "근무"}, "240317": {"joinDate": "2024-03-20", "workStatus": "근무"}, "250614": {"joinDate": "2025-06-17", "workStatus": "근무"}, "260201": {"joinDate": "2026-02-02", "workStatus": "근무"}, "220428": {"joinDate": "2022-04-06", "workStatus": "근무"}, "220516": {"joinDate": "2022-05-16", "workStatus": "근무"}, "160411": {"joinDate": "2016-04-07", "workStatus": "근무"}, "230235": {"joinDate": "2023-02-20", "workStatus": "근무"}, "230826": {"joinDate": "2023-08-16", "workStatus": "근무"}, "260102": {"joinDate": "2026-01-05", "workStatus": "근무"}, "260508": {"joinDate": "2026-05-11", "workStatus": "근무"}, "180716": {"joinDate": "2018-07-09", "workStatus": "근무"}, "101201": {"joinDate": "2010-12-06", "workStatus": "근무"}, "251101": {"joinDate": "2025-11-10", "workStatus": "근무"}, "251105": {"joinDate": "2025-11-24", "workStatus": "근무"}, "170225": {"joinDate": "2017-02-01", "workStatus": "근무"}, "240101": {"joinDate": "2024-01-02", "workStatus": "근무"}, "230125": {"joinDate": "2023-01-25", "workStatus": "근무"}, "151209": {"joinDate": "2015-12-01", "workStatus": "근무"}, "260414": {"joinDate": "2026-04-27", "workStatus": "근무"}, "160413": {"joinDate": "2016-04-12", "workStatus": "근무"}, "240102": {"joinDate": "2024-01-02", "workStatus": "근무"}, "241101": {"joinDate": "2024-11-20", "workStatus": "근무"}, "260157": {"joinDate": "2026-01-26", "workStatus": "근무"}, "241001": {"joinDate": "2024-10-02", "workStatus": "근무"}, "210512": {"joinDate": "2021-05-17", "workStatus": "근무"}, "240917": {"joinDate": "2024-09-19", "workStatus": "근무"}, "260221": {"joinDate": "2026-02-25", "workStatus": "근무"}, "240601": {"joinDate": "2024-06-10", "workStatus": "근무"}, "220509": {"joinDate": "2022-05-01", "workStatus": "근무"}, "230825": {"joinDate": "2023-08-01", "workStatus": "근무"}, "230827": {"joinDate": "2023-08-21", "workStatus": "근무"}, "230924": {"joinDate": "2023-09-25", "workStatus": "근무"}, "260104": {"joinDate": "2026-01-12", "workStatus": "근무"}, "260316": {"joinDate": "2026-03-30", "workStatus": "근무"}, "251104": {"joinDate": "2025-11-11", "workStatus": "근무"}, "221201": {"joinDate": "2022-12-01", "workStatus": "근무"}, "250116": {"joinDate": "2025-02-03", "workStatus": "근무"}, "250806": {"joinDate": "2025-08-07", "workStatus": "근무"}, "211221": {"joinDate": "2021-12-01", "workStatus": "근무"}, "251125": {"joinDate": "2025-11-17", "workStatus": "근무"}, "251012": {"joinDate": "2025-10-13", "workStatus": "근무"}, "260425": {"joinDate": "2026-05-01", "workStatus": "근무"}, "250518": {"joinDate": "2025-05-26", "workStatus": "근무"}, "220130": {"joinDate": "2022-01-20", "workStatus": "근무"}, "250117": {"joinDate": "2025-02-07", "workStatus": "근무"}, "250417": {"joinDate": "2025-04-02", "workStatus": "근무"}, "230117": {"joinDate": "2023-01-09", "workStatus": "근무"}, "220316": {"joinDate": "2022-03-10", "workStatus": "근무"}, "230520": {"joinDate": "2023-05-18", "workStatus": "근무"}, "230742": {"joinDate": "2023-07-17", "workStatus": "근무"}, "240901": {"joinDate": "2024-09-02", "workStatus": "근무"}, "251002": {"joinDate": "2025-10-20", "workStatus": "근무"}, "251103": {"joinDate": "2025-11-03", "workStatus": "근무"}, "220207": {"joinDate": "2022-02-21", "workStatus": "근무"}, "131113": {"joinDate": "2013-11-01", "workStatus": "근무"}, "81201": {"joinDate": "2008-12-01", "workStatus": "근무"}, "60702": {"joinDate": "2006-07-03", "workStatus": "근무"}, "81102": {"joinDate": "2008-11-01", "workStatus": "근무"}, "201103": {"joinDate": "2020-11-01", "workStatus": "근무"}, "171014": {"joinDate": "2017-10-01", "workStatus": "근무"}, "190308": {"joinDate": "2019-03-01", "workStatus": "근무"}, "150903": {"joinDate": "2015-09-01", "workStatus": "근무"}, "130719": {"joinDate": "2013-07-01", "workStatus": "근무"}, "221132": {"joinDate": "2022-11-28", "workStatus": "근무"}, "240410": {"joinDate": "2024-04-04", "workStatus": "근무"}, "180201": {"joinDate": "2018-02-01", "workStatus": "근무"}, "250837": {"joinDate": "2025-08-20", "workStatus": "근무"}, "250917": {"joinDate": "2025-09-08", "workStatus": "근무"}, "250306": {"joinDate": "2025-03-28", "workStatus": "근무"}, "120203": {"joinDate": "2012-02-01", "workStatus": "근무"}, "31001": {"joinDate": "2006-03-02", "workStatus": "근무"}, "140213": {"joinDate": "2014-02-17", "workStatus": "근무"}, "160604": {"joinDate": "2016-06-01", "workStatus": "근무"}, "10404": {"joinDate": "2001-04-30", "workStatus": "근무"}, "50101": {"joinDate": "2005-01-01", "workStatus": "근무"}, "220102": {"joinDate": "2022-01-01", "workStatus": "근무"}, "220103": {"joinDate": "2022-01-01", "workStatus": "근무"}, "220104": {"joinDate": "2022-01-01", "workStatus": "근무"}, "230230": {"joinDate": "2023-02-01", "workStatus": "근무"}, "250902": {"joinDate": "2025-09-01", "workStatus": "근무"}, "260202": {"joinDate": "2026-02-02", "workStatus": "근무"}, "260401": {"joinDate": "2026-04-06", "workStatus": "근무"}};
+window.HR_IMPORTED_DATA.hrExtra = {"230128": {"joinDate": "2023-01-01", "workStatus": "근무"}, "220208": {"joinDate": "2022-02-21", "workStatus": "근무"}, "80304": {"joinDate": "2008-03-25", "workStatus": "근무"}, "1005": {"joinDate": "2000-10-25", "workStatus": "근무"}, "220301": {"joinDate": "2022-03-02", "workStatus": "근무"}, "220202": {"joinDate": "2022-02-03", "workStatus": "근무"}, "250701": {"joinDate": "2025-07-01", "workStatus": "근무"}, "190401": {"joinDate": "2019-04-01", "workStatus": "근무"}, "231207": {"joinDate": "2023-12-18", "workStatus": "근무"}, "250418": {"joinDate": "2025-04-14", "workStatus": "근무"}, "61201": {"joinDate": "2006-12-04", "workStatus": "근무"}, "110701": {"joinDate": "2011-07-07", "workStatus": "근무"}, "240201": {"joinDate": "2024-02-01", "workStatus": "근무"}, "260302": {"joinDate": "2026-03-16", "workStatus": "근무"}, "70102": {"joinDate": "2007-01-08", "workStatus": "근무"}, "220201": {"joinDate": "2022-02-03", "workStatus": "근무"}, "260413": {"joinDate": "2026-04-20", "workStatus": "근무"}, "231209": {"joinDate": "2023-12-28", "workStatus": "근무"}, "120306": {"joinDate": "2012-03-19", "workStatus": "근무"}, "230925": {"joinDate": "2023-09-18", "workStatus": "근무"}, "260106": {"joinDate": "2026-01-05", "workStatus": "근무"}, "120916": {"joinDate": "2012-09-17", "workStatus": "근무"}, "230227": {"joinDate": "2023-02-08", "workStatus": "근무"}, "230618": {"joinDate": "2023-06-12", "workStatus": "근무"}, "90501": {"joinDate": "2009-05-04", "workStatus": "근무"}, "70201": {"joinDate": "2007-02-01", "workStatus": "근무"}, "250305": {"joinDate": "2025-03-12", "workStatus": "근무"}, "260412": {"joinDate": "2026-04-20", "workStatus": "근무"}, "1001": {"joinDate": "2000-10-25", "workStatus": "근무"}, "220106": {"joinDate": "2022-01-03", "workStatus": "근무"}, "240706": {"joinDate": "2024-07-24", "workStatus": "근무"}, "240915": {"joinDate": "2024-09-09", "workStatus": "근무"}, "250502": {"joinDate": "2025-05-12", "workStatus": "근무"}, "231105": {"joinDate": "2023-11-13", "workStatus": "근무"}, "250419": {"joinDate": "2025-04-14", "workStatus": "근무"}, "200102": {"joinDate": "2020-01-01", "workStatus": "근무"}, "210713": {"joinDate": "2021-07-05", "workStatus": "근무"}, "230527": {"joinDate": "2023-05-22", "workStatus": "근무"}, "240413": {"joinDate": "2024-04-22", "workStatus": "근무"}, "251106": {"joinDate": "2025-11-10", "workStatus": "근무"}, "260150": {"joinDate": "2026-02-02", "workStatus": "근무"}, "61001": {"joinDate": "2006-10-23", "workStatus": "근무"}, "220934": {"joinDate": "2022-09-19", "workStatus": "근무"}, "250401": {"joinDate": "2025-04-01", "workStatus": "근무"}, "240318": {"joinDate": "2024-03-11", "workStatus": "근무"}, "260310": {"joinDate": "2026-03-23", "workStatus": "근무"}, "250403": {"joinDate": "2025-04-01", "workStatus": "근무"}, "240107": {"joinDate": "2024-01-29", "workStatus": "근무"}, "130513": {"joinDate": "2013-06-01", "workStatus": "근무"}, "251203": {"joinDate": "2025-12-22", "workStatus": "근무"}, "110703": {"joinDate": "2011-07-13", "workStatus": "근무"}, "250114": {"joinDate": "2025-01-13", "workStatus": "근무"}, "120308": {"joinDate": "2012-03-26", "workStatus": "근무"}, "111101": {"joinDate": "2011-11-01", "workStatus": "근무"}, "120206": {"joinDate": "2012-02-01", "workStatus": "근무"}, "160228": {"joinDate": "2016-02-22", "workStatus": "근무"}, "140303": {"joinDate": "2014-03-17", "workStatus": "근무"}, "220132": {"joinDate": "2022-01-24", "workStatus": "근무"}, "231001": {"joinDate": "2023-10-04", "workStatus": "근무"}, "250927": {"joinDate": "2025-09-22", "workStatus": "근무"}, "160415": {"joinDate": "2016-04-18", "workStatus": "근무"}, "130641": {"joinDate": "2013-06-10", "workStatus": "근무"}, "260149": {"joinDate": "2026-01-26", "workStatus": "근무"}, "130123": {"joinDate": "2013-01-23", "workStatus": "근무"}, "120809": {"joinDate": "2012-08-01", "workStatus": "근무"}, "140605": {"joinDate": "2014-06-09", "workStatus": "근무"}, "260418": {"joinDate": "2026-04-20", "workStatus": "근무"}, "231208": {"joinDate": "2023-12-18", "workStatus": "근무"}, "181219": {"joinDate": "2018-12-01", "workStatus": "휴직"}, "210202": {"joinDate": "2021-02-01", "workStatus": "근무"}, "220824": {"joinDate": "2022-08-08", "workStatus": "근무"}, "130504": {"joinDate": "2013-05-01", "workStatus": "근무"}, "210734": {"joinDate": "2021-07-19", "workStatus": "근무"}, "121013": {"joinDate": "2012-10-15", "workStatus": "근무"}, "220719": {"joinDate": "2022-07-21", "workStatus": "근무"}, "251204": {"joinDate": "2025-12-08", "workStatus": "근무"}, "251011": {"joinDate": "2025-10-13", "workStatus": "근무"}, "251210": {"joinDate": "2025-12-08", "workStatus": "근무"}, "131227": {"joinDate": "2013-12-26", "workStatus": "근무"}, "150106": {"joinDate": "2015-01-01", "workStatus": "근무"}, "250737": {"joinDate": "2025-07-21", "workStatus": "근무"}, "250304": {"joinDate": "2025-03-11", "workStatus": "근무"}, "150413": {"joinDate": "2015-04-21", "workStatus": "근무"}, "180114": {"joinDate": "2018-01-03", "workStatus": "근무"}, "140305": {"joinDate": "2014-03-17", "workStatus": "근무"}, "260301": {"joinDate": "2026-03-09", "workStatus": "근무"}, "130801": {"joinDate": "2013-08-01", "workStatus": "근무"}, "80901": {"joinDate": "2008-09-04", "workStatus": "근무"}, "200308": {"joinDate": "2020-03-09", "workStatus": "근무"}, "220127": {"joinDate": "2022-01-17", "workStatus": "근무"}, "220931": {"joinDate": "2022-09-13", "workStatus": "근무"}, "220940": {"joinDate": "2022-09-26", "workStatus": "근무"}, "260105": {"joinDate": "2026-01-19", "workStatus": "근무"}, "160417": {"joinDate": "2016-04-25", "workStatus": "근무"}, "170722": {"joinDate": "2017-07-10", "workStatus": "휴직"}, "230408": {"joinDate": "2023-04-10", "workStatus": "근무"}, "100511": {"joinDate": "2010-05-01", "workStatus": "근무"}, "150408": {"joinDate": "2015-04-13", "workStatus": "근무"}, "170916": {"joinDate": "2017-09-25", "workStatus": "근무"}, "231035": {"joinDate": "2023-10-23", "workStatus": "근무"}, "21101": {"joinDate": "2002-11-01", "workStatus": "근무"}, "121119": {"joinDate": "2012-11-06", "workStatus": "근무"}, "140210": {"joinDate": "2014-02-17", "workStatus": "근무"}, "231201": {"joinDate": "2023-12-04", "workStatus": "근무"}, "251001": {"joinDate": "2025-10-13", "workStatus": "근무"}, "251137": {"joinDate": "2025-11-24", "workStatus": "근무"}, "130802": {"joinDate": "2013-08-01", "workStatus": "근무"}, "150214": {"joinDate": "2015-02-01", "workStatus": "근무"}, "191127": {"joinDate": "2019-11-18", "workStatus": "근무"}, "240523": {"joinDate": "2024-05-29", "workStatus": "휴직"}, "240705": {"joinDate": "2024-07-15", "workStatus": "근무"}, "230415": {"joinDate": "2023-04-17", "workStatus": "근무"}, "221122": {"joinDate": "2022-11-21", "workStatus": "근무"}, "240134": {"joinDate": "2024-01-17", "workStatus": "근무"}, "240707": {"joinDate": "2024-07-25", "workStatus": "근무"}, "250420": {"joinDate": "2025-04-15", "workStatus": "근무"}, "190213": {"joinDate": "2019-02-11", "workStatus": "근무"}, "260311": {"joinDate": "2026-03-30", "workStatus": "근무"}, "240921": {"joinDate": "2024-09-23", "workStatus": "근무"}, "220933": {"joinDate": "2022-09-13", "workStatus": "근무"}, "260601": {"joinDate": "2026-06-01", "workStatus": "근무"}, "260509": {"joinDate": "2026-05-26", "workStatus": "근무"}, "260510": {"joinDate": "2026-05-26", "workStatus": "근무"}, "240521": {"joinDate": "2024-05-07", "workStatus": "근무"}, "181218": {"joinDate": "2018-12-01", "workStatus": "근무"}, "210715": {"joinDate": "2021-07-12", "workStatus": "근무"}, "230319": {"joinDate": "2023-03-02", "workStatus": "근무"}, "250901": {"joinDate": "2025-09-01", "workStatus": "근무"}, "211111": {"joinDate": "2021-11-08", "workStatus": "근무"}, "201218": {"joinDate": "2020-12-17", "workStatus": "근무"}, "210513": {"joinDate": "2021-05-31", "workStatus": "근무"}, "190215": {"joinDate": "2019-02-20", "workStatus": "근무"}, "220901": {"joinDate": "2022-09-01", "workStatus": "근무"}, "241201": {"joinDate": "2024-12-09", "workStatus": "근무"}, "170914": {"joinDate": "2017-09-11", "workStatus": "휴직"}, "260604": {"joinDate": "2026-06-08", "workStatus": "근무"}, "230226": {"joinDate": "2023-02-06", "workStatus": "근무"}, "250738": {"joinDate": "2025-07-21", "workStatus": "휴직"}, "260507": {"joinDate": "2026-05-11", "workStatus": "근무"}, "180320": {"joinDate": "2018-03-19", "workStatus": "근무"}, "180815": {"joinDate": "2018-08-08", "workStatus": "휴직"}, "210610": {"joinDate": "2021-06-16", "workStatus": "근무"}, "240401": {"joinDate": "2024-04-01", "workStatus": "근무"}, "260216": {"joinDate": "2026-02-09", "workStatus": "근무"}, "200703": {"joinDate": "2020-07-14", "workStatus": "근무"}, "220718": {"joinDate": "2022-07-14", "workStatus": "근무"}, "200103": {"joinDate": "2020-01-01", "workStatus": "근무"}, "220402": {"joinDate": "2022-04-01", "workStatus": "근무"}, "231108": {"joinDate": "2023-11-14", "workStatus": "근무"}, "240219": {"joinDate": "2024-02-19", "workStatus": "근무"}, "180214": {"joinDate": "2018-02-05", "workStatus": "근무"}, "201204": {"joinDate": "2020-12-08", "workStatus": "근무"}, "250910": {"joinDate": "2025-09-08", "workStatus": "근무"}, "160907": {"joinDate": "2016-09-01", "workStatus": "근무"}, "260426": {"joinDate": "2026-04-27", "workStatus": "근무"}, "160501": {"joinDate": "2016-05-10", "workStatus": "근무"}, "180509": {"joinDate": "2018-05-08", "workStatus": "근무"}, "220314": {"joinDate": "2022-03-10", "workStatus": "근무"}, "251201": {"joinDate": "2025-12-08", "workStatus": "근무"}, "230513": {"joinDate": "2023-05-08", "workStatus": "근무"}, "240317": {"joinDate": "2024-03-20", "workStatus": "근무"}, "250614": {"joinDate": "2025-06-17", "workStatus": "근무"}, "260201": {"joinDate": "2026-02-02", "workStatus": "근무"}, "220428": {"joinDate": "2022-04-06", "workStatus": "근무"}, "220516": {"joinDate": "2022-05-16", "workStatus": "근무"}, "160411": {"joinDate": "2016-04-07", "workStatus": "근무"}, "230235": {"joinDate": "2023-02-20", "workStatus": "근무"}, "230826": {"joinDate": "2023-08-16", "workStatus": "근무"}, "260102": {"joinDate": "2026-01-05", "workStatus": "근무"}, "260508": {"joinDate": "2026-05-11", "workStatus": "근무"}, "180716": {"joinDate": "2018-07-09", "workStatus": "근무"}, "101201": {"joinDate": "2010-12-06", "workStatus": "근무"}, "251101": {"joinDate": "2025-11-10", "workStatus": "근무"}, "251105": {"joinDate": "2025-11-24", "workStatus": "근무"}, "170225": {"joinDate": "2017-02-01", "workStatus": "근무"}, "240101": {"joinDate": "2024-01-02", "workStatus": "근무"}, "230125": {"joinDate": "2023-01-25", "workStatus": "근무"}, "151209": {"joinDate": "2015-12-01", "workStatus": "근무"}, "260414": {"joinDate": "2026-04-27", "workStatus": "근무"}, "160413": {"joinDate": "2016-04-12", "workStatus": "근무"}, "240102": {"joinDate": "2024-01-02", "workStatus": "근무"}, "241101": {"joinDate": "2024-11-20", "workStatus": "근무"}, "260157": {"joinDate": "2026-01-26", "workStatus": "근무"}, "241001": {"joinDate": "2024-10-02", "workStatus": "근무"}, "210512": {"joinDate": "2021-05-17", "workStatus": "근무"}, "240917": {"joinDate": "2024-09-19", "workStatus": "근무"}, "260221": {"joinDate": "2026-02-25", "workStatus": "근무"}, "240601": {"joinDate": "2024-06-10", "workStatus": "근무"}, "220509": {"joinDate": "2022-05-01", "workStatus": "근무"}, "230825": {"joinDate": "2023-08-01", "workStatus": "근무"}, "230827": {"joinDate": "2023-08-21", "workStatus": "근무"}, "230924": {"joinDate": "2023-09-25", "workStatus": "근무"}, "260104": {"joinDate": "2026-01-12", "workStatus": "근무"}, "260316": {"joinDate": "2026-03-30", "workStatus": "근무"}, "251104": {"joinDate": "2025-11-11", "workStatus": "근무"}, "221201": {"joinDate": "2022-12-01", "workStatus": "근무"}, "250116": {"joinDate": "2025-02-03", "workStatus": "근무"}, "250806": {"joinDate": "2025-08-07", "workStatus": "근무"}, "211221": {"joinDate": "2021-12-01", "workStatus": "근무"}, "251125": {"joinDate": "2025-11-17", "workStatus": "근무"}, "251012": {"joinDate": "2025-10-13", "workStatus": "근무"}, "260425": {"joinDate": "2026-05-01", "workStatus": "근무"}, "250518": {"joinDate": "2025-05-26", "workStatus": "근무"}, "220130": {"joinDate": "2022-01-20", "workStatus": "근무"}, "250117": {"joinDate": "2025-02-07", "workStatus": "근무"}, "250417": {"joinDate": "2025-04-02", "workStatus": "근무"}, "230117": {"joinDate": "2023-01-09", "workStatus": "근무"}, "220316": {"joinDate": "2022-03-10", "workStatus": "근무"}, "230520": {"joinDate": "2023-05-18", "workStatus": "근무"}, "230742": {"joinDate": "2023-07-17", "workStatus": "근무"}, "240901": {"joinDate": "2024-09-02", "workStatus": "근무"}, "251002": {"joinDate": "2025-10-20", "workStatus": "근무"}, "251103": {"joinDate": "2025-11-03", "workStatus": "근무"}, "220207": {"joinDate": "2022-02-21", "workStatus": "근무"}, "131113": {"joinDate": "2013-11-01", "workStatus": "근무"}, "81201": {"joinDate": "2008-12-01", "workStatus": "근무"}, "60702": {"joinDate": "2006-07-03", "workStatus": "근무"}, "81102": {"joinDate": "2008-11-01", "workStatus": "근무"}, "201103": {"joinDate": "2020-11-01", "workStatus": "근무"}, "171014": {"joinDate": "2017-10-01", "workStatus": "근무"}, "190308": {"joinDate": "2019-03-01", "workStatus": "근무"}, "150903": {"joinDate": "2015-09-01", "workStatus": "근무"}, "130719": {"joinDate": "2013-07-01", "workStatus": "근무"}, "221132": {"joinDate": "2022-11-28", "workStatus": "근무"}, "240410": {"joinDate": "2024-04-04", "workStatus": "근무"}, "180201": {"joinDate": "2018-02-01", "workStatus": "근무"}, "250837": {"joinDate": "2025-08-20", "workStatus": "근무"}, "250917": {"joinDate": "2025-09-08", "workStatus": "근무"}, "120203": {"joinDate": "2012-02-01", "workStatus": "근무"}, "31001": {"joinDate": "2006-03-02", "workStatus": "근무"}, "140213": {"joinDate": "2014-02-17", "workStatus": "근무"}, "160604": {"joinDate": "2016-06-01", "workStatus": "근무"}, "10404": {"joinDate": "2001-04-30", "workStatus": "근무"}, "50101": {"joinDate": "2005-01-01", "workStatus": "근무"}};

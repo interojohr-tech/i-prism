@@ -70,7 +70,7 @@ a { color: var(--primary); text-decoration: none; }
   align-items: center;
   justify-content: center;
   position: relative;
-  background: url('./main_visual.webp') center center / cover no-repeat;
+  background: url('./login_bg.png') center center / cover no-repeat;
 }
 .login-card {
   position: relative; z-index: 1;
@@ -502,14 +502,21 @@ a { color: var(--primary); text-decoration: none; }
   line-height: 1.4;
 }
 
-/* flash 알림 */
+/* flash 알림 (저장 완료 등 — 모달 위에도 보이도록 화면 상단에 고정된 팝업으로 표시) */
 .flash-notice {
-  margin-bottom: 18px;
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  width: max-content;
+  max-width: 90vw;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
   animation: slideDown .25s ease;
 }
 @keyframes slideDown {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
 /* ── 패널 / 카드 ──────────────────────────────────────── */
