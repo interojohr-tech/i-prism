@@ -10398,10 +10398,10 @@ async function callAIPerformanceEval(employeeId, silent = false, cycleId = null)
       } else if (typeof goal.progress === "number") {
         lines.push(`    진행률: ${goal.progress}%`);
       }
-      // 체크인 기록 (최근 3개, 날짜·내용·진행률)
-      const checkins = (goal.checkins || []).slice().sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3);
+      // 체크인 기록 전체 (날짜·내용·진행률) — 입력된 모든 체크인을 빠짐없이 전달한다.
+      const checkins = (goal.checkins || []).slice().sort((a, b) => new Date(b.date) - new Date(a.date));
       if (checkins.length) {
-        lines.push(`    최근 체크인 (최대 3건):`);
+        lines.push(`    체크인 기록 (전체 ${checkins.length}건):`);
         checkins.forEach(c => {
           const datePart = c.date ? `[${c.date}]` : "";
           const progPart = c.progress !== undefined ? ` 진행률: ${c.progress}%` : "";
@@ -10440,7 +10440,7 @@ async function callAIPerformanceEval(employeeId, silent = false, cycleId = null)
     const prompt = leaderEval
       ? `${systemInstruction}
 
-아래는 "${employee.name}(${employee.title || ""})" 님의 자기평가 업적 데이터입니다. 직급은 "${employee.title || "임원"}"입니다.
+아래는 직급 "${employee.title || "임원"}"인 피평가자 본인의 자기평가 업적 데이터입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
 ---
 ${achievementTexts}
@@ -10464,7 +10464,7 @@ ${achSchemaExamples}
 }`
       : `${systemInstruction}
 
-아래는 "${employee.name}(${employee.title || ""})" 님의 자기평가 업적 데이터입니다. 직급은 "${employee.title || "일반 직원"}"입니다.
+아래는 직급 "${employee.title || "일반 직원"}"인 피평가자 본인의 자기평가 업적 데이터입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
 ---
 ${achievementTexts}
@@ -10620,7 +10620,6 @@ async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
   if (!employee || !evaluation) throw new Error("평가 데이터를 찾을 수 없습니다.");
 
   const rawFeedback = getEvaluatorOverallFeedback(evaluation, employee, true, true);
-  const name = employee.name;
   const title = employee.title || "";
   const finalGrade = calculateFinal(employeeId).finalGrade || "";
   const isDGrade = finalGrade === "D";
@@ -10633,7 +10632,7 @@ async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
     : "(현재 이 역할/역량에 매칭되는 등록된 참고자료가 없습니다)";
 
   const prompt = isDGrade
-    ? `당신은 인사평가 전문가입니다. 아래는 최종 등급 D를 받은 "${name}(${title})" 님에 대한 인사평가 원문 피드백입니다.
+    ? `당신은 인사평가 전문가입니다. 아래는 최종 등급 D를 받은 직급 "${title || "직원"}" 피평가자에 대한 인사평가 원문 피드백입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
 ---
 ${rawFeedback}
@@ -10665,7 +10664,7 @@ ${rawFeedback}
   "ref2Title": "취업 준비",
   "ref2Desc": "새로운 직장을 탐색할 수 있는 구인구직 사이트"
 }`
-    : `당신은 인사평가 전문가입니다. 아래는 "${name}(${title})" 님에 대한 인사평가 원문 피드백입니다.
+    : `당신은 인사평가 전문가입니다. 아래는 직급 "${title || "직원"}" 피평가자에 대한 인사평가 원문 피드백입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
 ---
 ${rawFeedback}
@@ -11088,7 +11087,7 @@ async function callAIEvaluatorTendency(evaluatorId, evaluateeList) {
     const perfScore = stageEv?.performance ? (() => { const v = deriveComponentScore(stageEv.performance); return v == null ? null : v; })() : null;
     const selfPerfScore = selfEv?.performance ? (() => { const v = deriveComponentScore(selfEv.performance); return v == null ? null : v; })() : null;
     return {
-      name: emp.name,
+      // 피평가자 실명은 이 통계(변별도·관대성 분석)에 필요 없으므로 AI에게 전달하지 않는다.
       stage: stage === "first" ? "1차" : "2차",
       perfScore,
       selfPerfScore,
@@ -11110,7 +11109,7 @@ async function callAIEvaluatorTendency(evaluatorId, evaluateeList) {
   const discriminationScoreRaw = Math.min(100, Math.round((stdDevRaw / 10) * 100));
 
   const evalLines = evalData.map((e, i) =>
-    `평가 ${i+1} (${e.stage} / ${e.name}): 업적평가 점수=${e.perfScore ?? "미기재"}, 자기평가 점수=${e.selfPerfScore ?? "미기재"}, 피드백="${(e.feedback || "").slice(0, 200)}"`
+    `평가 ${i+1} (${e.stage}): 업적평가 점수=${e.perfScore ?? "미기재"}, 자기평가 점수=${e.selfPerfScore ?? "미기재"}, 피드백="${(e.feedback || "").slice(0, 200)}"`
   ).join("\n");
 
   // 변별도 레이블 (코칭 텍스트에서 일관되게 사용하도록 프롬프트에 전달)
@@ -11120,7 +11119,7 @@ async function callAIEvaluatorTendency(evaluatorId, evaluateeList) {
     ? `${Math.min(...perfScores).toFixed(1)}~${Math.max(...perfScores).toFixed(1)}점`
     : "데이터 없음";
 
-  const prompt = `당신은 HR 전문가입니다. 아래는 "${evaluator.name}(${evaluator.title || ""})" 평가자가 수행한 평가 목록입니다.
+  const prompt = `당신은 HR 전문가입니다. 아래는 직급 "${evaluator.title || "평가자"}"인 어느 평가자가 수행한 평가 목록입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
 ---
 ${evalLines}
