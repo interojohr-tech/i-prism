@@ -11109,7 +11109,7 @@ async function callAIEvaluatorTendency(evaluatorId, evaluateeList) {
   const discriminationScoreRaw = Math.min(100, Math.round((stdDevRaw / 10) * 100));
 
   const evalLines = evalData.map((e, i) =>
-    `평가 ${i+1} (${e.stage}): 업적평가 점수=${e.perfScore ?? "미기재"}, 자기평가 점수=${e.selfPerfScore ?? "미기재"}, 피드백="${(e.feedback || "").slice(0, 200)}"`
+    `평가 ${i+1} (${e.stage}): 업적평가 점수=${e.perfScore ?? "미기재"}, 자기평가 점수=${e.selfPerfScore ?? "미기재"}, 피드백="${e.feedback || ""}"`
   ).join("\n");
 
   // 변별도 레이블 (코칭 텍스트에서 일관되게 사용하도록 프롬프트에 전달)
