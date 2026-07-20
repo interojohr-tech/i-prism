@@ -11119,6 +11119,21 @@ async function callAIEvaluatorTendency(evaluatorId, evaluateeList) {
     ? `${Math.min(...perfScores).toFixed(1)}~${Math.max(...perfScores).toFixed(1)}점`
     : "데이터 없음";
 
+  // 변별도가 실제로 의미하는 바와 그로 인한 공정성·동기부여 영향은 discriminationScore와
+  // 마찬가지로 순수하게 계산값(표준편차)에서 도출되는 사실 관계이지, AI의 정성적 판단이
+  // 필요한 부분이 아니다. 예전에는 이 문장까지 AI가 매번 새로 작성하게 했는데, "분산이 크지
+  // 않아 변별도가 높다"처럼 원인과 결과가 뒤바뀐 모순된 문장을 만들어내는 경우가 있었다.
+  // 그래서 이 문장은 discriminationLabel에 따라 고정된 문구를 코드에서 그대로 사용하고,
+  // AI에게는 그 문구와 모순되지 않는 나머지 부분(관대·엄격 성향 관찰, 개선 제안)만 맡긴다.
+  const DISCRIMINATION_IMPACT_TEXT = {
+    "높음": "피평가자 간 점수 차이가 뚜렷하게 나타나 변별도가 높은 편이며, 성과 수준에 따른 차별화가 잘 이뤄지고 있어 평가의 공정성 인식과 동기부여에 긍정적으로 작용합니다.",
+    "보통": "피평가자 간 점수 차이가 어느 정도 나타나 변별도는 보통 수준이나, 성과 수준별 차별화를 조금 더 명확히 할 여지가 있습니다.",
+    "낮음": "피평가자 간 점수 차이가 크지 않아 변별도가 낮은 편이며, 성과 수준과 무관하게 비슷한 평가를 받는다는 인식을 줄 수 있어 평가의 공정성 인식과 동기부여에 부정적으로 작용할 수 있습니다.",
+  };
+  const discriminationGuideForPrompt = discriminationLabel === "높음"
+    ? "변별도가 이미 높으므로 \"차별화를 더 높이라\"는 제안은 하지 마세요. improvementSuggestion은 이 변별력을 유지하는 방법이나, leniencyLabel이 한쪽으로 치우쳤다면 그 점수 자체를 보정하는 방향으로 작성하세요."
+    : "improvementSuggestion은 성과 수준별 기준점수(anchor)를 사전에 설정하고 우수·보통·미흡 사례를 구체적으로 정의하는 등, 점수 차별화를 높이는 방향으로 작성하세요.";
+
   const prompt = `당신은 HR 전문가입니다. 아래는 직급 "${evaluator.title || "평가자"}"인 어느 평가자가 수행한 평가 목록입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
 ---
@@ -11127,24 +11142,21 @@ ${evalLines}
 
 [사전 계산된 통계]
 - 평가 인원: ${evalData.length}명 / 점수 범위: ${scoreRangeStr} / 표준편차: ${stdDevRaw.toFixed(1)} / 변별도: ${discriminationLabel}
+- 변별도에 대한 해석은 이미 확정되어 있습니다: "${DISCRIMINATION_IMPACT_TEXT[discriminationLabel]}" — 이 문장은 별도로 삽입되니 당신이 다시 작성할 필요는 없습니다. 단, 아래 두 항목을 쓸 때 이 문장과 모순되는 내용(예: 변별도가 낮은데 차별화가 잘 된다고 말하는 등)은 절대 쓰지 마세요.
 
 [분석 지시]
 1. 자기평가 대비 평가 점수 차이, 피드백 톤을 종합해 leniencyScore(0=매우 엄격, 100=매우 관대)와 leniencyLabel을 결정하세요.
 2. discriminationScore는 반드시 ${discriminationScoreRaw} 고정값을 그대로 출력하세요.
-3. coaching은 아래 작성 지침에 따라 자연스러운 줄글 문단 하나로 작성하세요. 항목 번호나 [성향], [해석], [제언] 같은 레이블을 붙이지 마세요.
-
-coaching 작성 지침:
-- 이 평가자의 관대-엄격 성향(leniencyLabel)과 변별도(${discriminationLabel})를 조합하여 평가 패턴을 한두 문장으로 자연스럽게 설명하세요. 예: "전체적으로 높은 점수를 부여하는 관대한 경향이 있으며, 피평가자 간 점수 분산이 작아 변별력이 낮은 편입니다."
-- 이어서 이 성향이 조직의 평가 공정성과 동기부여에 미치는 영향을 한두 문장으로 설명하세요.
-- 마지막으로 구체적인 개선 방향을 한두 문장으로 제안하세요. 예: "성과 수준별 기준점수(anchor)를 사전에 설정하고, 우수·보통·미흡 사례를 구체적으로 정의하여 점수 차별화를 높일 것을 권장합니다."
-- 전체 분량은 200~300자 내외의 자연스러운 줄글로 작성하세요.
+3. leniencyComment: 이 평가자의 관대-엄격 성향(leniencyLabel)에 대한 관찰을 한 문장(80자 내외)으로 작성하세요. 변별도·차별화에 대한 언급은 하지 마세요(위에서 이미 확정된 문장으로 별도 삽입됩니다).
+4. improvementSuggestion: ${discriminationGuideForPrompt} 한 문장(100자 내외)으로 작성하세요.
 
 반드시 아래 JSON만 출력하세요:
 {
   "leniencyScore": 숫자(0~100),
   "leniencyLabel": "매우 엄격/엄격/약간 엄격/중립/약간 관대/관대/매우 관대 중 하나",
   "discriminationScore": ${discriminationScoreRaw},
-  "coaching": "위 지침에 따른 줄글 문단"
+  "leniencyComment": "위 지침에 따른 한 문장",
+  "improvementSuggestion": "위 지침에 따른 한 문장"
 }`;
 
   const response = await fetch("/api/ai/chat", {
@@ -11161,8 +11173,14 @@ coaching 작성 지침:
   if (!response.ok) throw new Error(`API 오류 (${response.status})`);
   const data = await response.json();
   const result = JSON.parse(data.choices[0].message.content);
-  // 변별도 점수는 수학적으로 계산한 값을 항상 사용 (AI 반환값 무시)
+  // 변별도 점수와 변별도 해석 문장은 항상 계산값/고정 문구를 사용한다 (AI 반환값 무시).
+  // 관대·엄격 관찰과 개선 제안만 AI가 작성한 문장을 그대로 이어붙인다.
   result.discriminationScore = discriminationScoreRaw;
+  result.coaching = [
+    String(result.leniencyComment || "").trim(),
+    DISCRIMINATION_IMPACT_TEXT[discriminationLabel],
+    String(result.improvementSuggestion || "").trim(),
+  ].filter(Boolean).join(" ");
   return result;
 }
 
