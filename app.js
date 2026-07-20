@@ -12215,9 +12215,9 @@ function showGoalCard(goalId) {
     + (g.status ? _gcBadge(g.status) : '')
     + metricHtml
     + '<div class="gc-tab-bar">'
-    + '<button class="gc-tab active" data-tab="checkin" onclick="_gcRenderTab(\'checkin\')">체크인 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + checkins.length + '</span></button>'
-    + '<button class="gc-tab" data-tab="feedback" onclick="_gcRenderTab(\'feedback\')">피드백 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + feedbacks.length + '</span></button>'
-    + '<button class="gc-tab" data-tab="history" onclick="_gcRenderTab(\'history\')">변경 이력 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + history.length + '</span></button>'
+    + '<button class="gc-tab active" data-tab="checkin" onclick="_gcRenderTab(\\'checkin\\')">체크인 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + checkins.length + '</span></button>'
+    + '<button class="gc-tab" data-tab="feedback" onclick="_gcRenderTab(\\'feedback\\')">피드백 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + feedbacks.length + '</span></button>'
+    + '<button class="gc-tab" data-tab="history" onclick="_gcRenderTab(\\'history\\')">변경 이력 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + history.length + '</span></button>'
     + '</div>'
     + '<div id="gc-tab-body" class="gc-tab-body"></div>';
 
