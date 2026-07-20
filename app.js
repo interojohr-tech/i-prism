@@ -10552,6 +10552,30 @@ function computeLowScoringDomainTags(employee, evaluation) {
   return [...tags];
 }
 
+// 원문 피드백에 실제 지적 내용이 전혀 없어 weaknesses를 뽑을 수 없을 때 쓸 대체 항목.
+// 역량평가·자세태도평가 문항 중 점수가 가장 낮은 항목의 이름을 찾아 반환한다(동점이면 먼저
+// 나오는 항목). "가장 낮은 항목이 무엇인가"는 사실 관계이므로 AI에게 판단을 맡기지 않고
+// 여기서 직접 계산하며, AI에게는 이 이름을 짧은 키워드로 다듬는 표현만 맡긴다.
+function findLowestScoringItemName(employee, evaluation) {
+  const stages = ["first", "second"];
+  const pooled = [];
+  ["competency", "attitude"].forEach((component) => {
+    const template = templateFor(employee, component);
+    if (!template) return;
+    template.items.forEach((item, index) => {
+      const scores = stages
+        .map((stage) => Number(evaluation?.[stage]?.[component]?.itemScores?.[index]))
+        .filter((v) => Number.isFinite(v) && v > 0);
+      if (!scores.length) return;
+      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+      pooled.push({ score: avg, name: item.name || "" });
+    });
+  });
+  if (!pooled.length) return null;
+  pooled.sort((a, b) => a.score - b.score);
+  return pooled[0].name || null;
+}
+
 // 역할 + 도메인 태그로 참고자료 후보를 좁힌다 (없으면 역할 기준까지만 넓혀 폴백)
 function buildResourceCandidates(employee, domainTags) {
   const all = state.refResources || [];
@@ -10631,6 +10655,10 @@ async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
     ? candidates.map((c) => `${c.id} | [${RESOURCE_TYPES[c.type] || c.type}] ${c.title} — ${c.desc || ""}`).join("\n")
     : "(현재 이 역할/역량에 매칭되는 등록된 참고자료가 없습니다)";
 
+  // 원문 피드백에 개선 필요 문장이 전혀 없을 때 쓸 대체 항목(역량·자세태도 중 최저점 문항).
+  // "어느 항목이 가장 낮은가"는 사실 관계라 AI 판단에 맡기지 않고 직접 계산해 둔다.
+  const lowestScoringItemName = isDGrade ? null : findLowestScoringItemName(employee, evaluation);
+
   const prompt = isDGrade
     ? `당신은 인사평가 전문가입니다. 아래는 최종 등급 D를 받은 직급 "${title || "직원"}" 피평가자에 대한 인사평가 원문 피드백입니다. (개인정보 보호를 위해 실명은 전달하지 않습니다.)
 
@@ -10677,20 +10705,20 @@ ${rawFeedback}
 - upward: 상향평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 상향평가 내용이 없으면 빈 문자열.
 - peer: 동료평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 동료평가 내용이 없으면 빈 문자열.
 - strengths: 원문 피드백에서 실제로 칭찬·긍정적으로 서술된 내용에서만 반복되는 키워드 3~4개를 뽑으세요 (각 10자 이내 단어). 여러 평가자(1차/2차/상향/동료)에게서 공통적으로 언급된 주제를 우선하세요.
-- weaknesses: 원문 피드백에서 실제로 "개선이 필요하다/아쉽다/보완이 필요하다" 등 부족함·과제를 지적하는 문장에서만 키워드를 뽑으세요 (각 10자 이내 단어, 최대 2~3개). 절대로 긍정적으로 서술된 내용(예: "창의적인 아이디어로 혁신을 이끈다", "꾸준히 자기계발하여 성장한다")의 주제어를 반대로 개선 필요 항목에 넣지 마세요 — 그 문장이 실제로 칭찬인지 지적인지 먼저 판단한 후에 분류하세요. 원문 전체에 명시적인 개선 필요·지적 내용이 전혀 없다면 억지로 만들어내지 말고 빈 배열([])로 두세요.
-- suggestions: weaknesses가 비어 있지 않다면, 그 개선 필요 내용이 원문의 어느 부분(1차/2차/상향/동료평가 중 어디)에서 나왔는지와 연결지어 구체적인 개선 방향을 작성하세요. weaknesses가 빈 배열이라면 "개선하라"는 식의 억지 제언 대신, strengths와 overall·upward·peer에서 이미 언급된 구체적인 강점(예: 리더십, 의사결정, 협업 등 실제로 서술된 내용)을 어떻게 더 확장·심화하거나 다른 구성원에게 전수할 수 있을지 제안하세요. 반드시 이미 작성한 overall/upward/peer의 구체적 내용(예시나 표현)을 최소 하나 이상 직접 언급하며 이어지도록 작성해, 일반적인 HR 조언처럼 느껴지지 않고 이 사람의 실제 피드백과 연결되어 읽히게 하세요. 번호나 줄바꿈 없이 하나의 자연스러운 줄글 문단으로, 한국어 500자 내외로 작성하세요.
+- weaknesses: 원문 피드백에서 실제로 "개선이 필요하다/아쉽다/보완이 필요하다" 등 부족함·과제를 지적하는 문장에서만 키워드를 뽑으세요 (각 10자 이내 단어, 최대 2~3개). 절대로 긍정적으로 서술된 내용(예: "창의적인 아이디어로 혁신을 이끈다", "꾸준히 자기계발하여 성장한다")의 주제어를 반대로 개선 필요 항목에 넣지 마세요 — 그 문장이 실제로 칭찬인지 지적인지 먼저 판단한 후에 분류하세요.${lowestScoringItemName ? ` 원문 전체에 명시적인 개선 필요·지적 내용이 전혀 없다면, 빈 배열 대신 [평가 항목 참고]에 제시된 항목명 하나를 자연스러운 개선 필요 키워드(10자 이내)로 다듬어 채우세요(예: "[협업 및 팀워크] 대외 응대"라면 "대외 응대" 정도로).` : " 원문 전체에 명시적인 개선 필요·지적 내용이 전혀 없다면 억지로 만들어내지 말고 빈 배열([])로 두세요."}
+- suggestions: weaknesses가 원문의 지적 문장에서 나온 것이라면, 그 내용이 원문의 어느 부분(1차/2차/상향/동료평가 중 어디)에서 나왔는지와 연결지어 구체적인 개선 방향을 작성하세요. weaknesses가 [평가 항목 참고]의 최저점 항목에서 나온 것이거나 완전히 빈 배열이라면, 이는 원문에 실제 지적이 있었던 것이 아니라 상대적으로 가장 낮은 점수였을 뿐이므로 "심각한 문제"처럼 다루지 말고, strengths와 overall·upward·peer에서 이미 언급된 구체적인 강점을 어떻게 더 확장·심화하거나 다른 구성원에게 전수할 수 있을지를 중심으로 제안하세요. 반드시 이미 작성한 overall/upward/peer의 구체적 내용(예시나 표현)을 최소 하나 이상 직접 언급하며 이어지도록 작성해, 일반적인 HR 조언처럼 느껴지지 않고 이 사람의 실제 피드백과 연결되어 읽히게 하세요. 번호나 줄바꿈 없이 하나의 자연스러운 줄글 문단으로, 한국어 500자 내외로 작성하세요.
 - refPick1 / refPick2: 아래 [추천 후보 자료] 목록에서 이 사람의 개선 필요 영역(weaknesses가 있는 경우) 또는 강점을 더 심화할 수 있는 영역(weaknesses가 없는 경우)에 가장 도움이 될 자료를 최대 2개 골라 그 id를 그대로 적으세요. 목록에 없는 id를 쓰거나 자료를 지어내지 마세요. 적합한 자료가 없거나 후보가 부족하면 빈 문자열("")로 두세요.
 - refPick1Reason / refPick2Reason: 그 자료가 왜 이 사람에게 도움이 되는지 원문 피드백을 근거로 한 문장(50자 이내)으로 작성. refPick이 빈 문자열이면 같이 빈 문자열로 둘 것.
 
 [추천 후보 자료] (id | 구분 | 제목 — 설명)
 ${candidateListText}
-
+${lowestScoringItemName ? `\n[평가 항목 참고] (weaknesses에 쓸 원문 지적 내용이 전혀 없을 때만 사용)\n역량평가·자세태도평가 문항 중 상대적으로 점수가 가장 낮은 항목: "${lowestScoringItemName}"\n` : ""}
 {
   "overall": "...",
   "upward": "...",
   "peer": "...",
   "strengths": ["키워드1", "키워드2", "키워드3"],
-  "weaknesses": ["원문에 실제 지적 내용이 있을 때만 채우고, 없으면 빈 배열"],
+  "weaknesses": ["원문에 실제 지적 내용이 있을 때만 채우고, 없으면 [평가 항목 참고]를 다듬은 키워드 하나(그마저 없으면 빈 배열)"],
   "suggestions": "...",
   "refPick1": "...",
   "refPick1Reason": "...",
