@@ -3259,7 +3259,7 @@ function renderScaleItemForm(prefix, component, data, template, mode) {
           return `
             <div class="scale-question">
               <h4>${esc(item.name)}${item.required ? '<span>*</span>' : ""}</h4>
-              <div class="guide-box small">${esc(item.guide || template.guide || "")}</div>
+              <div class="guide-box small">${nl2br(item.guide || template.guide || "")}</div>
               ${renderGradePicker(scoreId, itemScore, template.grades)}
             </div>
           `;
@@ -3421,7 +3421,7 @@ function renderBatchQuestionGroup(group) {
   return `
     <details class="org-group batch-question-group" open>
       <summary>${esc(isNormal ? COMPONENT_LABELS[group.component] : group.kind === "upward" ? "상향평가" : "동료평가")} · 문항 ${group.index + 1} <span>${group.tasks.length}명</span></summary>
-      <div class="guide-box small"><strong>${esc(group.item.name)}</strong><br />${esc(group.item.guide || group.template.guide || "")}</div>
+      <div class="guide-box small"><strong>${esc(group.item.name)}</strong><br />${nl2br(group.item.guide || group.template.guide || "")}</div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>${isNormal ? "피평가자" : "평가 대상"}</th><th>조직</th>${isNormal ? "<th>자기평가 점수</th>" : ""}<th>평가 등급</th></tr></thead>
@@ -3686,7 +3686,7 @@ function renderUpwardEvaluationForm(assignment) {
           return `
             <div class="scale-question">
               <h4>${esc(item.name)}${item.required ? '<span>*</span>' : ""}</h4>
-              <div class="guide-box small">${esc(item.guide || template.guide || "")}</div>
+              <div class="guide-box small">${nl2br(item.guide || template.guide || "")}</div>
               ${renderGradePicker(scoreId, itemScore, template.grades)}
             </div>
           `;
@@ -3717,7 +3717,7 @@ function renderPeerEvaluationForm(assignment) {
           return `
             <div class="scale-question">
               <h4>${esc(item.name)}${item.required ? '<span>*</span>' : ""}</h4>
-              <div class="guide-box small">${esc(item.guide || template.guide || "")}</div>
+              <div class="guide-box small">${nl2br(item.guide || template.guide || "")}</div>
               ${renderGradePicker(scoreId, itemScore, template.grades)}
             </div>
           `;
