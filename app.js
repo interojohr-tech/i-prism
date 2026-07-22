@@ -18683,6 +18683,9 @@ const App = {
       if (!Number.isFinite(targetValue)) return window.alert("정량 지표의 목표 값을 입력해 주세요.");
       if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
     }
+    // 사장/회장은 회사 최상위 목표를 만들며 승인권자가 없거나(회장) 있어도(사장→회장)
+    // 승인 절차 없이 즉시 등록한다.
+    const isExecutiveOwner = user.role === "president" || user.role === "chairman";
     const goal = {
       id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       cycleId: cycle.id,
@@ -18705,17 +18708,19 @@ const App = {
       progress: 0,
       checkins: [],
       feedbacks: [],
-      approvalStatus: cycle.approvalEnabled ? (submitForApproval ? "requested" : "draft") : "approved",
-      approverId: cycle.approvalEnabled && submitForApproval ? (nextApproverForUser(user)?.id || "") : "",
+      approvalStatus: isExecutiveOwner ? "approved" : (cycle.approvalEnabled ? (submitForApproval ? "requested" : "draft") : "approved"),
+      approverId: isExecutiveOwner ? "" : (cycle.approvalEnabled && submitForApproval ? (nextApproverForUser(user)?.id || "") : ""),
       ...collectGoalVisibilityFromDom(nextApproverForUser(user)),
       createdAt: new Date().toISOString(),
     };
     state.goals.push(goal);
     state.ui.goalCreateModal = false;
     saveState();
-    state.ui.flash = cycle.approvalEnabled
-      ? (submitForApproval ? "목표를 승인 요청했습니다." : "목표를 임시 저장했습니다.")
-      : "목표를 등록했습니다.";
+    state.ui.flash = isExecutiveOwner
+      ? "목표를 등록했습니다."
+      : (cycle.approvalEnabled
+        ? (submitForApproval ? "목표를 승인 요청했습니다." : "목표를 임시 저장했습니다.")
+        : "목표를 등록했습니다.");
     render();
   },
   requestGoalApproval(goalId) {
@@ -19591,6 +19596,9 @@ function goalVisibleChipHtml(u, fixed) {
 
 function renderGoalCreateModal(user) {
   const cycle = activeGoalCycle();
+  // 사장/회장은 회사 최상위 목표만 만들며, 승인권자가 없어(회장) 또는 있어도(사장→회장)
+  // 승인 절차 없이 즉시 등록되므로 상위 목표 선택 자체가 불필요하다.
+  const isExecutive = user.role === "president" || user.role === "chairman";
   // 상위 목표 후보: 차상위 조직장(승인자)이 소유한 같은 사이클의 승인된 목표만
   const approver = nextApproverForUser(user);
   const parentCandidates = approver
@@ -19616,16 +19624,19 @@ function renderGoalCreateModal(user) {
         <div class="goal-modal-body">
           <div class="goal-tab-pane" data-goalpane="info">
           <div class="field"><label>목표 레벨</label>
-            <select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===defaultLevel?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>
+            ${isExecutive
+              ? `<select id="goal_level" disabled><option value="company" selected>${GOAL_LEVEL_LABELS.company}</option></select>`
+              : `<select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===defaultLevel?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>`}
           </div>
           <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
+          ${isExecutive ? "" : `
           <div class="field"><label>상위 목표 <span style="color:var(--red)">*</span></label>
             <select id="goal_parent">
               <option value="">${approver ? `상위 목표를 선택하세요 (${esc(approver.name)})` : "선택 가능한 상위 목표 없음"}</option>
               ${parentCandidates.map(g => `<option value="${g.id}">${esc(goalOwnerLabel(g))} · ${esc(g.title)}</option>`).join("")}
             </select>
             <span class="muted" style="font-size:11px;">${approver ? `차상위 조직장(${esc(approver.name)})의 목표 중 선택합니다.` : "회사 최상위 목표는 상위 목표 없이 등록됩니다."}</span>
-          </div>
+          </div>`}
           <div class="field"><label>목표 <span style="color:var(--red)">*</span></label><textarea id="goal_title" rows="2" placeholder="예) 고객 만족도 평균 5점 달성"></textarea></div>
           <div class="form-grid">
             <div class="field"><label>시작일</label><input type="date" id="goal_start" value="${esc(cycle.start||"")}" /></div>
@@ -19651,9 +19662,11 @@ function renderGoalCreateModal(user) {
         </div>
         <div class="goal-modal-foot">
           <button class="button secondary" onclick="App.closeGoalCreate()">취소</button>
-          ${cycle.approvalEnabled
-            ? `<button class="button ghost" onclick="App.saveGoal(false)">임시 등록</button><button class="button" onclick="App.saveGoal(true)">승인 요청 및 등록</button>`
-            : `<button class="button" onclick="App.saveGoal(false)">등록</button>`}
+          ${isExecutive
+            ? `<button class="button" onclick="App.saveGoal(false)">목표 등록</button>`
+            : cycle.approvalEnabled
+              ? `<button class="button ghost" onclick="App.saveGoal(false)">임시 등록</button><button class="button" onclick="App.saveGoal(true)">승인 요청 및 등록</button>`
+              : `<button class="button" onclick="App.saveGoal(false)">등록</button>`}
         </div>
       </div>
     </div>`;
