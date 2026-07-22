@@ -555,6 +555,7 @@ function createDefaultState() {
       approvalSortDir: "desc",
       activeGoalCycleId: "",
       goalDetailId: "",
+      checkinFeedbackKey: "",
       goalTab: "all",
       noticeEditId: null,
       noticeDetailId: null,
@@ -12215,6 +12216,7 @@ function _gcRenderTab(tab) {
         + (c.status ? _gcBadge(c.status) : '')
         + (c.valueText ? '<div style="font-size:12px;color:#4b5563;margin-bottom:3px;">지표: ' + _gcEsc(c.valueText) + '</div>' : '')
         + (c.comment||c.note ? '<div style="font-size:12px;color:#4b5563;line-height:1.5;">' + _gcEsc(c.comment||c.note) + '</div>' : '')
+        + ((c.attachments&&c.attachments.length) ? '<div style="margin-top:6px;">' + c.attachments.map(function(a){ return '<a href="'+a.data+'" download="'+_gcEsc(a.name)+'" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:#f1f5f9;border-radius:99px;font-size:11px;color:#374151;text-decoration:none;margin:2px 4px 2px 0;">📎 '+_gcEsc(a.name)+'</a>'; }).join('') + '</div>' : '')
         + '</div>';
     }).join('') : '<p style="font-size:12px;color:#94a3b8;padding:8px 0;">아직 체크인 기록이 없습니다.</p>';
   } else if (tab === 'feedback') {
@@ -18389,6 +18391,7 @@ const App = {
           <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
           ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
           ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
+          ${(ci.attachments||[]).length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${ci.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
         </div>`; }).join("") : `<p class="muted" style="font-size:12px;">아직 체크인 기록이 없습니다.</p>`}
         `}
       </div>`;
@@ -18757,7 +18760,48 @@ const App = {
   },
   openGoalDetail(goalId) { state.ui.goalDetailId = goalId; state.ui.goalCheckinMode = false; saveState(); render(); },
   closeGoalDetail() { state.ui.goalDetailId = ""; state.ui.goalCheckinMode = false; saveState(); render(); },
-  openGoalCheckin(goalId) { state.ui.goalDetailId = goalId; state.ui.goalCheckinMode = true; saveState(); render(); },
+  openGoalCheckin(goalId) { window._pendingCheckinAttachments = []; state.ui.goalDetailId = goalId; state.ui.goalCheckinMode = true; saveState(); render(); },
+  handleCheckinFileSelect(input) {
+    const files = Array.from(input.files || []);
+    if (!window._pendingCheckinAttachments) window._pendingCheckinAttachments = [];
+    const MAX = 5 * 1024 * 1024;
+    let skipped = 0;
+    const reads = files.map(file => new Promise(resolve => {
+      if (file.size > MAX) { skipped++; resolve(); return; }
+      const reader = new FileReader();
+      reader.onload = e => {
+        window._pendingCheckinAttachments.push({ id: `att-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: file.name, type: file.type, size: file.size, data: e.target.result });
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    }));
+    Promise.all(reads).then(() => {
+      if (skipped) window.alert(`${skipped}개 파일은 5MB를 초과하여 제외되었습니다.`);
+      const listEl = document.getElementById("checkin_attach_list");
+      if (listEl) {
+        listEl.innerHTML = (window._pendingCheckinAttachments || []).map((a, i) =>
+          `<div id="checkin_attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
+            <span style="font-size:13px;flex:1;">📎 ${esc(a.name)}</span>
+            <span style="font-size:11px;color:var(--muted);">${(a.size/1024).toFixed(1)} KB</span>
+            <button class="btn secondary" style="font-size:11px;padding:2px 8px;" onclick="App.removeCheckinAttachment(${i})">삭제</button>
+          </div>`).join("");
+      }
+      input.value = "";
+    });
+  },
+  removeCheckinAttachment(index) {
+    if (!window._pendingCheckinAttachments) return;
+    window._pendingCheckinAttachments.splice(index, 1);
+    const listEl = document.getElementById("checkin_attach_list");
+    if (listEl) {
+      listEl.innerHTML = (window._pendingCheckinAttachments || []).map((a, i) =>
+        `<div id="checkin_attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
+          <span style="font-size:13px;flex:1;">📎 ${esc(a.name)}</span>
+          <span style="font-size:11px;color:var(--muted);">${(a.size/1024).toFixed(1)} KB</span>
+          <button class="btn secondary" style="font-size:11px;padding:2px 8px;" onclick="App.removeCheckinAttachment(${i})">삭제</button>
+        </div>`).join("");
+    }
+  },
   saveGoalCheckin(goalId) {
     const goal = state.goals.find(g => g.id === goalId);
     if (!goal) return;
@@ -18780,7 +18824,9 @@ const App = {
       status,
       valueText,
       comment,
+      attachments: window._pendingCheckinAttachments || [],
     });
+    window._pendingCheckinAttachments = [];
     state.ui.goalCheckinMode = false;
     saveState();
     state.ui.flash = "체크인을 기록했습니다.";
@@ -18792,7 +18838,27 @@ const App = {
     const text = (valueOf(`goal_fb_input_${goalId}`) || "").trim();
     if (!text) return window.alert("피드백 내용을 입력해 주세요.");
     goal.feedbacks = goal.feedbacks || [];
-    goal.feedbacks.push({ id: `fb-${Date.now()}`, by: currentUser().id, at: new Date().toISOString(), text });
+    goal.feedbacks.push({ id: `fb-${Date.now()}`, by: currentUser().id, at: new Date().toISOString(), text, checkinId: null });
+    saveState();
+    render();
+  },
+  openCheckinFeedback(goalId, checkinId) {
+    state.ui.checkinFeedbackKey = `${goalId}|${checkinId}`;
+    saveState();
+    render();
+  },
+  closeCheckinFeedback() {
+    state.ui.checkinFeedbackKey = "";
+    saveState();
+    render();
+  },
+  addCheckinFeedback(goalId, checkinId) {
+    const goal = state.goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const text = (valueOf(`checkin_fb_input_${checkinId}`) || "").trim();
+    if (!text) return window.alert("피드백 내용을 입력해 주세요.");
+    goal.feedbacks = goal.feedbacks || [];
+    goal.feedbacks.push({ id: `fb-${Date.now()}`, by: currentUser().id, at: new Date().toISOString(), text, checkinId });
     saveState();
     render();
   },
@@ -19424,6 +19490,7 @@ function renderGoalCycleContent(user, inModal = false) {
     ${state.ui.goalCreateModal ? renderGoalCreateModal(user) : ""}
     ${state.ui.goalEditId ? renderGoalEditModal(user, state.ui.goalEditId) : ""}
     ${detail}
+    ${state.ui.checkinFeedbackKey ? renderCheckinFeedbackModal(user) : ""}
   `;
 }
 
@@ -19774,6 +19841,18 @@ function renderGoalDetailPanel(goalId, user) {
             <span class="muted" style="font-size:11px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</span>
           </div>` : ""}
         <div class="field"><label>(선택) 코멘트</label><textarea id="checkin_comment" rows="4" placeholder="아무리 작은 일, 고민거리라도 기록해 주세요."></textarea></div>
+        <div class="field">
+          <label>(선택) 첨부파일</label>
+          <input type="file" multiple onchange="App.handleCheckinFileSelect(this)" />
+          <div id="checkin_attach_list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+            ${(window._pendingCheckinAttachments || []).map((a, i) => `
+              <div id="checkin_attach_item_${i}" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface-2);border-radius:6px;">
+                <span style="font-size:13px;flex:1;">📎 ${esc(a.name)}</span>
+                <span style="font-size:11px;color:var(--muted);">${(a.size/1024).toFixed(1)} KB</span>
+                <button class="btn secondary" style="font-size:11px;padding:2px 8px;" onclick="App.removeCheckinAttachment(${i})">삭제</button>
+              </div>`).join("")}
+          </div>
+        </div>
         <div class="toolbar">
           <button class="button secondary" onclick="App.closeGoalDetail()">취소</button>
           <button class="button" onclick="App.saveGoalCheckin('${goal.id}')">제출하기</button>
@@ -19837,15 +19916,22 @@ function renderGoalDetailPanel(goalId, user) {
           if (activeTab === "checkin") {
             body = checkins.length ? checkins.map(ci => {
               const by = userById(ci.by);
-              return `<div class="goal-checkin-item">
+              const ciFeedbacks = feedbacks.filter(fb => fb.checkinId === ci.id);
+              return `<div class="goal-checkin-item" style="cursor:pointer;" onclick="App.openCheckinFeedback('${goal.id}','${ci.id}')">
                 <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
                 <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
                 ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
                 ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
+                ${(ci.attachments||[]).length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${ci.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" onclick="event.stopPropagation();" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
+                ${ciFeedbacks.length ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:6px;">${ciFeedbacks.map(fb => { const fbBy = userById(fb.by); return `<div style="background:var(--surface-2);border-radius:8px;padding:6px 10px;">
+                  <div style="display:flex;justify-content:space-between;"><strong style="font-size:11.5px;">💬 ${esc(fbBy?.name||"")}</strong><span class="muted" style="font-size:10.5px;">${esc(formatDateTime(fb.at))}</span></div>
+                  <div style="font-size:12px;margin-top:2px;line-height:1.5;">${esc(fb.text)}</div>
+                </div>`; }).join("")}</div>` : ""}
               </div>`;
             }).join("") : `<p class="muted" style="font-size:12px;">아직 체크인 기록이 없습니다.</p>`;
           } else if (activeTab === "feedback") {
-            body = (feedbacks.length ? feedbacks.map(fb => {
+            const generalFeedbacks = feedbacks.filter(fb => !fb.checkinId);
+            body = (generalFeedbacks.length ? generalFeedbacks.map(fb => {
               const by = userById(fb.by);
               return `<div class="goal-feedback-item">
                 <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(fb.at))}</span></div>
@@ -19854,7 +19940,7 @@ function renderGoalDetailPanel(goalId, user) {
             }).join("") : `<p class="muted" style="font-size:12px;">아직 피드백이 없습니다.</p>`)
             + (canFeedback ? `
               <div class="field" style="margin-top:10px;">
-                <textarea id="goal_fb_input_${goal.id}" rows="2" placeholder="구성원에게 피드백을 남겨보세요."></textarea>
+                <textarea id="goal_fb_input_${goal.id}" rows="2" placeholder="구성원에게 피드백을 남겨보세요. (특정 체크인에 대한 피드백은 해당 체크인을 클릭해 남겨주세요.)"></textarea>
               </div>
               <button class="button secondary" onclick="App.addGoalFeedback('${goal.id}')">피드백 등록</button>` : "");
           } else {
@@ -19870,11 +19956,58 @@ function renderGoalDetailPanel(goalId, user) {
           return `
           <div class="goal-detail-tabs">
             ${tabBtn("checkin","체크인",checkins.length)}
-            ${tabBtn("feedback","피드백",feedbacks.length)}
+            ${tabBtn("feedback","피드백",feedbacks.filter(fb => !fb.checkinId).length)}
             ${tabBtn("history","변경 이력",history.length)}
           </div>
           <div class="goal-detail-tab-body">${body}</div>`;
         })()}
+      </div>
+    </div>`;
+}
+
+// 체크인 하나를 클릭했을 때 뜨는 팝업 — 해당 체크인 내용을 보여주고, 조직장은 그 체크인에
+// 대한 피드백을 바로 남길 수 있다(등록된 피드백은 체크인 박스 하단에 댓글처럼 표시됨).
+function renderCheckinFeedbackModal(user) {
+  const [goalId, checkinId] = String(state.ui.checkinFeedbackKey || "").split("|");
+  const goal = state.goals.find(g => g.id === goalId);
+  if (!goal) return "";
+  const checkin = (goal.checkins || []).find(c => c.id === checkinId);
+  if (!checkin) return "";
+  const by = userById(checkin.by);
+  const isOwner = goal.ownerId === user.id;
+  const canFeedback = !isOwner && (["teamLead","divisionHead","president","chairman","admin"].includes(user.role));
+  const ciFeedbacks = (goal.feedbacks || []).filter(fb => fb.checkinId === checkinId);
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeCheckinFeedback()">
+      <div class="goal-modal" style="max-width:440px;width:96%;max-height:88vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>체크인 상세 · 피드백</h2>
+          <button class="modal-x" onclick="App.closeCheckinFeedback()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:16px;">
+          <p class="muted" style="font-size:12px;margin:0 0 10px;">${esc(goal.title)}</p>
+          <div class="component-card">
+            <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(checkin.at))}</span></div>
+            <div style="font-size:12px;margin-top:6px;"><span class="muted">상태</span> ${goalStatusBadge(checkin.status)}</div>
+            ${checkin.valueText?`<div style="font-size:12px;margin-top:4px;"><span class="muted">지표</span> ${esc(checkin.valueText)}</div>`:""}
+            ${checkin.comment?`<div style="font-size:13px;margin-top:8px;line-height:1.6;">${esc(checkin.comment)}</div>`:""}
+            ${(checkin.attachments||[]).length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${checkin.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
+          </div>
+
+          <div style="font-weight:700;margin:16px 0 8px;font-size:13px;">💬 피드백 ${ciFeedbacks.length ? `(${ciFeedbacks.length})` : ""}</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${ciFeedbacks.length ? ciFeedbacks.map(fb => { const fbBy = userById(fb.by); return `
+              <div style="background:var(--surface-2);border-radius:8px;padding:8px 12px;">
+                <div style="display:flex;justify-content:space-between;"><strong style="font-size:12px;">${esc(fbBy?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(fb.at))}</span></div>
+                <div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(fb.text)}</div>
+              </div>`; }).join("") : `<p class="muted" style="font-size:12px;">아직 이 체크인에 대한 피드백이 없습니다.</p>`}
+          </div>
+          ${canFeedback ? `
+          <div class="field" style="margin-top:12px;">
+            <textarea id="checkin_fb_input_${checkin.id}" rows="3" placeholder="이 체크인 내용에 대한 피드백을 남겨보세요."></textarea>
+          </div>
+          <button class="button secondary" onclick="App.addCheckinFeedback('${goal.id}','${checkin.id}')">피드백 등록</button>` : ""}
+        </div>
       </div>
     </div>`;
 }
@@ -19993,6 +20126,7 @@ function renderDashboardGoalModal(user) {
         <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
         ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
         ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
+        ${(ci.attachments||[]).length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${ci.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
       </div>`;
     }).join("") : `<p class="muted" style="font-size:12px;">아직 체크인 기록이 없습니다.</p>`;
   } else if (activeTab === "feedback") {
