@@ -2979,8 +2979,9 @@ function renderGoalLinkPickerModal(user) {
   // 개인 목표: 내가 소유
   const myGoals = allCycleGoals.filter(g => g.ownerId === user.id);
   // 팀 목표: 내가 소속된 팀의 팀 레벨 목표만. 단, 소속 팀에 팀장이 없는 경우에는
-  // 팀 레벨 목표 자체가 없을 수 있으므로 1차 평가자(대개 본부장 등 상위 조직장)가
-  // 소유한 목표를 대신 연결할 수 있도록 한다.
+  // 팀 레벨 목표 자체가 없을 수 있으므로 1차 평가자(대개 본부장 등 상위 조직장)의
+  // 목표를, 1차 평가자도 지정되어 있지 않으면 2차 평가자의 목표를 대신 연결할 수
+  // 있도록 한다.
   const hasTeamLead = user.team && state.users.some(u =>
     u.role === "teamLead" && u.active !== false && !isRetired(u) && u.team === user.team
   );
@@ -2992,8 +2993,10 @@ function renderGoalLinkPickerModal(user) {
       user.team && g.team === user.team
     );
   } else {
-    const evaluator1 = user.evaluator1Id ? userById(user.evaluator1Id) : null;
-    teamGoals = evaluator1 ? allCycleGoals.filter(g => g.ownerId === evaluator1.id) : [];
+    const fallbackEvaluator = (user.evaluator1Id && userById(user.evaluator1Id))
+      || (user.evaluator2Id && userById(user.evaluator2Id))
+      || null;
+    teamGoals = fallbackEvaluator ? allCycleGoals.filter(g => g.ownerId === fallbackEvaluator.id) : [];
   }
 
   const { prefix, index } = state.ui.goalLinkPicker;
@@ -3010,9 +3013,7 @@ function renderGoalLinkPickerModal(user) {
   const goals = isPersonal ? myGoals : teamGoals;
   const emptyMsg = isPersonal
     ? "연결할 개인 목표가 없습니다.<br/>목표 관리 탭에서 먼저 목표를 만들어 주세요."
-    : hasTeamLead
-      ? "연결할 팀 목표가 없습니다."
-      : "소속 팀에 팀장이 없어 1차 평가자의 목표를 대신 보여드리고 있습니다.<br/>연결할 목표가 없습니다.";
+    : "연결할 목표가 없습니다.";
   const title = isPersonal ? "👤 업적 목표 선택 (개인 목표)" : "🏢 기여한 목표 선택 (팀 목표)";
 
   return `
@@ -3020,7 +3021,7 @@ function renderGoalLinkPickerModal(user) {
       <div class="goal-modal">
         <div class="goal-modal-head"><h2>${title}</h2><button onclick="App.closeGoalLinkPicker()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button></div>
         <div class="goal-modal-body">
-          <p class="muted" style="font-size:12px;">${gcycle ? (isPersonal ? `목표 사이클 '${esc(gcycle.name)}'의 개인 목표를 선택합니다.` : hasTeamLead ? `목표 사이클 '${esc(gcycle.name)}'의 팀 목표를 선택합니다.` : `소속 팀에 팀장이 없어 1차 평가자의 목표 중에서 선택합니다.`) : "활성 목표 사이클이 없습니다."}</p>
+          <p class="muted" style="font-size:12px;">${gcycle ? `목표 사이클 '${esc(gcycle.name)}'의 ${isPersonal ? "개인" : "팀"} 목표를 선택합니다.` : "활성 목표 사이클이 없습니다."}</p>
           ${goals.length ? goals.map(goalRow).join("") : `<div class="empty" style="padding:24px;">${emptyMsg}</div>`}
         </div>
         <div class="goal-modal-foot"><button class="button secondary" onclick="App.closeGoalLinkPicker()">닫기</button></div>
