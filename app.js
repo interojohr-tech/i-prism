@@ -307,6 +307,21 @@ function activeWeightComponents(cycle) {
   });
 }
 
+// 미진행으로 끈 평가 구성요소는 가중치 입력칸이 화면에서만 사라질 뿐, state.roleWeights에
+// 저장된 예전 값(예: 자세태도평가를 끄기 전 설정해둔 20%)은 그대로 남아있다. 실제 점수
+// 계산 함수들이 state.roleWeights를 이 값 그대로 읽으면, 화면에는 보이지도 편집할 수도
+// 없는 가중치가 예전에 입력된 점수와 함께 조용히 최종 점수에 계속 반영되어버린다
+// ("업적 70%·역량 30%로 설정했는데 계산 결과가 그 두 개만으로 계산한 값과 다르다").
+// 모든 점수 계산은 roleWeights를 직접 읽지 말고 반드시 이 함수를 통해 읽어, 미진행
+// 항목은 저장된 값과 무관하게 항상 가중치 0으로 취급되도록 한다.
+function effectiveRoleWeight(cycle, role, component) {
+  if (component === "upward" && cycle?.useUpward === false) return 0;
+  if (component === "peer" && cycle?.usePeer === false) return 0;
+  if (component === "attitude" && cycle?.useAttitude === false) return 0;
+  const roleWeights = state.roleWeights[role] || state.roleWeights.member;
+  return Number(roleWeights?.[component] || 0);
+}
+
 let state = loadState();
 backfillFinalSnapshotsForLockedCycles();
 
@@ -10097,10 +10112,10 @@ function getVisibleResultUsers(user) {
 
 // 평가자가 준 점수의 소계 (업적+역량+자세태도 가중합산)
 function calculateEvaluatorSubtotalScore(employee, review) {
-  const roleWeights = state.roleWeights[employee.role] || state.roleWeights.member || {};
+  const cycle = activeCycle();
   const items = ["performance", "competency", "attitude"].map(c => ({
     value: review[c]?.score != null && review[c].score !== "" ? Number(review[c].score) : null,
-    weight: Number(roleWeights[c] || 0)
+    weight: effectiveRoleWeight(cycle, employee.role, c)
   })).filter(s => s.value !== null && s.weight > 0);
   if (!items.length) return null;
   const totalWeight = items.reduce((s, v) => s + v.weight, 0);
@@ -10217,12 +10232,12 @@ function computeScoreResult(employee, evaluation) {
     componentScores.upward = calculateUpwardScoreForTarget(employee.id);
   }
   componentScores.peer = calculatePeerScoreForTarget(employee.id);
-  const roleWeights = state.roleWeights[employee.role] || state.roleWeights.member;
+  const cycle = activeCycle();
   const primaryScores = COMPONENTS
-    .map((component) => ({ value: componentScores[component]?.value ?? null, weight: Number(roleWeights[component] || 0) }))
+    .map((component) => ({ value: componentScores[component]?.value ?? null, weight: effectiveRoleWeight(cycle, employee.role, component) }))
     .filter((item) => item.value !== null && item.weight > 0);
   const weightedScores = WEIGHT_COMPONENTS
-    .map((component) => ({ value: componentScores[component]?.value ?? null, weight: Number(roleWeights[component] || 0) }))
+    .map((component) => ({ value: componentScores[component]?.value ?? null, weight: effectiveRoleWeight(cycle, employee.role, component) }))
     .filter((item) => item.value !== null && item.weight > 0);
   const totalWeight = weightedScores.reduce((total, item) => total + item.weight, 0);
   const rawScore = totalWeight ? weightedScores.reduce((total, item) => total + item.value * item.weight, 0) / totalWeight : 0;
@@ -10329,9 +10344,9 @@ function calculateComponentScore(employee, evaluation, component) {
 // 특정 단계(자기평가/1차)의 업적·역량·자세태도 점수만으로 산출한 점수
 function stageComponentScore(employee, stageEv) {
   if (!stageEv) return null;
-  const roleWeights = state.roleWeights[employee.role] || state.roleWeights.member;
+  const cycle = activeCycle();
   const parts = COMPONENTS
-    .map((comp) => ({ value: deriveComponentScore(stageEv[comp]), weight: Number(roleWeights[comp] || 0) }))
+    .map((comp) => ({ value: deriveComponentScore(stageEv[comp]), weight: effectiveRoleWeight(cycle, employee.role, comp) }))
     .filter((p) => p.value !== null && p.weight > 0);
   if (!parts.length) return null;
   const totalWeight = parts.reduce((s, p) => s + p.weight, 0);
