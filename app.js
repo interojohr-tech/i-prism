@@ -5507,8 +5507,9 @@ function renderApprovalDetailPanel(employeeId) {
 
   const stageRow = (label, review, status) => {
     if (!review || !["submitted","completed"].includes(status)) return "";
-    const score = review.performance?.score ?? review.score ?? "";
-    const grade = review.performance?.grade ?? review.grade ?? "";
+    // review.performance.score는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
+    const score = review.performance ? (deriveComponentScore(review.performance) ?? "") : (review.score ?? "");
+    const grade = score !== "" ? gradeByTemplateScore("performance", score, employee) : (review.grade ?? "");
     const comment = review.overallFeedback || review.performance?.comment || review.comment || "";
     return `
       <div style="border-left:3px solid var(--line);padding:8px 12px;margin-bottom:8px;">
@@ -5520,13 +5521,13 @@ function renderApprovalDetailPanel(employeeId) {
       </div>`;
   };
 
-  // 상향평가 수신 결과
+  // 상향평가 수신 결과 (answer.score는 캐시값이라 항상 문항 점수로 다시 계산한다)
   const upwardReceived = (getUpwardAssignments ? getUpwardAssignments() : []).filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
-  const upwardAvg = upwardReceived.length ? (upwardReceived.reduce((s, a) => s + (Number(a.answer?.score) || 0), 0) / upwardReceived.length).toFixed(1) : null;
+  const upwardAvg = upwardReceived.length ? (upwardReceived.reduce((s, a) => s + (deriveUpwardScore(a.answer || {}) || 0), 0) / upwardReceived.length).toFixed(1) : null;
 
-  // 동료평가 수신 결과
+  // 동료평가 수신 결과 (answer.score는 캐시값이라 항상 문항 점수로 다시 계산한다)
   const peerReceived = (getPeerAssignments ? getPeerAssignments() : []).filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
-  const peerAvg = peerReceived.length ? (peerReceived.reduce((s, a) => s + (Number(a.answer?.score) || 0), 0) / peerReceived.length).toFixed(1) : null;
+  const peerAvg = peerReceived.length ? (peerReceived.reduce((s, a) => s + (derivePeerScore(a.answer || {}) || 0), 0) / peerReceived.length).toFixed(1) : null;
 
   return `
     <div class="component-card" style="position:sticky;top:16px;">
@@ -10113,8 +10114,9 @@ function getVisibleResultUsers(user) {
 // 평가자가 준 점수의 소계 (업적+역량+자세태도 가중합산)
 function calculateEvaluatorSubtotalScore(employee, review) {
   const cycle = activeCycle();
+  // review[c].score는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
   const items = ["performance", "competency", "attitude"].map(c => ({
-    value: review[c]?.score != null && review[c].score !== "" ? Number(review[c].score) : null,
+    value: review[c] ? deriveComponentScore(review[c]) : null,
     weight: effectiveRoleWeight(cycle, employee.role, c)
   })).filter(s => s.value !== null && s.weight > 0);
   if (!items.length) return null;
@@ -10298,9 +10300,11 @@ function emptyComponentScores() {
 }
 
 function calculateUpwardScoreForTarget(targetId) {
+  // assignment.answer.score는 마지막 저장 시점의 캐시값이라 answer.itemScores와 어긋날 수
+  // 있으므로(자기/1차/2차 평가의 .score 캐시와 동일한 이유), 항상 문항 점수로 다시 계산한다.
   const scores = getUpwardAssignments()
     .filter((assignment) => assignment.targetId === targetId && isCompletedStatus(assignment.status))
-    .map((assignment) => toNumberOrNull(assignment.answer?.score))
+    .map((assignment) => deriveUpwardScore(assignment.answer || {}))
     .filter((score) => score !== null);
   if (!scores.length) return { value: null, text: "-" };
   const value = Math.round(average(scores) * 10) / 10;
@@ -10308,9 +10312,11 @@ function calculateUpwardScoreForTarget(targetId) {
 }
 
 function calculatePeerScoreForTarget(targetId) {
+  // assignment.answer.score는 마지막 저장 시점의 캐시값이라 answer.itemScores와 어긋날 수
+  // 있으므로(자기/1차/2차 평가의 .score 캐시와 동일한 이유), 항상 문항 점수로 다시 계산한다.
   const scores = getPeerAssignments()
     .filter((assignment) => assignment.targetId === targetId && isCompletedStatus(assignment.status))
-    .map((assignment) => toNumberOrNull(assignment.answer?.score))
+    .map((assignment) => derivePeerScore(assignment.answer || {}))
     .filter((score) => score !== null);
   if (!scores.length) return { value: null, text: "-" };
   const value = Math.round(average(scores) * 10) / 10;
@@ -11531,9 +11537,14 @@ function buildEvalSummaryWindowHTML(user, tasks) {
         return itemCell(score, gradeByItemScore(score, attTemplate.grades), "#e5e7eb");
       }).join("");
 
-      const perfScore = safeItemScore(review.performance?.score);
-      const compScore = safeItemScore(review.competency?.score);
-      const attScore  = safeItemScore(review.attitude?.score);
+      // review.*.score는 마지막 저장 시점의 캐시값이라 문항 점수와 어긋날 수 있으므로,
+      // 합계 칸은 항상 문항 점수로 다시 계산한다(자기평가 점수 팝업의 summaryRow와 동일한 이유).
+      const perfScore = safeItemScore(review.performance ? deriveComponentScore(review.performance) : null);
+      const compScore = safeItemScore(review.competency ? deriveComponentScore(review.competency) : null);
+      const attScore  = safeItemScore(review.attitude ? deriveComponentScore(review.attitude) : null);
+      const perfGrade = perfScore !== "" ? gradeByTemplateScore("performance", perfScore, task.employee) : "";
+      const compGrade = compScore !== "" ? gradeByTemplateScore("competency", compScore, task.employee) : "";
+      const attGrade  = attScore  !== "" ? gradeByTemplateScore("attitude",   attScore,  task.employee) : "";
 
       // AI 점수 (aiEval은 자기평가 기반이므로 직원 단위로 읽음)
       const aiEvalData = ev?.aiEval;
@@ -11549,9 +11560,9 @@ function buildEvalSummaryWindowHTML(user, tasks) {
         <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#64748b;">${H(task.employee.division||"")} / ${H(task.employee.team||"")}</td>
         <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:11px;text-align:center;">${H(task.label)}</td>
         ${statusCell(done, "2px solid #e5e7eb")}
-        ${achCells}${totalCell(perfScore, review.performance?.grade||"", "border-right:2px solid #c7d2fe;")}
-        ${compCells}${compCount ? totalCell(compScore, review.competency?.grade||"", "border-right:2px solid #c7d2fe;") : ""}
-        ${attCells}${attCount  ? totalCell(attScore,  review.attitude?.grade||"",  "") : ""}
+        ${achCells}${totalCell(perfScore, perfGrade, "border-right:2px solid #c7d2fe;")}
+        ${compCells}${compCount ? totalCell(compScore, compGrade, "border-right:2px solid #c7d2fe;") : ""}
+        ${attCells}${attCount  ? totalCell(attScore,  attGrade,  "") : ""}
         ${aiCell}
       </tr>`;
     }).join("");
@@ -11618,12 +11629,16 @@ function buildEvalSummaryWindowHTML(user, tasks) {
         return itemCell(score, gradeByItemScore(score, grades), "#e5e7eb");
       }).join("");
 
+      // ans.score/.grade는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
+      const totalScore = safeItemScore(kind === "upward" ? deriveUpwardScore(ans) : derivePeerScore(ans));
+      const totalGrade = totalScore !== "" ? gradeByItemScore(totalScore, grades) : "";
+
       return `<tr data-team="${H(task.employee.team||"")}">
         <td style="padding:8px 10px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-weight:600;white-space:nowrap;">${H(task.employee.name)}</td>
         <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#64748b;white-space:nowrap;">${H(task.employee.title||"")}</td>
         <td style="padding:7px 6px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#64748b;">${H(task.employee.division||"")} / ${H(task.employee.team||"")}</td>
         ${statusCell(done, "2px solid #e5e7eb")}
-        ${itemCells}${totalCell(safeItemScore(ans.score), ans.grade||"", "")}
+        ${itemCells}${totalCell(totalScore, totalGrade, "")}
       </tr>`;
     }).join("");
 
@@ -11656,17 +11671,22 @@ function buildEvalSummaryWindowHTML(user, tasks) {
       (review.performance?.achievements || []).forEach((ach, i) => {
         csvLines.push([...base,"업적평가",H(ach.name||`업적${i+1}`),safeItemScore(ach.score),"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
       });
-      csvLines.push([...base,"업적평가","합계",safeItemScore(review.performance?.score),review.performance?.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      // *.score/*.grade는 마지막 저장 시점의 캐시값이라 위 문항 점수와 어긋날 수 있으므로
+      // "합계" 행은 항상 문항 점수로 다시 계산한다.
+      const csvPerfScore = safeItemScore(review.performance ? deriveComponentScore(review.performance) : null);
+      csvLines.push([...base,"업적평가","합계",csvPerfScore,csvPerfScore!==""?gradeByTemplateScore("performance",csvPerfScore,task.employee):"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
       compTemplate.items.forEach((item,i) => {
         const score = safeItemScore(review.competency?.itemScores?.[i]);
         csvLines.push([...base,"역량평가",H(item.name||`역량${i+1}`),score,gradeByItemScore(score,compTemplate.grades),status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
       });
-      csvLines.push([...base,"역량평가","합계",safeItemScore(review.competency?.score),review.competency?.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      const csvCompScore = safeItemScore(review.competency ? deriveComponentScore(review.competency) : null);
+      csvLines.push([...base,"역량평가","합계",csvCompScore,csvCompScore!==""?gradeByTemplateScore("competency",csvCompScore,task.employee):"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
       attTemplate.items.forEach((item,i) => {
         const score = safeItemScore(review.attitude?.itemScores?.[i]);
         csvLines.push([...base,"자세태도",H(item.name||`자세태도${i+1}`),score,gradeByItemScore(score,attTemplate.grades),status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
       });
-      csvLines.push([...base,"자세태도","합계",safeItemScore(review.attitude?.score),review.attitude?.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      const csvAttScore = safeItemScore(review.attitude ? deriveComponentScore(review.attitude) : null);
+      csvLines.push([...base,"자세태도","합계",csvAttScore,csvAttScore!==""?gradeByTemplateScore("attitude",csvAttScore,task.employee):"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
     } else {
       const ans = task.assignment?.answer || {};
       const status = isCompletedStatus(task.assignment?.status) ? "완료" : "미완료";
@@ -11676,7 +11696,9 @@ function buildEvalSummaryWindowHTML(user, tasks) {
         const score = safeItemScore(ans.itemScores?.[i]);
         csvLines.push([...base,task.label,H(item.name||`문항${i+1}`),score,gradeByItemScore(score,tmpl?.grades||[]),status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
       });
-      csvLines.push([...base,task.label,"합계",safeItemScore(ans.score),ans.grade||"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+      // ans.score/.grade는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
+      const csvTotalScore = safeItemScore(task.type === "upward" ? deriveUpwardScore(ans) : derivePeerScore(ans));
+      csvLines.push([...base,task.label,"합계",csvTotalScore,csvTotalScore!==""?gradeByItemScore(csvTotalScore,tmpl?.grades||[]):"",status].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
     }
   });
   const csvData = "\\ufeff" + csvLines.join("\\n");
@@ -12062,10 +12084,11 @@ function buildMemberDetailWindowHTML(employeeId, options = {}) {
     const peerTemplate = state.peerTemplate || { items: [] };
     const upwardTemplate = state.upwardTemplate || { items: [] };
 
-    function assignRow(assign, template) {
+    function assignRow(assign, template, kind) {
       const evaluator = cycleUserById(assign.evaluatorId) || {};
       const ans = assign.answer || {};
-      const totalSc = safeItemScore(ans.score);
+      // ans.score는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
+      const totalSc = safeItemScore(kind === "upward" ? deriveUpwardScore(ans) : derivePeerScore(ans));
       const itemCols = template.items.map((item, i) => {
         const sc = safeItemScore(ans.itemScores?.[i]);
         return `<span style="font-size:11px;display:inline-block;margin-right:8px;white-space:nowrap;"><span style="color:#64748b;">${H(item.name||"")}:</span> <strong>${sc !== "" ? sc : "-"}</strong></span>`;
@@ -12080,10 +12103,10 @@ function buildMemberDetailWindowHTML(employeeId, options = {}) {
     }
 
     if (upwardAssigns.length) {
-      upwardSection = extraSectionTable("⬆️ 상향평가", "#5b21b6", upwardAssigns.map(a => assignRow(a, upwardTemplate)));
+      upwardSection = extraSectionTable("⬆️ 상향평가", "#5b21b6", upwardAssigns.map(a => assignRow(a, upwardTemplate, "upward")));
     }
     if (peerAssigns.length) {
-      peerSection = extraSectionTable("🤝 동료평가", "#065f46", peerAssigns.map(a => assignRow(a, peerTemplate)));
+      peerSection = extraSectionTable("🤝 동료평가", "#065f46", peerAssigns.map(a => assignRow(a, peerTemplate, "peer")));
     }
 
   }
@@ -17154,10 +17177,11 @@ const App = {
     const peerAssigns = (getPeerAssignments ? getPeerAssignments() : [])
       .filter(a => a.targetId === employeeId && isCompletedStatus(a.status));
 
+    // answer.score는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
     const upAvg = upwardAssigns.length
-      ? (upwardAssigns.reduce((s,a) => s + (Number(a.answer?.score)||0), 0) / upwardAssigns.length).toFixed(1) : null;
+      ? (upwardAssigns.reduce((s,a) => s + (deriveUpwardScore(a.answer||{})||0), 0) / upwardAssigns.length).toFixed(1) : null;
     const peerAvg = peerAssigns.length
-      ? (peerAssigns.reduce((s,a) => s + (Number(a.answer?.score)||0), 0) / peerAssigns.length).toFixed(1) : null;
+      ? (peerAssigns.reduce((s,a) => s + (derivePeerScore(a.answer||{})||0), 0) / peerAssigns.length).toFixed(1) : null;
 
     // 평가 그룹 카드 생성 함수
     const stageColors = {
@@ -17176,10 +17200,14 @@ const App = {
       }
       if (!stageEv) return "";
       const c = stageColors[stageKey];
-      const compRows = COMPONENTS.map(comp => {
+      const useAttitudeNow = activeCycle().useAttitude !== false;
+      const stageComponents = useAttitudeNow ? COMPONENTS : COMPONENTS.filter((comp) => comp !== "attitude");
+      const compRows = stageComponents.map(comp => {
         const d = stageEv[comp];
-        if (!d || (d.score === "" && !d.comment)) return "";
-        const s = d.score !== undefined && d.score !== "" ? `<strong>${typeof d.score==="number"?d.score.toFixed(1):d.score}점</strong>` : "";
+        // d.score는 캐시값이라 문항 점수와 어긋날 수 있으므로 항상 다시 계산한다.
+        const freshScore = d ? deriveComponentScore(d) : null;
+        if (!d || (freshScore === null && !d.comment)) return "";
+        const s = freshScore !== null ? `<strong>${freshScore.toFixed(1)}점</strong>` : "";
         const g = "";
         const comment = d.comment ? `<p style="font-size:11.5px;color:var(--muted);margin:4px 0 0;line-height:1.5;">${esc(d.comment)}</p>` : "";
         return `<div style="padding:6px 0;border-bottom:1px solid ${c.border};">
