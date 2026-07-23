@@ -5194,9 +5194,12 @@ function renderApprovalPage(user) {
   const presidentApproved = Boolean(cycle.resultSubmissions[presidentApprovedKey]?.submitted);
   const chairmanApproved  = Boolean(cycle.resultSubmissions[chairmanApprovedKey]?.submitted);
 
-  // 모든 평가 완료 여부 + 모든 본부 종합평가 제출 여부
+  // 모든 평가 완료 여부 + 모든 본부 종합평가 제출 여부 (조정 세션 대기 중인 본부도
+  // 본부장이 원안 등급을 이미 입력·저장한 상태이므로 입력 완료로 취급한다 — 그렇지
+  // 않으면 인사총무팀이 승인요청을 보냈는데도 사장/회장 최종 승인 화면이 계속
+  // "종합평가 미완료"로 막혀 버린다)
   const divisionStatuses = getDivisionSubmissionStatuses();
-  const allDivisionsSubmitted = divisionStatuses.length > 0 && divisionStatuses.every(d => d.submitted);
+  const allDivisionsSubmitted = divisionStatuses.length > 0 && divisionStatuses.every(isGroupInputComplete);
   const allEvaluationsComplete = evaluatees.every(emp => {
     const ev = evaluations()[emp.id];
     if (!ev) return false;
@@ -5293,7 +5296,7 @@ function renderApprovalPage(user) {
     }).length;
     stepBanner = `<div class="notice warn"><strong>⚠ 평가 미완료:</strong> 완료되지 않은 평가가 ${incompleteCount}명 있습니다. 모든 평가가 완료되어야 승인이 가능합니다.</div>`;
   } else if (!allDivisionsSubmitted) {
-    const unsubmitted = divisionStatuses.filter(d => !d.submitted).map(d => d.division).join(", ");
+    const unsubmitted = divisionStatuses.filter(d => !isGroupInputComplete(d)).map(d => d.division).join(", ");
     stepBanner = `<div class="notice warn"><strong>⚠ 종합평가 미완료:</strong> 미제출 본부: ${esc(unsubmitted)} — 모든 본부의 종합평가 제출 후 승인이 가능합니다.</div>`;
   } else if (!presidentApproved) {
     stepBanner = user.role === "president"
@@ -8959,9 +8962,10 @@ function renderAdminAdjustments() {
   const chairmanApproved  = Boolean(chairmanApproval?.submitted);
   const evaluatees = chairmanApproved ? readiness.evaluatees : [];
   if (chairmanApproved) evaluatees.forEach(ensureAdjustmentDefaults);
-  // 종합평가 전체 완료 여부 (AI 평가자 성향 분석 버튼 활성화 조건)
+  // 종합평가 전체 완료 여부 (AI 평가자 성향 분석 버튼 활성화 조건). 조정 세션 대기
+  // 중인 본부도 원안 등급은 이미 입력된 상태이므로 입력 완료로 취급한다.
   const divisionStatuses = getDivisionSubmissionStatuses();
-  const allDivisionsSubmitted = divisionStatuses.length > 0 && divisionStatuses.every(d => d.submitted);
+  const allDivisionsSubmitted = divisionStatuses.length > 0 && divisionStatuses.every(isGroupInputComplete);
   const tendency = cycle.aiEvaluatorTendency;
   const approvalRequestedAt = cycle.approvalRequestedAt ? `· ${esc(formatDateTime(cycle.approvalRequestedAt))}` : "";
   const approvalStatusBar = `
