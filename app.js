@@ -4099,6 +4099,7 @@ function renderResultSubmission(user) {
         </div>
       </div>
       <div class="panel-body grid">
+        ${submission?.rejection ? `<div class="notice warn"><strong>⚠ 종합평가가 반려되었습니다.</strong><br/>반려 사유: ${esc(submission.rejection.reason || "-")}<br/>내용을 확인하고 등급을 다시 배분한 뒤 "종합평가 확정 제출"을 눌러 주세요.</div>` : ""}
         ${submission?.needsAdjustmentSession ? `<div class="notice warn"><strong>⚠ 평가 등급 조정 세션 대기 중입니다.</strong><br/>등급 배분율을 초과하여 제출이 보류되었습니다. 인사총무팀에서 연락드릴 예정입니다.${submission.distributionReason ? `<br/><span class="muted">제출 사유: ${esc(submission.distributionReason)}</span>` : ""}</div>` : ""}
         <div class="notice info">
           <strong>등급 배분율 가이드</strong> (본부장 평가등급: <strong>${gradeBadge(headGrade)}</strong> 기준): S-인사위논의 · A-${state.distributionMatrix[headGrade]?.A||20}% · B-${state.distributionMatrix[headGrade]?.B||50}% · C-${state.distributionMatrix[headGrade]?.C||20}% · D-${state.distributionMatrix[headGrade]?.D||10}%<br/>
@@ -4413,6 +4414,15 @@ function orgGradeSelect(id, selected, employeeId, autoGrade) {
 
 function divisionSubmissionKey(division) {
   return `division:${division || "미지정 본부"}`;
+}
+
+// 최종조정 준비 현황의 "조정 세션 시작하기"/"재평가 요청하기" 버튼은 본부명 또는
+// 인사총무팀 그룹을 가리키는 특수값(HR_GROUP_SCOPE_KEY, "__hr_admin__")을 sessionArg로
+// 넘긴다. resultSubmissions는 본부일 때 divisionSubmissionKey("division:본부명")로,
+// 인사총무팀 그룹일 때는 HR_GROUP_SCOPE_KEY("__hr_admin__") 자체로 저장되어 서로 키
+// 형식이 다르므로, 이 헬퍼로 sessionArg에 맞는 실제 저장 키를 일관되게 구해야 한다.
+function resultSubmissionKeyForSessionArg(sessionArg) {
+  return sessionArg === HR_GROUP_SCOPE_KEY ? HR_GROUP_SCOPE_KEY : divisionSubmissionKey(sessionArg);
 }
 
 // 특정 본부의 현재 등급 분배 스냅샷(구성원별 등급 + 등급별 인원수)
@@ -6556,19 +6566,55 @@ function renderAdminHRGroupComprehensive() {
       </section>`;
   }
 
+  // 표준화 점수 계산 (설정 활성화 시) — 본부장 종합평가 화면과 동일한 방식
+  const useStd = Boolean(activeCycle()?.useScoreStandardization);
+  const stdScores = useStd ? calculateStandardizedScores(rows) : new Map();
+
+  const cmpSortCol = state.ui.cmpSortCol || (useStd ? "std" : "score");
+  const cmpSortDir = state.ui.cmpSortDir || "desc";
+  const getCmpSortValue = (emp) => {
+    const result = calculateFinal(emp.id);
+    if (cmpSortCol === "std") {
+      const s = stdScores.get(emp.id)?.standardizedScore;
+      return s != null ? s : (result.rawScore ?? -1);
+    }
+    if (cmpSortCol === "score") return result.rawScore ?? -1;
+    if (cmpSortCol === "grade") {
+      const ev = evaluations()[emp.id];
+      const info = stdScores.get(emp.id);
+      const isSmallTeamMerged = useStd && info?.canStandardize === false && ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade);
+      const grade = isSmallTeamMerged ? ev.orgAdjustment.grade : result.autoGrade;
+      return GRADES.indexOf(grade ?? "");
+    }
+    return -1;
+  };
   const sortedRows = [...rows].sort((a, b) => {
-    const sa = calculateFinal(a.id).rawScore ?? -1;
-    const sb = calculateFinal(b.id).rawScore ?? -1;
-    return sb - sa;
+    const sa = getCmpSortValue(a);
+    const sb = getCmpSortValue(b);
+    return cmpSortDir === "asc" ? sa - sb : sb - sa;
   });
 
+  // 소규모팀(표준화 불가) 구성원: 등급 미배정이면 상단 분리, 배정 완료되면 본 목록에 합류
+  const smallTeamRows = useStd ? sortedRows.filter(e => {
+    if (stdScores.get(e.id)?.canStandardize !== false) return false;
+    const ev = evaluations()[e.id];
+    return !ev?.orgAdjustment?.gradeManual;
+  }) : [];
+  const normalRows = useStd ? sortedRows.filter(e => {
+    const info = stdScores.get(e.id);
+    if (info?.canStandardize !== false) return true;
+    const ev = evaluations()[e.id];
+    return Boolean(ev?.orgAdjustment?.gradeManual);
+  }) : sortedRows;
+
   const gradeCounts = Object.fromEntries(GRADES.map((g) => [g, 0]));
-  sortedRows.forEach((employee) => {
+  normalRows.forEach((employee) => {
     const ev = evaluations()[employee.id];
     const g = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : calculateFinal(employee.id).autoGrade;
     if (GRADES.includes(g)) gradeCounts[g]++;
   });
   const total = sortedRows.length;
+  const distTotal = normalRows.length;
   // 기준 조직 등급: UI 상태에서 관리 (저장 안 됨, 이 화면에서만 사용)
   const refGrade = GRADES.includes(state.ui.hrGroupRefGrade) ? state.ui.hrGroupRefGrade : "B";
   const dist = state.distributionMatrix[refGrade] || state.distributionMatrix["B"] || {};
@@ -6590,12 +6636,13 @@ function renderAdminHRGroupComprehensive() {
         </div>
       </div>
       <div class="panel-body grid">
+        ${submission?.rejection ? `<div class="notice warn"><strong>⚠ 종합평가가 반려되었습니다.</strong><br/>반려 사유: ${esc(submission.rejection.reason || "-")}<br/>내용을 확인하고 등급을 다시 배분한 뒤 "종합평가 확정 제출"을 눌러 주세요.</div>` : ""}
         <div class="notice info">
           <strong>인사총무팀 그룹 종합평가</strong><br/>
           상대평가 그룹이 인사총무팀으로 배정된 구성원들의 종합평가를 진행합니다. 이름을 클릭하면 상세 평가 내용을 확인할 수 있습니다.
         </div>
-        <div class="component-card" id="grade-dist-panel" data-head-grade="${esc(refGrade)}" data-total="${total}">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div class="component-card" id="grade-dist-panel" data-head-grade="${esc(refGrade)}" data-total="${distTotal}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
             <h3 style="margin:0;">등급 배분 현황</h3>
             <div style="display:flex;align-items:center;gap:10px;">
               <span style="font-size:13px;color:var(--muted);white-space:nowrap;">기준 조직 등급</span>
@@ -6612,19 +6659,109 @@ function renderAdminHRGroupComprehensive() {
             </div>
           </div>
           <div id="grade-dist-bars" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">
-            ${renderGradeDistCards(gradeCounts, total, refGrade)}
+            ${renderGradeDistCards(gradeCounts, distTotal, refGrade)}
           </div>
         </div>
-        <div class="table-wrap">
+
+        <!-- 종합평가 필터 -->
+        ${(() => {
+          const teams   = [...new Set(sortedRows.map(e => e.team).filter(Boolean))].sort();
+          const titles  = [...new Set(sortedRows.map(e => e.title).filter(Boolean))].sort();
+          const teamOpts  = teams.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+          const titleOpts = titles.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+          const gradeOpts = GRADES.map(g => `<option value="${g}">${g}등급</option>`).join("");
+          const selStyle  = `padding:7px 14px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:var(--surface);min-width:120px;`;
+          return `<div style="display:flex;gap:10px;flex-wrap:nowrap;align-items:center;padding:12px 0 8px;">
+            <div style="position:relative;flex:1;min-width:160px;max-width:260px;">
+              <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;">🔍</span>
+              <input id="cmp-filter-name" type="text" placeholder="이름 검색..."
+                oninput="App.cmpFilter()"
+                style="width:100%;padding:7px 10px 7px 30px;border:1px solid var(--line);border-radius:6px;font-size:13px;" />
+            </div>
+            <select id="cmp-filter-team"  onchange="App.cmpFilter()" style="${selStyle}">
+              <option value="">팀&nbsp;&nbsp;전체</option>${teamOpts}
+            </select>
+            <select id="cmp-filter-title" onchange="App.cmpFilter()" style="${selStyle}">
+              <option value="">직급&nbsp;&nbsp;전체</option>${titleOpts}
+            </select>
+            <select id="cmp-filter-grade" onchange="App.cmpFilter()" style="${selStyle}">
+              <option value="">등급&nbsp;&nbsp;전체</option>${gradeOpts}
+            </select>
+          </div>`;
+        })()}
+
+        ${useStd && smallTeamRows.length > 0 ? `
+        <div class="notice warn" style="margin-bottom:8px;">
+          <strong>⚠ 아래 ${smallTeamRows.length}명은 팀 인원이 2명 이하로 표준화 점수를 산출할 수 없습니다.</strong><br/>
+          추천 등급이 표시되지 않으니 직접 등급을 부여해 주세요.
+        </div>
+        <div class="table-wrap" style="margin-bottom:16px;">
           <table>
-            <thead><tr><th>순위</th><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th><th>종합 점수</th><th>추천 등급</th><th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th></tr></thead>
+            <thead><tr><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th><th>종합 점수</th><th>표준화 점수</th><th>추천 등급</th><th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th></tr></thead>
             <tbody>
-              ${sortedRows.map((employee, idx) => {
+              ${smallTeamRows.map(employee => {
                 const ev = evaluations()[employee.id];
                 const result = calculateFinal(employee.id);
+                const hasManualGrade = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade);
+                const curGrade = hasManualGrade ? ev.orgAdjustment.grade : "";
+                return `
+                  <tr data-name="${esc(employee.name)}" data-team="${esc(employee.team||"")}" data-title="${esc(employee.title||"")}" data-grade="${esc(curGrade||"")}">
+                    <td>
+                      <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
+                        <strong style="color:var(--primary);text-decoration:underline;">${esc(employee.name)}</strong>
+                      </button>
+                      <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
+                    </td>
+                    <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.team || employee.division || "")}</span></td>
+                    <td>${renderStageComponentScores(employee, ev, { hiddenStages: [], hideExtras: true })}</td>
+                    <td>${peerScoreCellHtml(employee)}</td>
+                    <td><span class="score" style="font-size:18px;">${result.scoreText}</span></td>
+                    <td><span class="muted" style="font-size:12px;">팀 인원 부족</span></td>
+                    <td><span class="muted">-</span></td>
+                    <td>
+                      ${isSubmitted ? (hasManualGrade ? gradeBadge(curGrade) : `<span class="muted">-</span>`) : `<select id="org_adj_grade_${employee.id}"
+                          onchange="App.handleSmallTeamGradeChange('${employee.id}');App.refreshComprehensiveStats();"
+                          style="width:90px;font-weight:700;${!curGrade ? "color:var(--text-muted,#888);" : ""}">
+                          <option value="" ${!curGrade ? "selected" : ""}>-</option>
+                          ${GRADES.map(g => `<option value="${g}" ${curGrade === g ? "selected" : ""}>${g}</option>`).join("")}
+                        </select>`}
+                    </td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>` : ""}
+
+        <div class="table-wrap">
+          <table>
+            ${(() => {
+              const sortArrow = (col) => {
+                const active = cmpSortCol === col;
+                const up = active && cmpSortDir === "asc";
+                const down = active && cmpSortDir === "desc";
+                return `<span style="display:inline-flex;flex-direction:column;margin-left:4px;line-height:1;vertical-align:middle;cursor:pointer;" onclick="App.setCmpSort('${col}')">
+                  <span style="font-size:9px;opacity:${up ? 1 : 0.3};color:${up ? "var(--primary)" : "inherit"};">▲</span>
+                  <span style="font-size:9px;opacity:${down ? 1 : 0.3};color:${down ? "var(--primary)" : "inherit"};">▼</span>
+                </span>`;
+              };
+              return `<thead><tr>
+                <th>순위</th><th>구성원</th><th>역할 / 조직</th><th>차수별 점수</th><th>동료평가</th>
+                <th style="cursor:pointer;white-space:nowrap;" onclick="App.setCmpSort('score')">종합 점수${sortArrow("score")}</th>
+                ${useStd ? `<th style="white-space:nowrap;">표준화 점수 <span onclick="App.showStandardizationInfo()" title="표준화 점수 산출 방법 보기" style="cursor:pointer;color:var(--primary);font-weight:400;font-size:13px;margin-left:2px;">ⓘ</span>${sortArrow("std")}</th>` : ""}
+                <th style="cursor:pointer;white-space:nowrap;" onclick="App.setCmpSort('grade')">추천 등급${sortArrow("grade")}</th>
+                <th>종합평가 등급 배분 <span style="color:var(--red)">*</span></th>
+              </tr></thead>`;
+            })()}
+            <tbody id="cmp-tbody">
+              ${normalRows.map((employee, idx) => {
+                const ev = evaluations()[employee.id];
+                const result = calculateFinal(employee.id);
+                const stdInfo = stdScores.get(employee.id);
+                const isSmallTeamMerged = useStd && stdInfo?.canStandardize === false && ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade);
+                const recommendedGrade = isSmallTeamMerged ? ev.orgAdjustment.grade : result.autoGrade;
                 const curGrade = ev?.orgAdjustment?.gradeManual && GRADES.includes(ev.orgAdjustment.grade) ? ev.orgAdjustment.grade : result.autoGrade;
                 return `
-                  <tr>
+                  <tr data-name="${esc(employee.name)}" data-team="${esc(employee.team||"")}" data-title="${esc(employee.title||"")}" data-grade="${esc(curGrade||"")}">
                     <td><strong style="font-size:16px;color:var(--primary);">${idx + 1}</strong></td>
                     <td>
                       <button onclick="App.openMemberDetailWindow('${employee.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;">
@@ -6633,15 +6770,19 @@ function renderAdminHRGroupComprehensive() {
                       <br/><span class="muted" style="font-size:11px;">${esc(employee.employeeNo || "")}</span>
                     </td>
                     <td>${ROLE_LABELS[employee.role]}<br/><span class="muted">${esc(employee.team || employee.division || "")}</span></td>
-                    <td style="font-size:12px;">
-                      ${["self","first","second"].filter(s => result.stageScores?.[s] != null).map(s => `${STAGE_LABELS[s]}: <strong>${result.stageScores[s].toFixed(1)}</strong>`).join("<br/>")}
-                    </td>
-                    <td style="font-size:12px;">${result.upwardScore != null ? `상향: <strong>${result.upwardScore.toFixed(1)}</strong><br/>` : ""}${result.peerScore != null ? `동료: <strong>${result.peerScore.toFixed(1)}</strong>` : "-"}</td>
-                    <td><strong style="font-size:15px;">${esc(result.scoreText || "-")}</strong></td>
-                    <td>${gradeBadge(result.autoGrade)}</td>
-                    <td>${isSubmitted
-                      ? gradeBadge(curGrade)
-                      : orgGradeSelect(`org_adj_grade_${employee.id}`, curGrade, employee.id, result.autoGrade)}
+                    <td>${renderStageComponentScores(employee, ev, { hiddenStages: [], hideExtras: true })}</td>
+                    <td>${peerScoreCellHtml(employee)}</td>
+                    <td><span class="score" style="font-size:18px;">${result.scoreText}</span></td>
+                    ${useStd ? `<td><span class="score" style="font-size:18px;color:#2454c6;">${stdInfo?.standardizedScore != null ? stdInfo.standardizedScore.toFixed(1) : "-"}</span></td>` : ""}
+                    <td>${gradeBadge(recommendedGrade)}</td>
+                    <td>
+                      ${isSubmitted
+                        ? gradeBadge(curGrade)
+                        : `<select id="org_adj_grade_${employee.id}" data-auto-grade="${esc(result.autoGrade)}" data-previous="${esc(curGrade)}" ${isSmallTeamMerged ? 'data-small-team-merged="1"' : ""}
+                            onchange="App.handleOrgAdjustmentGradeChange('${employee.id}');App.refreshComprehensiveStats();"
+                            style="width:90px;font-weight:700;">
+                            ${GRADES.map((g) => `<option value="${g}" ${curGrade === g ? "selected" : ""}>${g}</option>`).join("")}
+                          </select>`}
                     </td>
                   </tr>`;
               }).join("")}
@@ -8858,7 +8999,23 @@ function renderAdminAdjustments() {
             ? `${renderOverallGradeDistribution(evaluatees, "전체 결과 등급 분포도")}
               ${renderAdjustmentDeptDistribution(evaluatees)}
               ${renderAdjustmentResultPanel(evaluatees)}`
-            : `<div class="notice warn">회장 최종 확정 후 전체 결과 등급 분포도 및 조정 패널이 표시됩니다.</div>`
+            : (() => {
+                // 회장 최종 확정 전이라도, 모든 상대평가 그룹의 종합평가 제출이 끝났다면
+                // 승인요청을 올리기 전에 전체 등급 배분 상황을 미리 검토(조정 세션/재평가
+                // 요청 여부 판단용)할 수 있도록 잠정 분포도·부서별 분포를 보여준다. 등급
+                // 조정 입력 패널(renderAdjustmentResultPanel)은 회장 확정 이후 사장/회장
+                // 조정 전용 기능이라 이 단계에서는 그대로 숨긴다.
+                const previewGroupStatuses = getRelativeGroupStatuses();
+                const allGroupsSubmittedForPreview = previewGroupStatuses.length > 0
+                  && previewGroupStatuses.filter(g => g.groupName !== "미배정").every(g => g.submitted);
+                if (!allGroupsSubmittedForPreview) {
+                  return `<div class="notice warn">모든 종합평가가 제출되면 전체 결과 등급 분포도가 표시됩니다.</div>`;
+                }
+                const previewEvaluatees = readiness.evaluatees;
+                return `${renderOverallGradeDistribution(previewEvaluatees, "전체 결과 등급 분포도 (잠정)")}
+                  ${renderAdjustmentDeptDistribution(previewEvaluatees)}
+                  <div class="notice info">모든 종합평가가 제출되었습니다. 위 배분 현황을 확인한 뒤 조정 세션을 진행하거나 재평가를 요청할 수 있습니다. 준비가 되면 상단의 <strong>승인요청</strong> 버튼으로 다음 단계를 진행하세요.</div>`;
+              })()
         }
       </div>
     </section>
@@ -9150,9 +9307,9 @@ function renderFinalAdjustmentReadiness(readiness) {
       const sessionArg = g.groupName === "인사총무팀" ? "__hr_admin__" : esc(g.head?.division || "");
       if (!sessionArg) return "-";
       if (approvalRequested) {
-        return `${completedBadge}<button class="button sm" disabled title="승인요청 후 조정 세션을 시작할 수 없습니다.">조정 세션 시작하기</button>`;
+        return `${completedBadge}<button class="button sm" disabled title="승인요청 후 조정 세션을 시작할 수 없습니다.">조정 세션 시작하기</button> <button class="button sm danger" disabled title="승인요청 후에는 재평가를 요청할 수 없습니다.">재평가 요청하기</button>`;
       }
-      return `${completedBadge}<button class="button sm" onclick="App.openAdjustmentSession('${sessionArg}')">조정 세션 시작하기</button>`;
+      return `${completedBadge}<button class="button sm" onclick="App.openAdjustmentSession('${sessionArg}')">조정 세션 시작하기</button> <button class="button sm danger" onclick="App.requestComprehensiveReeval('${sessionArg}','${esc(g.groupName)}')">재평가 요청하기</button>`;
     }
     return "-";
   };
@@ -17020,6 +17177,38 @@ const App = {
     state.ui.flash = "인사팀 면담 요청이 접수되었습니다.";
     render();
     window.alert("⚠️ 면담 요청이 접수되었습니다.\n\n입력하신 사유가 인사총무팀에 전달되었으며, 인사총무팀에서 별도로 연락드리겠습니다.");
+  },
+  // 어드민(인사총무팀): 종합평가 반려 — 배분 기준을 벗어난 제출을 조정 세션으로 직접
+  // 고치는 대신, 해당 본부장(또는 인사총무팀 그룹 담당자)이 종합평가를 다시 하도록
+  // 되돌린다. 이미 배분한 등급은 그대로 두고(재작업 시 참고할 수 있도록) 제출 상태만
+  // 초기화한다 — 셀프/1차 평가 반려(rejectSelfEvaluation/rejectFirstEvaluation)와 동일한
+  // "데이터는 보존, 제출 상태만 되돌림" 패턴.
+  requestComprehensiveReeval(sessionArg, groupName) {
+    const user = currentUser();
+    if (user.role !== "admin") return window.alert("인사총무팀(어드민) 권한이 필요합니다.");
+    const cycle = activeCycle();
+    const key = resultSubmissionKeyForSessionArg(sessionArg);
+    const submission = cycle.resultSubmissions?.[key];
+    if (!submission || !(submission.submitted || submission.needsAdjustmentSession)) {
+      return window.alert("반려할 종합평가 제출 내역이 없습니다.");
+    }
+    const label = groupName || submission.scopeLabel || "";
+    const reason = window.prompt(`[${label}] 종합평가를 반려하고 재평가를 요청합니다.\n반려 사유를 입력해 주세요.`, "");
+    if (!reason || !reason.trim()) return window.alert("재평가를 요청하려면 사유를 입력해야 합니다.");
+    if (!window.confirm(`[${label}]의 종합평가를 반려하고 재평가를 요청하시겠습니까?\n담당자가 종합평가를 다시 제출해야 합니다.`)) return;
+
+    submission.submitted = false;
+    submission.needsAdjustmentSession = false;
+    submission.submittedAt = null;
+    submission.adjustmentCompletedAt = null;
+    submission.distributionReason = "";
+    submission.rejectionHistory = Array.isArray(submission.rejectionHistory) ? submission.rejectionHistory : [];
+    submission.rejection = { by: user.id, byName: user.name, at: new Date().toISOString(), reason: reason.trim() };
+    submission.rejectionHistory.push({ ...submission.rejection });
+
+    saveState();
+    state.ui.flash = `[${label}] 종합평가 재평가를 요청했습니다.`;
+    render();
   },
   // 어드민(인사총무팀): 조정 세션 시작 — 해당 본부 종합평가 모달 오픈
   openAdjustmentSession(division) {
