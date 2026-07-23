@@ -11868,8 +11868,13 @@ function buildMemberDetailWindowHTML(employeeId, options = {}) {
   function summaryRow(areaKey, label, areaColor) {
     const cells = visibleStages.map(s => {
       const area = ev[s.key]?.[areaKey];
-      const sc = safeItemScore(area?.score);
-      const gr = area?.grade || "";
+      // area.score/grade는 마지막 저장 시점의 캐시값이라, 문항 점수가 그 뒤 다른 경로(예:
+      // 더미 데이터 생성)로 바뀌면 아래 문항별 점수와도, 실제 종합 점수 계산(동일하게
+      // deriveComponentScore를 쓰는)과도 어긋날 수 있다. 캐시를 믿지 말고 항상 현재
+      // 문항 점수로 다시 계산해, 합계 표시가 문항별 점수·실제 계산과 항상 일치하게 한다.
+      const freshScore = area ? deriveComponentScore(area) : null;
+      const sc = safeItemScore(freshScore);
+      const gr = sc !== "" ? gradeByTemplateScore(areaKey, sc, employee) : "";
       const bg = sc !== "" ? (scoreColor(sc) || "#f8fafc") : "#f8fafc";
       return `<td style="${tdC}background:${bg};">${scoreCell(sc, gr)}</td>`;
     }).join("");
