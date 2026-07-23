@@ -2978,6 +2978,12 @@ function renderGoalLinkPickerModal(user) {
 
   // 개인 목표: 내가 소유
   const myGoals = allCycleGoals.filter(g => g.ownerId === user.id);
+  // 평가자(1차/2차) 배정은 App.saveEvaluators()가 cycleUserById()로 가져온 "인사평가
+  // 사이클 스냅샷" 쪽 객체에 저장한다 — 즉 evaluator1Id/evaluator2Id는 live
+  // state.users가 아니라 그 스냅샷에 있으므로, 반드시 cycleUserById로 다시 조회해야
+  // 실제로 저장된 평가자 배정을 읽을 수 있다. user(=live state.users)의 필드를 그대로
+  // 쓰면 늘 비어 있어 후보가 하나도 뜨지 않는다.
+  const cycleUser = cycleUserById(user.id) || user;
   // 팀 목표 후보 = (1) 내가 소속된 팀의 팀 레벨 목표 + (2) 1차 평가자(팀장이 없어
   // 본부장 등 상위 조직장이 1차 평가자로 대신 지정된 경우 포함, 1차 평가자가 아예
   // 없으면 2차 평가자)가 소유한 목표(개인 레벨 제외)를 합쳐서(중복 제거) 보여준다.
@@ -2986,8 +2992,8 @@ function renderGoalLinkPickerModal(user) {
   const teamNameGoals = allCycleGoals.filter(g =>
     g.ownerId !== user.id && g.level === "team" && user.team && g.team === user.team
   );
-  const teamRepresentative = (user.evaluator1Id && userById(user.evaluator1Id))
-    || (user.evaluator2Id && userById(user.evaluator2Id))
+  const teamRepresentative = (cycleUser.evaluator1Id && userById(cycleUser.evaluator1Id))
+    || (cycleUser.evaluator2Id && userById(cycleUser.evaluator2Id))
     || null;
   const representativeGoals = teamRepresentative
     ? allCycleGoals.filter(g => g.ownerId === teamRepresentative.id && g.level !== "individual")
