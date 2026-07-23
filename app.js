@@ -11363,8 +11363,16 @@ function gradeByItemScore(score, grades) {
   if (score === "" || score === undefined || score === null) return "";
   const s = Number(score);
   if (isNaN(s)) return "";
-  const g = (grades || []).find(g => Number(g.score) === s);
-  return g ? g.grade : "";
+  // 개별 문항 점수는 등급 선택 버튼으로 입력되어 항상 등급표 값과 정확히 일치하지만, 상향·
+  // 동료평가 "합계"처럼 여러 문항의 평균으로 나온 값은 정확히 일치하는 경우가 거의 없어
+  // 예전 로직(정확히 일치할 때만 등급 표시)으로는 등급이 항상 빈 칸으로 표시되었다.
+  // gradeByUpwardScore/gradeByPeerScore와 동일하게 등급표를 점수 내림차순 정렬 후
+  // "이 등급 기준점 이상인 가장 높은 등급"을 찾도록 통일 — 정확히 일치하는 개별 문항
+  // 점수에는 동일한 결과를, 평균값에는 올바른 구간 등급을 반환한다.
+  const list = Array.isArray(grades) ? grades : [];
+  if (!list.length) return "";
+  const sorted = [...list].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  return sorted.find((item) => s >= Number(item.score || 0))?.grade || "";
 }
 
 function safeItemScore(raw) {
@@ -13198,8 +13206,20 @@ function collectReviewFromDom(prefix, current = {}, employee = currentUser()) {
 
 function gradeByTemplateScore(component, score, employee = currentUser()) {
   const value = Number(score);
-  const grade = templateFor(employee, component).grades.find((item) => Number(item.score) === value);
-  return grade?.grade || gradeByScore(value);
+  if (!Number.isFinite(value)) return "";
+  // 개별 항목 점수는 등급 선택 버튼으로 입력되어 템플릿 등급표의 값과 항상 정확히 일치하지만,
+  // 업적 가중합산/문항 평균으로 나온 "합계" 점수는 그 값들과 정확히 일치하는 경우가 거의 없다.
+  // 예전에는 정확히 일치하는 등급이 없으면 조용히 전체 최종점수 등급 기준(gradeThresholds,
+  // 이 컴포넌트와 무관한 별도 설정)으로 폴백해, 이 항목의 "평가 응답 등급별 환산 점수"에서
+  // 설정한 등급 구간과 다른 등급이 나오는 경우가 있었다(예: S 기준 100점인 템플릿에서
+  // 97점을 최종점수 등급 기준(S 기준 95점)으로 잘못 S로 표시). gradeByUpwardScore/
+  // gradeByPeerScore와 동일하게, 템플릿 등급표를 점수 내림차순으로 정렬해 "이 등급 기준점
+  // 이상인 가장 높은 등급"을 찾도록 수정 — 이렇게 하면 개별 항목 점수(정확히 일치)와
+  // 합계 점수(구간 판정) 모두 이 템플릿의 등급 기준을 그대로 따른다.
+  const templateGrades = templateFor(employee, component)?.grades;
+  if (!Array.isArray(templateGrades) || !templateGrades.length) return gradeByScore(value);
+  const sorted = [...templateGrades].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  return sorted.find((item) => value >= Number(item.score || 0))?.grade || gradeByScore(value);
 }
 
 function syncTemplateEditor(component, templateIndex) {
