@@ -9012,7 +9012,7 @@ function renderAdminAdjustments() {
               return `<button class="button" disabled style="background:var(--green);border-color:var(--green);color:#fff;cursor:default;">✔ 승인요청 완료</button>`;
             }
             const groupStatuses = getRelativeGroupStatuses();
-            const allGroupsSubmitted = groupStatuses.filter(g => g.groupName !== "미배정").every(g => g.submitted);
+            const allGroupsSubmitted = groupStatuses.filter(g => g.groupName !== "미배정").every(isGroupInputComplete);
             const canRequest = allGroupsSubmitted && !presidentApproved && !chairmanApproved;
             return `<button class="button" ${canRequest ? "" : "disabled"} onclick="${canRequest ? "App.requestApproval()" : ""}" title="${canRequest ? "" : "모든 종합평가 완료 후 활성화됩니다."}">📨 승인요청</button>`;
           })()}
@@ -9034,7 +9034,7 @@ function renderAdminAdjustments() {
                 // 조정 전용 기능이라 이 단계에서는 그대로 숨긴다.
                 const previewGroupStatuses = getRelativeGroupStatuses();
                 const allGroupsSubmittedForPreview = previewGroupStatuses.length > 0
-                  && previewGroupStatuses.filter(g => g.groupName !== "미배정").every(g => g.submitted);
+                  && previewGroupStatuses.filter(g => g.groupName !== "미배정").every(isGroupInputComplete);
                 if (!allGroupsSubmittedForPreview) {
                   return `<div class="notice warn">모든 종합평가가 제출되면 전체 결과 등급 분포도가 표시됩니다.</div>`;
                 }
@@ -9293,6 +9293,15 @@ function getRelativeGroupStatuses() {
     const needsAdjustmentSession = Boolean(directRecord?.needsAdjustmentSession);
     return { ...g, submission, submitted, autoSubmitted, needsAdjustmentSession };
   });
+}
+
+// 상대평가 그룹이 종합평가 "입력"을 마쳤는지 여부. 배분 기준을 초과해 조정 세션이
+// 필요한 경우(needsAdjustmentSession)도 본부장(또는 인사총무팀)이 원안 등급을 이미
+// 입력·저장해 둔 상태이고 단지 인사총무팀의 검토/조정을 기다리는 것뿐이므로, 승인요청
+// 가능 여부나 등급 배분 사전 미리보기 표시 여부를 판단할 때는 "제출완료"와 동일하게
+// 입력이 끝난 것으로 취급한다.
+function isGroupInputComplete(g) {
+  return Boolean(g.submitted || g.needsAdjustmentSession);
 }
 
 function renderFinalAdjustmentReadiness(readiness) {
@@ -14438,6 +14447,12 @@ const App = {
     const cycle = activeCycle();
     const rows = getHRGroupMembers();
     if (!rows.length) return;
+    // 표준화 사용 시 팀 인원 부족(2명 이하)으로 표준화 점수를 산출할 수 없는 인원은
+    // autoGrade 자체가 통계적으로 무의미하므로, 우연히 선택 등급이 autoGrade와 같아도
+    // 반드시 수동 배정으로 취급해야 한다(isOrgGradeSelectionManual 참고) — 그렇지 않으면
+    // 제출 시 gradeManual이 false로 초기화되어 "팀 인원 부족" 목록으로 되돌아가 버린다.
+    const useStd = Boolean(cycle?.useScoreStandardization);
+    const stdInfoMap = useStd ? calculateStandardizedScores(rows) : new Map();
     if (submit) {
       const ungraded = rows.filter(emp => {
         const ev = evaluations()[emp.id];
@@ -14455,9 +14470,10 @@ const App = {
       if (sel) {
         const g = sel.value;
         const auto = calculateFinal(emp.id).autoGrade;
+        const hasManual = isOrgGradeSelectionManual(emp.id, g, auto, stdInfoMap);
         ev.orgAdjustment = ev.orgAdjustment || {};
-        ev.orgAdjustment.gradeManual = GRADES.includes(g) && g !== auto;
-        ev.orgAdjustment.grade = (GRADES.includes(g) && g !== auto) ? g : "";
+        ev.orgAdjustment.gradeManual = hasManual;
+        ev.orgAdjustment.grade = hasManual ? g : "";
         ev.orgAdjustment.reason = ev.orgAdjustment.reason || "";
       }
     });
@@ -16245,7 +16261,7 @@ const App = {
     const cycle = selectedCycle();
     if (!cycle) return;
     const groupStatuses = getRelativeGroupStatuses();
-    const unsubmittedGroups = groupStatuses.filter(g => g.groupName !== "미배정" && !g.submitted);
+    const unsubmittedGroups = groupStatuses.filter(g => g.groupName !== "미배정" && !isGroupInputComplete(g));
     if (unsubmittedGroups.length > 0) {
       const names = unsubmittedGroups.map(g => g.groupName).join(", ");
       return window.alert(`종합평가를 제출하지 않은 상대평가 그룹이 있습니다.\n모든 그룹의 종합평가 제출 후 승인요청이 가능합니다.\n\n미제출: ${names}`);
