@@ -2978,26 +2978,22 @@ function renderGoalLinkPickerModal(user) {
 
   // 개인 목표: 내가 소유
   const myGoals = allCycleGoals.filter(g => g.ownerId === user.id);
-  // 팀 목표: 내가 소속된 팀의 팀 레벨 목표만. 단, 소속 팀에 팀장이 없는 경우에는
-  // 팀 레벨 목표 자체가 없을 수 있으므로 1차 평가자(대개 본부장 등 상위 조직장)의
-  // 목표를, 1차 평가자도 지정되어 있지 않으면 2차 평가자의 목표를 대신 연결할 수
-  // 있도록 한다.
-  const hasTeamLead = user.team && state.users.some(u =>
-    u.role === "teamLead" && u.active !== false && !isRetired(u) && u.team === user.team
+  // 팀 목표 후보 = (1) 내가 소속된 팀의 팀 레벨 목표 + (2) 1차 평가자(팀장이 없어
+  // 본부장 등 상위 조직장이 1차 평가자로 대신 지정된 경우 포함, 1차 평가자가 아예
+  // 없으면 2차 평가자)가 소유한 목표(개인 레벨 제외)를 합쳐서(중복 제거) 보여준다.
+  // 팀명 매칭과 평가자 매칭을 함께 사용해 평가권한 설정 여부나 팀 유무와 무관하게
+  // 연결 가능한 후보를 놓치지 않도록 한다.
+  const teamNameGoals = allCycleGoals.filter(g =>
+    g.ownerId !== user.id && g.level === "team" && user.team && g.team === user.team
   );
-  let teamGoals;
-  if (hasTeamLead) {
-    teamGoals = allCycleGoals.filter(g =>
-      g.ownerId !== user.id &&
-      g.level === "team" &&
-      user.team && g.team === user.team
-    );
-  } else {
-    const fallbackEvaluator = (user.evaluator1Id && userById(user.evaluator1Id))
-      || (user.evaluator2Id && userById(user.evaluator2Id))
-      || null;
-    teamGoals = fallbackEvaluator ? allCycleGoals.filter(g => g.ownerId === fallbackEvaluator.id) : [];
-  }
+  const teamRepresentative = (user.evaluator1Id && userById(user.evaluator1Id))
+    || (user.evaluator2Id && userById(user.evaluator2Id))
+    || null;
+  const representativeGoals = teamRepresentative
+    ? allCycleGoals.filter(g => g.ownerId === teamRepresentative.id && g.level !== "individual")
+    : [];
+  const teamGoals = [...teamNameGoals, ...representativeGoals]
+    .filter((g, i, arr) => arr.findIndex(x => x.id === g.id) === i);
 
   const { prefix, index } = state.ui.goalLinkPicker;
   const goalRow = (g) => `
