@@ -4099,7 +4099,7 @@ function renderResultSubmission(user) {
         </div>
       </div>
       <div class="panel-body grid">
-        ${submission?.rejection ? `<div class="notice warn"><strong>⚠ 종합평가가 반려되었습니다.</strong><br/>반려 사유: ${esc(submission.rejection.reason || "-")}<br/>내용을 확인하고 등급을 다시 배분한 뒤 "종합평가 확정 제출"을 눌러 주세요.</div>` : ""}
+        ${submission?.rejection ? `<div class="notice warn"><strong>⚠ 종합평가 재평가를 요청드립니다.</strong><br/>요청 사유: ${esc(submission.rejection.reason || "-")}<br/>내용을 확인하고 등급을 다시 배분한 뒤 "종합평가 확정 제출"을 눌러 주세요.</div>` : ""}
         ${submission?.needsAdjustmentSession ? `<div class="notice warn"><strong>⚠ 평가 등급 조정 세션 대기 중입니다.</strong><br/>등급 배분율을 초과하여 제출이 보류되었습니다. 인사총무팀에서 연락드릴 예정입니다.${submission.distributionReason ? `<br/><span class="muted">제출 사유: ${esc(submission.distributionReason)}</span>` : ""}</div>` : ""}
         <div class="notice info">
           <strong>등급 배분율 가이드</strong> (본부장 평가등급: <strong>${gradeBadge(headGrade)}</strong> 기준): S-인사위논의 · A-${state.distributionMatrix[headGrade]?.A||20}% · B-${state.distributionMatrix[headGrade]?.B||50}% · C-${state.distributionMatrix[headGrade]?.C||20}% · D-${state.distributionMatrix[headGrade]?.D||10}%<br/>
@@ -4425,9 +4425,32 @@ function resultSubmissionKeyForSessionArg(sessionArg) {
   return sessionArg === HR_GROUP_SCOPE_KEY ? HR_GROUP_SCOPE_KEY : divisionSubmissionKey(sessionArg);
 }
 
+// 조정 세션 대상 구성원 목록. 인사총무팀 그룹은 실제 division 필드가 아니라
+// relativeGroups 오버라이드로 소속이 결정되므로(getHRGroupMembers 참고), 일반 본부처럼
+// e.division === sessionArg 로 필터링하면 아무도 걸리지 않는다.
+function sessionScopeMembers(sessionArg) {
+  return sessionArg === HR_GROUP_SCOPE_KEY
+    ? getHRGroupMembers()
+    : cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (sessionArg || ""));
+}
+
+// 조정 세션 모달/알림에 표시할 대상 이름
+function sessionScopeLabel(sessionArg) {
+  return sessionArg === HR_GROUP_SCOPE_KEY ? "인사총무팀" : (sessionArg || "");
+}
+
 // 특정 본부의 현재 등급 분배 스냅샷(구성원별 등급 + 등급별 인원수)
 function captureDivisionDistribution(division) {
   const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
+  const grades = members.map((e) => { const r = calculateFinal(e.id); return { name: e.name, employeeNo: e.employeeNo || "", grade: r.finalGrade || "" }; });
+  const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
+  grades.forEach((x) => { if (GRADES.includes(x.grade)) counts[x.grade] += 1; });
+  return { grades, counts };
+}
+
+// 조정 세션 대상(본부 또는 인사총무팀 그룹)의 현재 등급 분배 스냅샷
+function captureScopeDistribution(sessionArg) {
+  const members = sessionScopeMembers(sessionArg);
   const grades = members.map((e) => { const r = calculateFinal(e.id); return { name: e.name, employeeNo: e.employeeNo || "", grade: r.finalGrade || "" }; });
   const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
   grades.forEach((x) => { if (GRADES.includes(x.grade)) counts[x.grade] += 1; });
@@ -6249,19 +6272,23 @@ function renderAdminCycleDashboard() {
   `;
 }
 
-// 조정 세션 모달: 해당 본부 종합평가 내용을 띄우고 등급을 조정해 제출 처리
-function renderAdjustmentSessionModal(division) {
+// 조정 세션 모달: 해당 본부(또는 인사총무팀 그룹) 종합평가 내용을 띄우고 등급을 조정해 제출 처리
+function renderAdjustmentSessionModal(sessionArg) {
   const cycle = selectedCycle();
-  const rec = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
-  const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""))
+  const isHrGroup = sessionArg === HR_GROUP_SCOPE_KEY;
+  const rec = cycle.resultSubmissions?.[resultSubmissionKeyForSessionArg(sessionArg)];
+  const members = sessionScopeMembers(sessionArg)
     .sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
   // 표준화 불가(소규모팀) 인원: 종합점수 기반 추천등급이 통계적으로 무의미하므로
   // 표시·1단계 제한 판단 모두에서 예외 처리한다.
   const useStdSession = Boolean(cycle?.useScoreStandardization);
   const stdInfoMapSession = useStdSession ? calculateStandardizedScores(members) : new Map();
-  // 본부장 등급 기준 배분 가이드
-  const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
-  const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
+  // 본부장 등급 기준 배분 가이드 (인사총무팀 그룹은 본부장이 없으므로, 해당 그룹 화면에서
+  // 어드민이 선택해 둔 기준 등급(state.ui.hrGroupRefGrade)을 그대로 사용한다)
+  const head = isHrGroup ? null : cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (sessionArg || ""));
+  const headGrade = isHrGroup
+    ? (GRADES.includes(state.ui.hrGroupRefGrade) ? state.ui.hrGroupRefGrade : "B")
+    : (head ? (calculateFinal(head.id).finalGrade || "B") : "B");
   const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
   const total = members.length;
   const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
@@ -6270,12 +6297,12 @@ function renderAdjustmentSessionModal(division) {
     <div class="goal-modal-overlay" style="z-index:600;" onclick="if(event.target===this)App.closeAdjustmentSession()">
       <div class="goal-modal" style="max-width:1000px;width:96%;">
         <div class="goal-modal-head">
-          <h2>조정 세션 — ${esc(division)}</h2>
+          <h2>조정 세션 — ${esc(sessionScopeLabel(sessionArg))}</h2>
           <button onclick="App.closeAdjustmentSession()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
         </div>
         <div class="goal-modal-body">
-          <div class="notice warn" style="font-size:12px;">본부장 원안 사유: ${esc(rec?.distributionReason || "-")}</div>
-          <div class="notice info" style="font-size:12px;">배분 가이드(본부장 등급 ${esc(headGrade)} 기준): S-인사위논의 · ${GRADES.filter(g=>g!=="S").map((g) => `${g}-${Number(dist[g] || 0)}% (${Math.ceil(total * Number(dist[g] || 0) / 100)}명)`).join(" · ")}</div>
+          <div class="notice warn" style="font-size:12px;">${isHrGroup ? "제출" : "본부장 원안"} 사유: ${esc(rec?.distributionReason || "-")}</div>
+          <div class="notice info" style="font-size:12px;">배분 가이드(${isHrGroup ? "기준 조직 등급" : "본부장 등급"} ${esc(headGrade)} 기준): S-인사위논의 · ${GRADES.filter(g=>g!=="S").map((g) => `${g}-${Number(dist[g] || 0)}% (${Math.ceil(total * Number(dist[g] || 0) / 100)}명)`).join(" · ")}</div>
           <div id="session-dist-status" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
             ${GRADES.map((g) => { const guidePct = Number(dist[g] || 0); const guideCt = guidePct === 0 ? 0 : Math.ceil(total * guidePct / 100); const over = (guidePct === 0 && counts[g] > 0) || (guideCt > 0 && counts[g] > guideCt); return `<span class="pill ${over ? "red" : "green"}" style="font-size:12px;">${g}: ${counts[g]}/${guideCt}명${over ? " ⚠" : ""}</span>`; }).join("")}
           </div>
@@ -6297,7 +6324,7 @@ function renderAdjustmentSessionModal(division) {
                     <td>${peerScoreCellHtml(emp)}</td>
                     <td class="score" style="font-size:16px;">${result.scoreText}</td>
                     <td>${isSmallTeam ? `<span class="muted" style="font-size:12px;">팀 인원 부족</span>` : gradeBadge(result.autoGrade)}</td>
-                    <td><select id="sess_grade_${emp.id}" data-default="${esc(cur)}" ${isSmallTeam ? 'data-small-team="1"' : ""} onchange="App.refreshSessionDist('${esc(division)}')" style="width:72px;font-weight:700;">${GRADES.map((g) => `<option value="${g}" ${cur === g ? "selected" : ""}>${g}</option>`).join("")}</select></td>
+                    <td><select id="sess_grade_${emp.id}" data-default="${esc(cur)}" ${isSmallTeam ? 'data-small-team="1"' : ""} onchange="App.refreshSessionDist('${esc(sessionArg)}')" style="width:72px;font-weight:700;">${GRADES.map((g) => `<option value="${g}" ${cur === g ? "selected" : ""}>${g}</option>`).join("")}</select></td>
                   </tr>`;
                 }).join("")}
               </tbody>
@@ -6306,7 +6333,7 @@ function renderAdjustmentSessionModal(division) {
         </div>
         <div class="goal-modal-foot">
           <button class="button secondary" onclick="App.closeAdjustmentSession()">닫기</button>
-          <button class="button" onclick="App.completeAdjustmentSession('${esc(division)}')">조정 세션 완료 / 제출</button>
+          <button class="button" onclick="App.completeAdjustmentSession('${esc(sessionArg)}')">조정 세션 완료 / 제출</button>
         </div>
       </div>
     </div>`;
@@ -6636,7 +6663,7 @@ function renderAdminHRGroupComprehensive() {
         </div>
       </div>
       <div class="panel-body grid">
-        ${submission?.rejection ? `<div class="notice warn"><strong>⚠ 종합평가가 반려되었습니다.</strong><br/>반려 사유: ${esc(submission.rejection.reason || "-")}<br/>내용을 확인하고 등급을 다시 배분한 뒤 "종합평가 확정 제출"을 눌러 주세요.</div>` : ""}
+        ${submission?.rejection ? `<div class="notice warn"><strong>⚠ 종합평가 재평가를 요청드립니다.</strong><br/>요청 사유: ${esc(submission.rejection.reason || "-")}<br/>내용을 확인하고 등급을 다시 배분한 뒤 "종합평가 확정 제출"을 눌러 주세요.</div>` : ""}
         <div class="notice info">
           <strong>인사총무팀 그룹 종합평가</strong><br/>
           상대평가 그룹이 인사총무팀으로 배정된 구성원들의 종합평가를 진행합니다. 이름을 클릭하면 상세 평가 내용을 확인할 수 있습니다.
@@ -17210,13 +17237,13 @@ const App = {
     state.ui.flash = `[${label}] 종합평가 재평가를 요청했습니다.`;
     render();
   },
-  // 어드민(인사총무팀): 조정 세션 시작 — 해당 본부 종합평가 모달 오픈
-  openAdjustmentSession(division) {
+  // 어드민(인사총무팀): 조정 세션 시작 — 해당 본부(또는 인사총무팀 그룹) 종합평가 모달 오픈
+  openAdjustmentSession(sessionArg) {
     const user = currentUser();
     if (user.role !== "admin") return window.alert("인사총무팀(어드민) 권한이 필요합니다.");
-    const record = activeCycle().resultSubmissions?.[divisionSubmissionKey(division)];
-    if (!record) return window.alert("해당 본부의 종합평가 제출 내역이 없습니다.");
-    state.ui.adjustmentSessionDivision = division;
+    const record = activeCycle().resultSubmissions?.[resultSubmissionKeyForSessionArg(sessionArg)];
+    if (!record) return window.alert("해당 조직의 종합평가 제출 내역이 없습니다.");
+    state.ui.adjustmentSessionDivision = sessionArg;
     saveState();
     render();
   },
@@ -17226,10 +17253,13 @@ const App = {
     render();
   },
   // 모달 내 등급 변경 시 분배 현황 배지 갱신
-  refreshSessionDist(division) {
-    const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
-    const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
-    const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
+  refreshSessionDist(sessionArg) {
+    const isHrGroup = sessionArg === HR_GROUP_SCOPE_KEY;
+    const members = sessionScopeMembers(sessionArg);
+    const head = isHrGroup ? null : cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (sessionArg || ""));
+    const headGrade = isHrGroup
+      ? (GRADES.includes(state.ui.hrGroupRefGrade) ? state.ui.hrGroupRefGrade : "B")
+      : (head ? (calculateFinal(head.id).finalGrade || "B") : "B");
     const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
     const total = members.length;
     const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
@@ -17238,13 +17268,13 @@ const App = {
     if (box) box.innerHTML = GRADES.map((g) => { const guide = Math.round(total * Number(dist[g] || 0) / 100); const over = (Number(dist[g] || 0) === 0 && counts[g] > 0) || (guide > 0 && counts[g] > guide); return `<span class="pill ${over ? "red" : "green"}" style="font-size:12px;">${g}: ${counts[g]}/${guide}명${over ? " ⚠" : ""}</span>`; }).join("");
   },
   // 조정 세션 완료 → 등급 반영 + 사유 입력 + 제출 처리, 기록 남김
-  completeAdjustmentSession(division) {
+  completeAdjustmentSession(sessionArg) {
     const user = currentUser();
     if (user.role !== "admin") return window.alert("인사총무팀(어드민) 권한이 필요합니다.");
     const cycle = selectedCycle();
-    const record = cycle.resultSubmissions?.[divisionSubmissionKey(division)];
-    if (!record) return window.alert("대상 본부 기록을 찾을 수 없습니다.");
-    const members = cycleUsers().filter((e) => isEvaluatee(e) && e.role === "member" && (e.division || "") === (division || ""));
+    const record = cycle.resultSubmissions?.[resultSubmissionKeyForSessionArg(sessionArg)];
+    if (!record) return window.alert("대상 조직 기록을 찾을 수 없습니다.");
+    const members = sessionScopeMembers(sessionArg);
     const useStdComplete = Boolean(cycle?.useScoreStandardization);
     const stdInfoMapComplete = useStdComplete ? calculateStandardizedScores(members) : new Map();
     // 모달에서 조정한 등급을 orgAdjustment에 반영
@@ -17274,11 +17304,12 @@ const App = {
       ev.orgAdjustment.grade = hasManual ? selected : "";
     });
     invalidateCycleCache();
-    const reason = window.prompt(`[${division}] 조정 세션 결과를 반영하여 제출합니다.\n조정 사유를 입력해 주세요.`, record.distributionReason || "");
+    const scopeLabel = sessionScopeLabel(sessionArg);
+    const reason = window.prompt(`[${scopeLabel}] 조정 세션 결과를 반영하여 제출합니다.\n조정 사유를 입력해 주세요.`, record.distributionReason || "");
     if (reason === null) return;
     if (!reason.trim()) return window.alert("조정 사유를 입력해야 합니다.");
     const now = new Date().toISOString();
-    const snap = captureDivisionDistribution(division);
+    const snap = captureScopeDistribution(sessionArg);
     record.history = Array.isArray(record.history) ? record.history : [];
     record.history.push({ stage: "adjustmentSession", by: user.id, at: now, reason: reason.trim(), counts: snap.counts, grades: snap.grades });
     record.submitted = true;
@@ -17292,7 +17323,7 @@ const App = {
     record.adjustmentCompletedAt = now;
     state.ui.adjustmentSessionDivision = "";
     saveState();
-    state.ui.flash = `${division} 본부의 종합평가를 조정 세션 반영 후 제출 처리했습니다.`;
+    state.ui.flash = `${scopeLabel} 종합평가를 조정 세션 반영 후 제출 처리했습니다.`;
     render();
   },
   cmpFilter() {
