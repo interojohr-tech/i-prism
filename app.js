@@ -674,6 +674,7 @@ function createCycle(name, users = state?.users || []) {
     resultsVisible: false,
     useUpward: true,   // 상향평가 진행 여부
     usePeer: true,     // 동료평가 진행 여부
+    useAttitude: true, // 자세태도평가 진행 여부
     createdAt: new Date().toISOString(),
     usersSnapshot: clone(users),
     evaluations: {},
@@ -1138,6 +1139,7 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
   if (cycle.resultsVisible === undefined) cycle.resultsVisible = false;
   if (cycle.useUpward === undefined) cycle.useUpward = true;
   if (cycle.usePeer === undefined) cycle.usePeer = true;
+  if (cycle.useAttitude === undefined) cycle.useAttitude = true;
   if (!cycle.upwardStart) cycle.upwardStart = cycle.secondStart || "";
   if (!cycle.upwardEnd) cycle.upwardEnd = cycle.secondEnd || "";
   if (!cycle.peerStart) cycle.peerStart = cycle.upwardStart || cycle.secondStart || "";
@@ -3070,15 +3072,19 @@ function getSelfFlowText(user) {
 }
 
 function renderEvaluationForm(prefix, review, employee, mode) {
+  // 자세태도평가를 진행하지 않는 사이클이면 자세·태도평가 섹션 자체를 렌더링하지 않는다.
+  const useAttitude = activeCycle().useAttitude !== false;
+  const activeComponents = useAttitude ? COMPONENTS : COMPONENTS.filter((c) => c !== "attitude");
   if (prefix !== "self") {
     return `
       <div class="eval-stack">
-        ${COMPONENTS.map((component) => renderComponentForm(prefix, component, review[component], employee, mode)).join("")}
+        ${activeComponents.map((component) => renderComponentForm(prefix, component, review[component], employee, mode)).join("")}
       </div>
     `;
   }
   const performanceForm = renderComponentForm(prefix, "performance", review.performance, employee, mode);
-  const scaleForms = ["competency", "attitude"].map((component) => renderComponentForm(prefix, component, review[component], employee, mode)).join("");
+  const scaleComponents = useAttitude ? ["competency", "attitude"] : ["competency"];
+  const scaleForms = scaleComponents.map((component) => renderComponentForm(prefix, component, review[component], employee, mode)).join("");
   return `
     <div class="eval-stack eval-stack-split">
       <div class="eval-column">${performanceForm}</div>
@@ -3367,7 +3373,8 @@ function renderBatchTaskEvaluation(user, tasks) {
 
 function buildBatchQuestionSections(normalTasks, upwardTasks, peerTasks) {
   const sections = [];
-  ["competency", "attitude"].forEach((component) => {
+  const scaleComponents = activeCycle().useAttitude !== false ? ["competency", "attitude"] : ["competency"];
+  scaleComponents.forEach((component) => {
     const groups = [];
     const byTemplate = new Map();
     normalTasks.forEach((task) => {
@@ -6841,10 +6848,11 @@ function renderPeerCountConfig() {
   const cycle = selectedCycle();
   const useUpward = cycle.useUpward !== false;
   const usePeer = cycle.usePeer !== false;
+  const useAttitude = cycle.useAttitude !== false;
   return `
     <div class="component-card">
-      <h3>상향평가 · 동료평가 진행 설정</h3>
-      <p class="muted">이번 평가에서 상향평가·동료평가를 진행할지 선택합니다. 동료평가를 진행하면 1인당 평가 대상 수를 설정할 수 있습니다.</p>
+      <h3>상향평가 · 동료평가 · 자세태도평가 진행 설정</h3>
+      <p class="muted">이번 평가에서 상향평가·동료평가·자세태도평가를 진행할지 선택합니다. 동료평가를 진행하면 1인당 평가 대상 수를 설정할 수 있습니다.</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;">
         <label class="goal-metric-toggle ${useUpward?"on":""}" style="flex:1;min-width:240px;">
           <span><strong>상향평가 진행</strong><small>구성원이 조직장을 평가합니다.</small></span>
@@ -6856,7 +6864,13 @@ function renderPeerCountConfig() {
           <input type="checkbox" id="cycle_use_peer" ${usePeer?"checked":""} onchange="App.toggleCycleEvalUse('peer', this.checked)" />
           <span class="goal-metric-switch"></span>
         </label>
+        <label class="goal-metric-toggle ${useAttitude?"on":""}" style="flex:1;min-width:240px;">
+          <span><strong>자세태도평가 진행</strong><small>자기평가·1차·2차 평가에서 자세·태도평가를 진행합니다.</small></span>
+          <input type="checkbox" id="cycle_use_attitude" ${useAttitude?"checked":""} onchange="App.toggleCycleEvalUse('attitude', this.checked)" />
+          <span class="goal-metric-switch"></span>
+        </label>
       </div>
+      ${!useAttitude ? `<p class="muted" style="margin-top:8px;font-size:12px;">자세태도평가를 끄면 자기평가·1차·2차 평가 화면에서 자세·태도평가 항목이 표시되지 않습니다. 가중치·등급 탭에서 업적·역량 가중치를 100%가 되도록 직접 조정해 주세요.</p>` : ""}
       ${usePeer ? `
         <div class="form-grid" style="margin-top:12px;">
           <div class="field" style="max-width:240px;">
@@ -13091,7 +13105,11 @@ function nl2br(value) {
 
 function collectReviewFromDom(prefix, current = {}, employee = currentUser()) {
   const next = clone(current);
+  // 자세태도평가를 진행하지 않는 사이클은 화면에 해당 입력 필드가 없으므로, DOM에 없는
+  // 값을 0점으로 잘못 채워 넣지 않도록(clampScore("")는 0을 반환) 그대로 건너뛴다.
+  const useAttitude = activeCycle().useAttitude !== false;
   COMPONENTS.forEach((component) => {
+    if (component === "attitude" && !useAttitude) return;
     const template = templateFor(employee, component);
     next[component] = next[component] || {};
     if (component === "performance") {
@@ -15339,10 +15357,11 @@ const App = {
     const peerTasks = tasks.filter((task) => task.type === "peer");
     const errors = [];
     let touched = 0;
+    const scaleComponents = activeCycle().useAttitude !== false ? ["competency", "attitude"] : ["competency"];
     normalTasks.forEach((task) => {
       const evaluation = evaluations()[task.employee.id];
       const review = evaluation[task.stage];
-      ["competency", "attitude"].forEach((component) => {
+      scaleComponents.forEach((component) => {
         const template = templateFor(task.employee, component);
         review[component] = review[component] || { itemScores: {} };
         review[component].itemScores = review[component].itemScores || {};
@@ -16352,10 +16371,13 @@ const App = {
       cycle.usePeer = !!on;
       if (!on) cycle.peerAssignments = [];
       else if (!cycle.peerAssignments?.length) cycle.peerAssignments = buildDefaultPeerAssignments(cycle.usersSnapshot || state.users);
+    } else if (kind === "attitude") {
+      cycle.useAttitude = !!on;
     }
     invalidateCycleCache();
     saveState();
-    state.ui.flash = `${kind === "upward" ? "상향평가" : "동료평가"}를 ${on ? "진행" : "미진행"}으로 설정했습니다.`;
+    const kindLabel = kind === "upward" ? "상향평가" : kind === "peer" ? "동료평가" : "자세태도평가";
+    state.ui.flash = `${kindLabel}를 ${on ? "진행" : "미진행"}으로 설정했습니다.`;
     render();
   },
   autoAssignEvaluators() {
@@ -18954,7 +18976,9 @@ function getEmployeeByPrefix(prefix) {
 
 function hasMissingScores(review, employee = currentUser()) {
   const performanceMissing = (review.performance.achievements || []).some((item) => item.score === "" || item.score === undefined || item.score === null);
-  const scaleMissing = ["competency", "attitude"].some((component) => {
+  // 자세태도평가를 진행하지 않는 사이클이면 화면에 표시하지 않으므로 필수 검증에서도 제외한다.
+  const scaleComponents = activeCycle().useAttitude !== false ? ["competency", "attitude"] : ["competency"];
+  const scaleMissing = scaleComponents.some((component) => {
     const itemCount = templateFor(employee, component).items.length;
     return Array.from({ length: itemCount }).some((_, index) => {
       const value = review[component].itemScores?.[index];
@@ -18968,7 +18992,7 @@ function missingReviewCommentLabels(review) {
   const missing = [];
   if (!String(review.performance?.comment || "").trim()) missing.push("업적평가 평가 의견");
   if (!String(review.competency?.comment || "").trim()) missing.push("역량평가 평가 의견");
-  if (!String(review.attitude?.comment || "").trim()) missing.push("자세·태도평가 평가 의견");
+  if (activeCycle().useAttitude !== false && !String(review.attitude?.comment || "").trim()) missing.push("자세·태도평가 평가 의견");
   return missing;
 }
 
@@ -18980,7 +19004,7 @@ function missingSelfResponseLabels(review, employee = currentUser()) {
     if (!String(item.detail || "").trim()) missing.push(leader ? `업적 ${index + 1} 달성내용` : `업적 ${index + 1} 주요 업무 실적 및 상세 내용`);
   });
   if (!String(review.competency?.comment || "").trim()) missing.push("역량평가 종합 의견");
-  if (!String(review.attitude?.comment || "").trim()) missing.push("자세·태도평가 종합 의견");
+  if (activeCycle().useAttitude !== false && !String(review.attitude?.comment || "").trim()) missing.push("자세·태도평가 종합 의견");
   return missing;
 }
 
