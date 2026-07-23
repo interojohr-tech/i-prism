@@ -295,6 +295,18 @@ const WEIGHT_COMPONENT_LABELS = {
 };
 const TEMPLATE_KINDS = [...COMPONENTS, "upward", "peer"];
 
+// 이 사이클에서 실제로 진행하는 평가 구성요소만 남긴 가중치 컬럼 목록.
+// 상향평가·동료평가·자세태도평가를 미진행으로 설정하면 그 열은 가중치 테이블에서도
+// 제외하고, 나머지 열의 합만 100%가 되면 되도록 한다.
+function activeWeightComponents(cycle) {
+  return WEIGHT_COMPONENTS.filter((c) => {
+    if (c === "upward") return cycle?.useUpward !== false;
+    if (c === "peer") return cycle?.usePeer !== false;
+    if (c === "attitude") return cycle?.useAttitude !== false;
+    return true;
+  });
+}
+
 let state = loadState();
 backfillFinalSnapshotsForLockedCycles();
 
@@ -5978,11 +5990,12 @@ function renderAdminWeightSection() {
   const roleLabels = { member: "팀원", teamLead: "팀장", divisionHead: "본부장" };
   const cycle = selectedCycle();
   const useAI = !!cycle?.useAIEval;
+  const components = activeWeightComponents(cycle);
   const weightRows = ["member","teamLead","divisionHead"].map(role => {
     const w = state.roleWeights[role] || {};
-    const total = WEIGHT_COMPONENTS.reduce((s,c) => s + Number(w[c]||0), 0);
+    const total = components.reduce((s,c) => s + Number(w[c]||0), 0);
     const ok = Math.abs(total - 100) < 0.5;
-    const cells = WEIGHT_COMPONENTS.map(c =>
+    const cells = components.map(c =>
       `<td><input type="number" id="weight_${role}_${c}" value="${Number(w[c]||0).toFixed(1)}" min="0" max="100" step="5" style="width:68px;text-align:center;"></td>`
     ).join("");
     return `<tr><td><strong>${roleLabels[role]}</strong></td>${cells}<td><span class="pill ${ok?"green":"red"}" id="wt_total_${role}">${total.toFixed(1)}%</span></td></tr>`;
@@ -6000,7 +6013,7 @@ function renderAdminWeightSection() {
       <td><span class="pill ${ok?"green":"red"}">${total}%</span></td>
     </tr>`;
   }).join("");
-  const thead = `<tr><th>역할</th>${WEIGHT_COMPONENTS.map(c => `<th>${WEIGHT_COMPONENT_LABELS[c]}</th>`).join("")}<th>합계</th></tr>`;
+  const thead = `<tr><th>역할</th>${components.map(c => `<th>${WEIGHT_COMPONENT_LABELS[c]}</th>`).join("")}<th>합계</th></tr>`;
   return `
     <section class="panel">
       <div class="panel-head">
@@ -12159,7 +12172,7 @@ function buildMemberDetailWindowHTML(employeeId, options = {}) {
         ${achRows}
         ${perfCommentRow}
         ${compTemplate.items.length ? summaryRow("competency", "역량평가", "#166534") + itemRows("competency", compTemplate) + areaCommentRow("competency","역량평가") : ""}
-        ${attTemplate.items.length  ? summaryRow("attitude",   "자세태도",  "#166060") + itemRows("attitude",   attTemplate)  + areaCommentRow("attitude","자세태도") : ""}
+        ${(attTemplate.items.length && activeCycle().useAttitude !== false) ? summaryRow("attitude",   "자세태도",  "#166060") + itemRows("attitude",   attTemplate)  + areaCommentRow("attitude","자세태도") : ""}
         ${overallRow}
       </tbody>
     </table>
@@ -16453,15 +16466,30 @@ const App = {
     // 0~100 범위를 벗어나는 값(음수·비정상적으로 큰 값)이 그대로 저장되어 전체 점수 계산이
     // 조용히 왜곡되는 것을 막기 위해 저장 전 범위를 강제한다.
     const clampWeight = (v) => Math.max(0, Math.min(100, Number(v) || 0));
-    const roleSumWarnings = [];
+    const cycle = selectedCycle();
+    const components = activeWeightComponents(cycle);
+    // 상향평가·동료평가·자세태도평가를 미진행으로 설정한 경우 그 열은 가중치 테이블에
+    // 애초에 표시되지 않으므로(activeWeightComponents), 실제 진행 중인 열의 합만
+    // 100%가 되면 되고, 그렇지 않으면 저장 자체를 막아 잘못된 설정으로 평가가
+    // 진행되는 것을 방지한다.
+    const roleSums = {};
     ["member", "teamLead", "divisionHead"].forEach((role) => {
       let sum = 0;
-      WEIGHT_COMPONENTS.forEach((component) => {
-        const v = clampWeight(valueOf(`weight_${role}_${component}`));
-        state.roleWeights[role][component] = v;
-        sum += v;
+      components.forEach((component) => {
+        sum += clampWeight(valueOf(`weight_${role}_${component}`));
       });
-      if (sum !== 0 && sum !== 100) roleSumWarnings.push(`${ROLE_LABELS[role] || role}(${sum}%)`);
+      roleSums[role] = sum;
+    });
+    const roleSumErrors = Object.entries(roleSums)
+      .filter(([, sum]) => sum !== 0 && Math.abs(sum - 100) >= 0.5)
+      .map(([role, sum]) => `${ROLE_LABELS[role] || role}(${sum}%)`);
+    if (roleSumErrors.length) {
+      return window.alert(`다음 역할은 진행 중인 평가 항목의 가중치 합이 100%가 아니어서 저장할 수 없습니다: ${roleSumErrors.join(", ")}`);
+    }
+    ["member", "teamLead", "divisionHead"].forEach((role) => {
+      components.forEach((component) => {
+        state.roleWeights[role][component] = clampWeight(valueOf(`weight_${role}_${component}`));
+      });
       // 평가자 가중치 저장 (③ 가중치 페이지의 입력값)
       const firstVal = clampWeight(valueOf(`evalw_${role}_first`));
       const secondVal = clampWeight(valueOf(`evalw_${role}_second`));
@@ -16478,8 +16506,7 @@ const App = {
     collectTemplateAssignmentsFromDom();
     collectDivisionBulkTemplateAssignmentsFromDom();
     saveState();
-    state.ui.flash = "가중치 · 템플릿 설정을 저장하였습니다."
-      + (roleSumWarnings.length ? ` ⚠ 다음 역할은 가중치 합이 100%가 아닙니다: ${roleSumWarnings.join(", ")}` : "");
+    state.ui.flash = "가중치 · 템플릿 설정을 저장하였습니다.";
     render();
   },
   applyDivisionTemplates(division) {
