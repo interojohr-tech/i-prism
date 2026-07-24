@@ -17019,19 +17019,10 @@ const App = {
       select.value = select.dataset.previous || autoGrade;
       return;
     }
-    // 추천 등급과 다르게 조정하는 경우에는 사유를 반드시 입력받는다(입력 없이는 빈 문자열로
-    // 저장되던 문제를 막기 위함). 입력을 취소하거나 비워두면 이전 값으로 되돌린다.
-    if (newGrade !== autoGrade) {
-      const reason = window.prompt(`추천 등급(${autoGrade})에서 ${newGrade}(으)로 조정합니다.\n조정 사유를 입력해 주세요.`, select.dataset.reason || "");
-      if (!reason || !reason.trim()) {
-        window.alert("등급을 조정하려면 조정 사유를 입력해야 합니다.");
-        select.value = select.dataset.previous || autoGrade;
-        return;
-      }
-      select.dataset.reason = reason.trim();
-    } else {
-      select.dataset.reason = "";
-    }
+    // 추천 등급 기준 1단계 이내 조정은 본부장(또는 인사총무팀)이 사유 입력 없이 자유롭게
+    // 할 수 있어야 한다 — 종합평가 등급 배분은 본부장의 재량 영역이며, 2단계 이상 조정만
+    // (위에서) 차단 대상이다.
+    select.dataset.reason = "";
     select.dataset.previous = newGrade;
   },
   saveOrgResultSubmission(submit) {
