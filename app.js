@@ -4468,6 +4468,22 @@ function captureScopeDistribution(sessionArg) {
   return { grades, counts };
 }
 
+// 종합평가 제출 시 이력에 남길 stage를 결정한다. 직전에 관리자가 "재평가 요청하기"로
+// 반려한 적이 있으면(submission.rejection) 이번 제출은 최초 원안이 아니라 재평가
+// 재제출이므로 "reeval"로, 그렇지 않으면 최초 제출이므로 "divisionHead"(본부장 원안)로
+// 기록한다 — 이렇게 해야 조정 이력 보기에서 "본부장 원안" vs "재평가"를 구분해 비교할 수 있다.
+function orgSubmissionHistoryStage(existingRecord) {
+  return existingRecord?.rejection ? "reeval" : "divisionHead";
+}
+
+// 종합평가 제출 시 resultSubmissions 레코드를 새로 만들 때, 기존 레코드에 쌓여 있던
+// history(원안·조정세션·재평가요청 이력)를 버리지 않고 그대로 이어 붙인 뒤 이번 제출의
+// 등급 스냅샷을 새 항목으로 추가한다.
+function buildOrgHistoryEntry(existingRecord, stage, { by, at, reason, snap }) {
+  const prevHistory = Array.isArray(existingRecord?.history) ? existingRecord.history : [];
+  return [...prevHistory, { stage, by, at, reason: reason || "", counts: snap.counts, grades: snap.grades }];
+}
+
 const ORG_HISTORY_STAGE_LABELS = { divisionHead: "본부장 원안 제출", adjustmentSession: "조정 세션 (인사총무팀)" };
 
 // 본부 종합평가 등급 조정 이력 패널 (본부장 원안 + 조정 세션)
@@ -6307,9 +6323,31 @@ function renderAdjustmentSessionModal(sessionArg) {
   const total = members.length;
   const counts = Object.fromEntries(GRADES.map((g) => [g, 0]));
   members.forEach((e) => { const ev = evaluations()[e.id]; const result = calculateFinal(e.id); const g = rec?.submittedGrades?.[e.id] || getOrgAdjustmentGrade(ev, result); if (GRADES.includes(g)) counts[g] += 1; });
+
+  const teams = [...new Set(members.map((e) => e.team).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
+  const titles = [...new Set(members.map((e) => e.title).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
+  const selStyle = `padding:7px 14px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:var(--surface);min-width:110px;`;
+  const filterBar = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:8px 0;">
+      <div style="position:relative;flex:1;min-width:160px;max-width:260px;">
+        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;">🔍</span>
+        <input id="sess-filter-name" type="text" placeholder="이름 검색..." oninput="App.sessFilter()"
+          style="width:100%;padding:7px 10px 7px 30px;border:1px solid var(--line);border-radius:6px;font-size:13px;" />
+      </div>
+      <select id="sess-filter-team" onchange="App.sessFilter()" style="${selStyle}">
+        <option value="">팀 전체</option>${teams.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}
+      </select>
+      <select id="sess-filter-title" onchange="App.sessFilter()" style="${selStyle}">
+        <option value="">직급 전체</option>${titles.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}
+      </select>
+      <select id="sess-filter-grade" onchange="App.sessFilter()" style="${selStyle}">
+        <option value="">등급 전체</option>${GRADES.map((g) => `<option value="${g}">${g}등급</option>`).join("")}
+      </select>
+    </div>`;
+
   return `
     <div class="goal-modal-overlay" style="z-index:600;" onclick="if(event.target===this)App.closeAdjustmentSession()">
-      <div class="goal-modal" style="max-width:1000px;width:96%;">
+      <div class="goal-modal" style="max-width:1080px;width:96%;">
         <div class="goal-modal-head">
           <h2>조정 세션 — ${esc(sessionScopeLabel(sessionArg))}</h2>
           <button onclick="App.closeAdjustmentSession()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
@@ -6320,23 +6358,30 @@ function renderAdjustmentSessionModal(sessionArg) {
           <div id="session-dist-status" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
             ${GRADES.map((g) => { const guidePct = Number(dist[g] || 0); const guideCt = guidePct === 0 ? 0 : Math.ceil(total * guidePct / 100); const over = (guidePct === 0 && counts[g] > 0) || (guideCt > 0 && counts[g] > guideCt); return `<span class="pill ${over ? "red" : "green"}" style="font-size:12px;">${g}: ${counts[g]}/${guideCt}명${over ? " ⚠" : ""}</span>`; }).join("")}
           </div>
+          ${filterBar}
           <div class="table-wrap">
             <table>
-              <thead><tr><th>순위</th><th>구성원</th><th>차수별 점수</th><th>동료평가</th><th>종합점수</th><th>추천등급</th><th>조정 등급</th></tr></thead>
-              <tbody>
+              <thead><tr>
+                <th>순위</th><th>구성원</th><th>차수별 점수</th><th>동료평가</th><th>종합점수</th>
+                ${useStdSession ? `<th style="white-space:nowrap;">표준화 점수 <span onclick="App.showStandardizationInfo()" title="표준화 점수 산출 방법 보기" style="cursor:pointer;color:var(--primary);font-weight:400;font-size:13px;margin-left:2px;">ⓘ</span></th>` : ""}
+                <th>추천등급</th><th>조정 등급</th>
+              </tr></thead>
+              <tbody id="sess-tbody">
                 ${members.map((emp, idx) => {
                   const ev = evaluations()[emp.id];
                   const result = calculateFinal(emp.id);
                   // 기본값: 종합평가 제출 등급 우선, 없으면 기존 조정 등급 → autoGrade 순
                   const submittedGrade = rec?.submittedGrades?.[emp.id];
                   const cur = submittedGrade || getAdjustmentGrade(ev, result);
-                  const isSmallTeam = stdInfoMapSession.get(emp.id)?.canStandardize === false;
-                  return `<tr>
+                  const stdInfo = stdInfoMapSession.get(emp.id);
+                  const isSmallTeam = stdInfo?.canStandardize === false;
+                  return `<tr data-name="${esc(emp.name)}" data-team="${esc(emp.team||"")}" data-title="${esc(emp.title||"")}" data-grade="${esc(cur||"")}">
                     <td><strong style="color:var(--primary);">${idx + 1}</strong></td>
                     <td><button onclick="App.openMemberDetailWindow('${emp.id}', { showAll: true })" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);text-decoration:underline;">${esc(emp.name)}</strong></button><br/><span class="muted" style="font-size:11px;">${esc(emp.team || "")} ${esc(emp.employeeNo || "")}</span></td>
                     <td>${renderStageComponentScores(emp, ev, { hiddenStages: [], hideExtras: true })}</td>
                     <td>${peerScoreCellHtml(emp)}</td>
                     <td class="score" style="font-size:16px;">${result.scoreText}</td>
+                    ${useStdSession ? `<td><span class="score" style="font-size:16px;color:#2454c6;">${stdInfo?.standardizedScore != null ? stdInfo.standardizedScore.toFixed(1) : "-"}</span></td>` : ""}
                     <td>${isSmallTeam ? `<span class="muted" style="font-size:12px;">팀 인원 부족</span>` : gradeBadge(result.autoGrade)}</td>
                     <td><select id="sess_grade_${emp.id}" data-default="${esc(cur)}" ${isSmallTeam ? 'data-small-team="1"' : ""} onchange="App.refreshSessionDist('${esc(sessionArg)}')" style="width:72px;font-weight:700;">${GRADES.map((g) => `<option value="${g}" ${cur === g ? "selected" : ""}>${g}</option>`).join("")}</select></td>
                   </tr>`;
@@ -14567,12 +14612,18 @@ const App = {
     });
     if (!cycle.resultSubmissions) cycle.resultSubmissions = {};
     const submittedAt = new Date().toISOString();
+    const existingRecord = cycle.resultSubmissions[HR_GROUP_SCOPE_KEY];
     cycle.resultSubmissions[HR_GROUP_SCOPE_KEY] = {
       scopeKey: HR_GROUP_SCOPE_KEY,
       scopeLabel: "인사총무팀 그룹",
       submitted: submit,
       submittedAt: submit ? submittedAt : null,
       savedAt: submittedAt,
+      rejectionHistory: Array.isArray(existingRecord?.rejectionHistory) ? existingRecord.rejectionHistory : [],
+      // 확정 제출일 때만 등급 스냅샷을 이력에 남긴다(임시 저장은 이력에 남기지 않음).
+      history: submit
+        ? buildOrgHistoryEntry(existingRecord, orgSubmissionHistoryStage(existingRecord), { by: currentUser().id, at: submittedAt, reason: "", snap: captureScopeDistribution(HR_GROUP_SCOPE_KEY) })
+        : (Array.isArray(existingRecord?.history) ? existingRecord.history : []),
     };
     saveState();
     state.ui.flash = submit ? "인사총무팀 그룹 종합평가가 확정 제출되었습니다." : "임시 저장되었습니다.";
@@ -17132,6 +17183,8 @@ const App = {
     const submittedAt = new Date().toISOString();
     if (submit) {
       const needsSession = Boolean(window._orgNeedsSession);
+      const existingRecord = activeCycle().resultSubmissions[resultSubmissionScopeKey(user)];
+      const historyStage = orgSubmissionHistoryStage(existingRecord);
       if (needsSession) {
         // 배분율 위반 → 평가 등급 조정 세션 필요. 제출은 보류하고 어드민(인사총무팀)이 처리.
         const snap = captureDivisionDistribution(user.division);
@@ -17146,8 +17199,9 @@ const App = {
           userIds: rows.map((employee) => employee.id),
           distributionReason: window._orgSubmitReason || "",
           distributionViolations: window._orgSubmitViolations || [],
-          // 본부장 원안(등급 분배 + 사유) 기록
-          history: [{ stage: "divisionHead", by: user.id, at: submittedAt, reason: window._orgSubmitReason || "", counts: snap.counts, grades: snap.grades }],
+          rejectionHistory: Array.isArray(existingRecord?.rejectionHistory) ? existingRecord.rejectionHistory : [],
+          // 본부장 원안(또는 재평가) 등급 분배 + 사유 기록 — 기존 이력은 보존하고 이어 붙인다.
+          history: buildOrgHistoryEntry(existingRecord, historyStage, { by: user.id, at: submittedAt, reason: window._orgSubmitReason || "", snap }),
         };
         window._orgSubmitReason = null;
         window._orgSubmitViolations = null;
@@ -17156,6 +17210,7 @@ const App = {
         render();
         return window.alert("⚠️ 등급 배분율을 초과하여 평가 등급 조정 세션이 필요합니다.\n\n입력하신 사유가 인사총무팀에 전달되었으며, 인사총무팀에서 별도로 연락드리겠습니다.\n조정 세션 후 인사총무팀에서 최종 제출 처리를 진행합니다.");
       }
+      const snap = captureDivisionDistribution(user.division);
       activeCycle().resultSubmissions[resultSubmissionScopeKey(user)] = {
         scopeKey: resultSubmissionScopeKey(user),
         scopeLabel: resultSubmissionScopeLabel(user),
@@ -17166,6 +17221,9 @@ const App = {
         userIds: rows.map((employee) => employee.id),
         distributionReason: window._orgSubmitReason || "",
         distributionViolations: window._orgSubmitViolations || [],
+        rejectionHistory: Array.isArray(existingRecord?.rejectionHistory) ? existingRecord.rejectionHistory : [],
+        // 본부장 원안(또는 재평가) 등급 분배 기록 — 기존 이력은 보존하고 이어 붙인다.
+        history: buildOrgHistoryEntry(existingRecord, historyStage, { by: user.id, at: submittedAt, reason: window._orgSubmitReason || "", snap }),
       };
       window._orgSubmitReason = null;
       window._orgSubmitViolations = null;
@@ -17240,6 +17298,8 @@ const App = {
       }
     });
     const submittedAt = new Date().toISOString();
+    const existingRecord = activeCycle().resultSubmissions[resultSubmissionScopeKey(user)];
+    const snap = captureDivisionDistribution(user.division);
     activeCycle().resultSubmissions[resultSubmissionScopeKey(user)] = {
       scopeKey: resultSubmissionScopeKey(user),
       scopeLabel: resultSubmissionScopeLabel(user),
@@ -17251,6 +17311,8 @@ const App = {
       distributionReason: reason,
       distributionViolations: ui?.violations || [],
       submittedGrades,
+      rejectionHistory: Array.isArray(existingRecord?.rejectionHistory) ? existingRecord.rejectionHistory : [],
+      history: buildOrgHistoryEntry(existingRecord, orgSubmissionHistoryStage(existingRecord), { by: user.id, at: submittedAt, reason, snap }),
     };
     saveState();
     state.ui.flash = "종합평가를 확정 제출하였습니다.";
@@ -17288,6 +17350,7 @@ const App = {
     });
     const submittedAt = new Date().toISOString();
     const snap = captureDivisionDistribution(user.division);
+    const existingRecord = activeCycle().resultSubmissions[resultSubmissionScopeKey(user)];
     activeCycle().resultSubmissions[resultSubmissionScopeKey(user)] = {
       scopeKey: resultSubmissionScopeKey(user),
       scopeLabel: resultSubmissionScopeLabel(user),
@@ -17300,7 +17363,8 @@ const App = {
       distributionReason: reason,
       distributionViolations: violationDetails,
       submittedGrades,
-      history: [{ stage: "divisionHead", by: user.id, at: submittedAt, reason, counts: snap.counts, grades: snap.grades }],
+      rejectionHistory: Array.isArray(existingRecord?.rejectionHistory) ? existingRecord.rejectionHistory : [],
+      history: buildOrgHistoryEntry(existingRecord, orgSubmissionHistoryStage(existingRecord), { by: user.id, at: submittedAt, reason, snap }),
     };
     invalidateCycleCache();
     saveState();
@@ -17335,6 +17399,12 @@ const App = {
     submission.rejectionHistory = Array.isArray(submission.rejectionHistory) ? submission.rejectionHistory : [];
     submission.rejection = { by: user.id, byName: user.name, at: new Date().toISOString(), reason: reason.trim() };
     submission.rejectionHistory.push({ ...submission.rejection });
+    // 조정 이력 보기에서 반려 사유를 확인할 수 있도록 이력에도 남긴다. 등급 스냅샷은
+    // 이미 직전 제출 시점의 divisionHead/reeval 이력 항목에 남아 있으므로 여기서는
+    // 사유만 기록한다(다음 재제출 시 orgSubmissionHistoryStage가 이 rejection을 보고
+    // "reeval" 단계로 재제출을 구분해 기록한다).
+    submission.history = Array.isArray(submission.history) ? submission.history : [];
+    submission.history.push({ stage: "rejection", by: user.id, at: submission.rejection.at, reason: reason.trim() });
 
     saveState();
     state.ui.flash = `[${label}] 종합평가 재평가를 요청했습니다.`;
@@ -17435,6 +17505,24 @@ const App = {
     const title = (document.getElementById("cmp-filter-title")?.value || "");
     const grade = (document.getElementById("cmp-filter-grade")?.value || "");
     document.querySelectorAll("#cmp-tbody tr").forEach(tr => {
+      const dn = (tr.dataset.name  || "").toLowerCase();
+      const dt = (tr.dataset.team  || "");
+      const dl = (tr.dataset.title || "");
+      const dg = (tr.dataset.grade || "");
+      const show = (!name  || dn.includes(name))
+                && (!team  || dt === team)
+                && (!title || dl === title)
+                && (!grade || dg === grade);
+      tr.style.display = show ? "" : "none";
+    });
+  },
+  // 조정 세션 모달 전용 필터 (cmpFilter와 동일 로직, #sess-tbody 대상)
+  sessFilter() {
+    const name  = (document.getElementById("sess-filter-name")?.value  || "").trim().toLowerCase();
+    const team  = (document.getElementById("sess-filter-team")?.value  || "");
+    const title = (document.getElementById("sess-filter-title")?.value || "");
+    const grade = (document.getElementById("sess-filter-grade")?.value || "");
+    document.querySelectorAll("#sess-tbody tr").forEach(tr => {
       const dn = (tr.dataset.name  || "").toLowerCase();
       const dt = (tr.dataset.team  || "");
       const dl = (tr.dataset.title || "");
@@ -18104,21 +18192,24 @@ const App = {
     const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(division)];
     const hist = rec && Array.isArray(rec.history) ? rec.history : [];
     if (!hist.length) return window.alert("조정 이력이 없습니다.");
-    const stageLabel = { divisionHead: "본부장 원안", adjustmentSession: "조정 세션" };
-    const stageHeaders = hist.map((h) => stageLabel[h.stage] || h.stage);
+    const stageLabel = { divisionHead: "본부장 원안", adjustmentSession: "조정 세션", reeval: "재평가", rejection: "재평가 요청" };
+    // 등급 스냅샷이 있는 단계만 비교 표/차트에 쓴다. "재평가 요청"(rejection)은 반려
+    // 사유만 남기는 단계라 등급이 없으므로 요약 박스에는 표시하되 비교 표 열에서는 뺀다.
+    const gradeHist = hist.filter((h) => Array.isArray(h.grades) && h.grades.length);
+    const stageHeaders = gradeHist.map((h) => stageLabel[h.stage] || h.stage);
 
-    // 본부 등급/가이드 + 원안·조정세션 분배 차트 데이터
+    // 본부 등급/가이드 + 원안·조정세션(또는 재평가) 분배 차트 데이터
     const head = cycleUsers().find((u) => u.role === "divisionHead" && (u.division || "") === (division || ""));
     const headGrade = head ? (calculateFinal(head.id).finalGrade || "B") : "B";
     const dist = state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {};
-    const origEntry = hist.find((h) => h.stage === "divisionHead") || hist[0];
-    const sessEntry = [...hist].reverse().find((h) => h.stage === "adjustmentSession") || hist[hist.length - 1];
+    const origEntry = gradeHist[0];
+    const sessEntry = gradeHist[gradeHist.length - 1];
     const origCounts = origEntry?.counts || {};
     const sessCounts = sessEntry?.counts || {};
     const total = (origEntry?.grades || []).length || Object.values(origCounts).reduce((s, v) => s + (v || 0), 0);
     const guide = Object.fromEntries(GRADES.map((g) => [g, Math.round(total * Number(dist[g] || 0) / 100)]));
     const gradeColor = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
-    // 가로 누적 막대: 가이드 / 본부장 원안 / 조정 세션 (등급별 색 구간)
+    // 가로 누적 막대: 가이드 / 본부장 원안 / 최신 단계 (등급별 색 구간)
     const stackedBar = (label, counts) => {
       const tot = GRADES.reduce((s, g) => s + (counts[g] || 0), 0);
       const segs = tot
@@ -18133,30 +18224,31 @@ const App = {
       <div class="chart-head">본부장 등급 <span class="gb" style="background:${gradeColor[headGrade] || "#6b7280"}">${esc(headGrade)}</span> 기준 · 등급 분배 비교 (단위: 명)</div>
       ${stackedBar("가이드", guide)}
       ${stackedBar("본부장 원안", origCounts)}
-      ${stackedBar("조정 세션", sessCounts)}
+      ${gradeHist.length > 1 ? stackedBar(stageLabel[sessEntry.stage] || "최신", sessCounts) : ""}
       <div class="legend">${GRADES.map((g) => `<span><i style="background:${gradeColor[g]}"></i>${g}</span>`).join("")}</div>
     </div>`;
 
-    // 단계별 요약(처리자·사유·분배)
+    // 단계별 요약(처리자·사유·분배) — 등급 스냅샷이 없는 단계(재평가 요청 사유 등)는 사유만 표시
     const summary = hist.map((h) => {
       const who = userById(h.by);
-      const counts = GRADES.map((g) => `${g} ${h.counts?.[g] || 0}`).join(" · ");
+      const hasGrades = Array.isArray(h.grades) && h.grades.length;
+      const counts = hasGrades ? GRADES.map((g) => `${g} ${h.counts?.[g] || 0}`).join(" · ") : null;
       return `<div class="sum">
         <strong>${esc(stageLabel[h.stage] || h.stage)}</strong>
         <span class="meta">${esc(who?.name || "")}${h.at ? " · " + esc(formatDateTime(h.at)) : ""}</span>
-        <div>등급 분배: ${esc(counts)}</div>
+        ${counts ? `<div>등급 분배: ${esc(counts)}</div>` : ""}
         <div>사유: ${esc(h.reason || "-")}</div>
       </div>`;
     }).join("");
 
-    // 구성원별 단계 등급 병합 (사번+이름 기준)
+    // 구성원별 단계 등급 병합 (사번+이름 기준) — 등급 스냅샷이 있는 단계(gradeHist)만 비교
     const order = [];
     const seen = new Set();
     const nameBy = {}, empnoBy = {}, gradesBy = {};
-    hist.forEach((h, si) => {
+    gradeHist.forEach((h, si) => {
       (h.grades || []).forEach((m) => {
         const key = `${m.employeeNo || ""}|${m.name || ""}`;
-        if (!seen.has(key)) { seen.add(key); order.push(key); nameBy[key] = m.name || ""; empnoBy[key] = m.employeeNo || ""; gradesBy[key] = new Array(hist.length).fill(""); }
+        if (!seen.has(key)) { seen.add(key); order.push(key); nameBy[key] = m.name || ""; empnoBy[key] = m.employeeNo || ""; gradesBy[key] = new Array(gradeHist.length).fill(""); }
         gradesBy[key][si] = m.grade || "";
       });
     });
@@ -18167,7 +18259,7 @@ const App = {
         return `<td class="g${changed ? " chg" : ""}">${esc(g || "-")}${changed ? ` <span class="arrow">(${esc(prev)}→${esc(g)})</span>` : ""}</td>`;
       }).join("");
       return `<tr><td>${idx + 1}</td><td>${esc(nameBy[key])}</td><td>${esc(empnoBy[key])}</td>${cells}</tr>`;
-    }).join("") || `<tr><td colspan="${3 + hist.length}" class="empty">구성원 등급 스냅샷이 없습니다.</td></tr>`;
+    }).join("") || `<tr><td colspan="${3 + gradeHist.length}" class="empty">구성원 등급 스냅샷이 없습니다.</td></tr>`;
 
     const doc = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(division)} 조정 이력</title>
       <style>
