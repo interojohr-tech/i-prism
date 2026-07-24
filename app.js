@@ -9967,9 +9967,19 @@ function deptDistributionExportRows(evaluatees, allUsers) {
   return out;
 }
 
+// 특정 구성원의 종합평가 제출 기록이 실제로 저장된 resultSubmissions 키를 구한다.
+// 상대평가 그룹이 "인사총무팀"으로 재배정된 인원은 실제 소속 본부와 무관하게 인사총무팀
+// 그룹 기록(HR_GROUP_SCOPE_KEY)에 등급/조정 이력이 저장되므로, 실제 소속 본부 키로
+// 조회하면 항상 빈 결과가 나온다(getHRGroupMembers와 동일한 판단 기준을 사용).
+function resultSubmissionKeyForEmployee(employee) {
+  const relGroups = activeCycle()?.relativeGroups || {};
+  if (relGroups[employee.id]?.overrideGroup === "인사총무팀") return HR_GROUP_SCOPE_KEY;
+  return divisionSubmissionKey(employee.division);
+}
+
 // 특정 구성원의 종합평가 단계(본부장 원안/조정 세션) 등급을 이력 스냅샷에서 조회
 function orgStageGradeFor(employee, stage) {
-  const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)];
+  const rec = activeCycle().resultSubmissions?.[resultSubmissionKeyForEmployee(employee)];
   if (!rec || !Array.isArray(rec.history)) return "";
   const entry = [...rec.history].reverse().find((h) => h.stage === stage);
   if (!entry) return "";
@@ -9980,7 +9990,7 @@ function orgStageGradeFor(employee, stage) {
 
 // 종합평가 단계 셀: "이전등급→해당등급 : 사유" 형식 (해당 단계 이력이 없으면 빈 문자열)
 function orgStageCellFor(employee, stage) {
-  const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)];
+  const rec = activeCycle().resultSubmissions?.[resultSubmissionKeyForEmployee(employee)];
   if (!rec || !Array.isArray(rec.history)) return "";
   const entry = [...rec.history].reverse().find((h) => h.stage === stage);
   if (!entry) return "";
@@ -9996,17 +10006,22 @@ function orgStageCellFor(employee, stage) {
 
 // 재평가 요청(반려) 사유 셀: rejection 이력 단계는 등급 스냅샷이 없으므로 반려 사유만 표시
 function orgRejectionCellFor(employee) {
-  const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)];
+  const rec = activeCycle().resultSubmissions?.[resultSubmissionKeyForEmployee(employee)];
   if (!rec || !Array.isArray(rec.history)) return "";
   const entry = [...rec.history].reverse().find((h) => h.stage === "rejection");
   return entry?.reason || "";
 }
 
-// 종합평가 등급 조정 이력(본부장 원안 + 조정 세션 사유) 엑셀 섹션 행
+// 종합평가 등급 조정 이력(본부장 원안 + 조정 세션 사유) 엑셀 섹션 행. 상대평가 그룹이
+// 인사총무팀으로 재배정된 인원은 실제 소속 본부가 아니라 인사총무팀 그룹 기록에서 이력을
+// 가져온다(resultSubmissionKeyForEmployee와 동일한 판단 기준).
 function orgAdjustmentHistoryExportRows(evaluatees) {
   const cyc = activeCycle();
+  const relGroups = cyc.relativeGroups || {};
   const rows = [];
-  [...new Set(evaluatees.map(e => e.division || "미지정"))].sort((a, b) => String(a).localeCompare(String(b), "ko")).forEach((div) => {
+  const isHrGroupMember = (e) => relGroups[e.id]?.overrideGroup === "인사총무팀";
+  const divisionEvaluatees = evaluatees.filter((e) => !isHrGroupMember(e));
+  [...new Set(divisionEvaluatees.map(e => e.division || "미지정"))].sort((a, b) => String(a).localeCompare(String(b), "ko")).forEach((div) => {
     const rec = cyc.resultSubmissions?.[divisionSubmissionKey(div)];
     (rec?.history || []).forEach((h) => {
       const who = userById(h.by);
@@ -10014,6 +10029,14 @@ function orgAdjustmentHistoryExportRows(evaluatees) {
         GRADES.map(g => `${g}${h.counts?.[g] || 0}`).join(" "), h.reason || ""]);
     });
   });
+  if (evaluatees.some(isHrGroupMember)) {
+    const rec = cyc.resultSubmissions?.[HR_GROUP_SCOPE_KEY];
+    (rec?.history || []).forEach((h) => {
+      const who = userById(h.by);
+      rows.push(["인사총무팀 그룹", ORG_HISTORY_STAGE_LABELS[h.stage] || h.stage, who?.name || "", h.at ? formatDateTime(h.at) : "",
+        GRADES.map(g => `${g}${h.counts?.[g] || 0}`).join(" "), h.reason || ""]);
+    });
+  }
   if (!rows.length) return [];
   return [[""], ["[종합평가 등급 조정 이력]"], ["본부", "단계", "처리자", "일시", "등급분배", "사유"], ...rows];
 }
@@ -14628,6 +14651,10 @@ const App = {
       submittedAt: submit ? submittedAt : null,
       savedAt: submittedAt,
       rejectionHistory: Array.isArray(existingRecord?.rejectionHistory) ? existingRecord.rejectionHistory : [],
+      // 확정 제출이면 반려 상태가 해소된 것이므로 지우고, 임시 저장이면 아직 재제출한 것이
+      // 아니므로 반려 표시를 그대로 이어간다(그렇지 않으면 임시 저장만으로 반려 배너가
+      // 사라지고, 다음 실제 재제출이 "재평가"가 아니라 "본부장 원안"으로 잘못 기록된다).
+      ...(submit ? {} : { rejection: existingRecord?.rejection }),
       // 확정 제출일 때만 등급 스냅샷을 이력에 남긴다(임시 저장은 이력에 남기지 않음).
       history: submit
         ? buildOrgHistoryEntry(existingRecord, orgSubmissionHistoryStage(existingRecord), { by: currentUser().id, at: submittedAt, reason: "", snap: captureScopeDistribution(HR_GROUP_SCOPE_KEY) })
