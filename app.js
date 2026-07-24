@@ -8673,41 +8673,23 @@ function renderAdminReports() {
         <div class="panel-head">
           <div>
             <h2>저성과자 AI 피드백 설정</h2>
-            <p class="muted">특정 등급 이하의 피평가자에게는 현 조직보다 다른 환경을 탐색해 보도록 권유하는 냉철한 톤으로 AI 피드백을 생성합니다.</p>
           </div>
           <button class="button" onclick="App.saveAiLowGradeFeedbackSettings()">설정 저장</button>
         </div>
         <div class="panel-body grid two">
           <div class="component-card">
             <h3>적용 대상 등급</h3>
-            <p class="muted" style="margin-top:-6px;">선택한 등급과 그보다 낮은 등급 모두에 적용됩니다.</p>
-            <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="radio" name="ai_low_grade_threshold" value="C" ${lowGrade.threshold === "C" ? "checked" : ""} />
-                <span>C등급 이하 (C·D등급 모두 적용)</span>
-              </label>
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="radio" name="ai_low_grade_threshold" value="D" ${lowGrade.threshold === "D" ? "checked" : ""} />
-                <span>D등급만 적용 <span class="muted">(기본값)</span></span>
-              </label>
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="radio" name="ai_low_grade_threshold" value="none" ${lowGrade.threshold === "none" ? "checked" : ""} />
-                <span>적용 안 함 <span class="muted">(모든 등급에 일반 성장형 피드백 사용)</span></span>
-              </label>
+            <div class="radio-card-group">
+              ${radioCard("ai_low_grade_threshold", "C", "C등급 이하 (C·D등급 모두 적용)", "", lowGrade.threshold)}
+              ${radioCard("ai_low_grade_threshold", "D", "D등급만 적용", "기본값", lowGrade.threshold)}
+              ${radioCard("ai_low_grade_threshold", "none", "적용 안 함", "모든 등급에 일반 성장형 피드백 사용", lowGrade.threshold)}
             </div>
           </div>
           <div class="component-card">
             <h3>참고자료 제공 방식</h3>
-            <p class="muted" style="margin-top:-6px;">위에서 적용 대상으로 선택된 등급의 피평가자에게 어떤 참고자료를 보여줄지 선택합니다.</p>
-            <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px;">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="radio" name="ai_low_grade_ref_mode" value="resign" ${lowGrade.refMode === "resign" ? "checked" : ""} />
-                <span>실업급여 안내·구인구직 사이트 안내 <span class="muted">(기본값)</span></span>
-              </label>
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                <input type="radio" name="ai_low_grade_ref_mode" value="normal" ${lowGrade.refMode === "normal" ? "checked" : ""} />
-                <span>다른 등급과 동일하게 사내 참고자료 카탈로그에서 추천</span>
-              </label>
+            <div class="radio-card-group">
+              ${radioCard("ai_low_grade_ref_mode", "resign", "실업급여 안내·구인구직 사이트 안내", "기본값", lowGrade.refMode)}
+              ${radioCard("ai_low_grade_ref_mode", "normal", "다른 등급과 동일하게 사내 참고자료 카탈로그에서 추천", "", lowGrade.refMode)}
             </div>
           </div>
         </div>
@@ -8745,6 +8727,18 @@ function reportVisibilityCard(id, label, help, icon, checkedValue) {
         <small>${esc(help)}</small>
       </div>
       <div class="report-vis-toggle ${checkedValue ? "on" : ""}"></div>
+    </label>
+  `;
+}
+
+// 단일 선택(라디오) 설정 카드 — 같은 name의 다른 카드는 자동으로 active 해제
+function radioCard(name, value, label, sub, checkedValue) {
+  const isChecked = checkedValue === value;
+  return `
+    <label class="radio-card ${isChecked ? "active" : ""}">
+      <input type="radio" name="${esc(name)}" value="${esc(value)}" ${isChecked ? "checked" : ""}
+        onchange="document.querySelectorAll('input[name=${name}]').forEach(function(r){r.closest('label').classList.toggle('active', r.checked);});" />
+      <div class="radio-card-body">${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ""}</div>
     </label>
   `;
 }
@@ -11027,7 +11021,7 @@ ${rawFeedback}
 - peer: 동료평가 내용이 있으면 평가 내용을 구체적으로 종합하여 한국어 300자 내외 문장으로 작성. 없으면 빈 문자열.
 - strengths: 피드백에서 긍정적 키워드 2~3개 (각 10자 이내 단어). 없으면 빈 배열.
 - weaknesses: 피드백에서 개선 필요 키워드 3~4개 (각 10자 이내 단어).
-- suggestions: 현재의 역량 수준과 조직 기대치 간의 간극을 냉철하게 짚고, 구체적으로 어떤 점에서 기대에 미치지 못했는지 명시하면서 이 조직보다 본인의 강점이 더 잘 발휘될 수 있는 다른 환경을 탐색하도록 권유하는 내용을, 본인에게 직접 이야기하듯 직설적으로 작성. "현 조직이 본인에게 적합하지 않을 수 있으며 새로운 환경을 탐색하는 것이 성장에 도움이 될 수 있다"는 권유는 overall이 아니라 반드시 이 항목에만 담으세요. 마지막 문장은 "~하는 것이 중요합니다", "~하는 것이 필요합니다"처럼 단정적으로 끝내지 말고, "~하는 것이 필요할 수 있습니다", "~하는 것이 도움이 될 수 있습니다"처럼 여지를 남기는 어조로 마무리하세요. 번호나 줄바꿈 없이 하나의 자연스러운 문단으로 작성. 한국어 500자 내외로 구체적 내용을 충분히 담을 것.
+- suggestions: 현재의 역량 수준과 조직 기대치 간의 간극을 냉철하게 짚고, 구체적으로 어떤 점에서 기대에 미치지 못했는지 명시하면서 이 조직보다 본인의 강점이 더 잘 발휘될 수 있는 다른 환경을 탐색하도록 권유하는 내용을, 본인에게 직접 이야기하듯 직설적으로 작성. "현 조직이 본인에게 적합하지 않을 수 있으며 새로운 환경을 탐색하는 것이 성장에 도움이 될 수 있다"는 권유는 overall이 아니라 반드시 이 항목에만 담으세요. 이 권유로 글을 마무리하세요 — "의사소통을 강화하세요", "OO 역량을 개발하세요", "이런 방법을 배워보세요"처럼 조직 안에서 더 발전하기 위한 구체적인 스킬·역량 개발 조언은 절대 덧붙이지 마세요. 그런 조언이 섞이면 "새로운 환경을 찾아보라"는 핵심 메시지가 흐려지고 상대방이 의도를 오해할 수 있습니다. 마지막 문장은 "~하는 것이 중요합니다", "~하는 것이 필요합니다"처럼 단정적으로 끝내지 말고, "~하는 것이 필요할 수 있습니다", "~하는 것이 도움이 될 수 있습니다"처럼 여지를 남기는 어조로 마무리하세요. 번호나 줄바꿈 없이 하나의 자연스러운 문단으로, 새로운 환경 탐색을 권유하는 문장으로 명확하게 마무리하세요. 한국어 250~350자 내외로 간결하게 작성할 것.
 ${refInstructionsBlock}
 
 {
