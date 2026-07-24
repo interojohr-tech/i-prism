@@ -4484,7 +4484,7 @@ function buildOrgHistoryEntry(existingRecord, stage, { by, at, reason, snap }) {
   return [...prevHistory, { stage, by, at, reason: reason || "", counts: snap.counts, grades: snap.grades }];
 }
 
-const ORG_HISTORY_STAGE_LABELS = { divisionHead: "본부장 원안 제출", adjustmentSession: "조정 세션 (인사총무팀)" };
+const ORG_HISTORY_STAGE_LABELS = { divisionHead: "본부장 원안 제출", adjustmentSession: "조정 세션 (인사총무팀)", reeval: "재평가 재제출", rejection: "재평가 요청 (반려)" };
 
 // 본부 종합평가 등급 조정 이력 패널 (본부장 원안 + 조정 세션)
 function renderDivisionAdjustmentHistoryPanel(divisions) {
@@ -9992,6 +9992,14 @@ function orgStageCellFor(employee, stage) {
     : (orgStageGradeFor(employee, "divisionHead") || calculateFinal(employee.id).autoGrade || "");
   const reason = entry.reason || "";
   return `${from}→${to}${reason ? " : " + reason : ""}`;
+}
+
+// 재평가 요청(반려) 사유 셀: rejection 이력 단계는 등급 스냅샷이 없으므로 반려 사유만 표시
+function orgRejectionCellFor(employee) {
+  const rec = activeCycle().resultSubmissions?.[divisionSubmissionKey(employee.division)];
+  if (!rec || !Array.isArray(rec.history)) return "";
+  const entry = [...rec.history].reverse().find((h) => h.stage === "rejection");
+  return entry?.reason || "";
 }
 
 // 종합평가 등급 조정 이력(본부장 원안 + 조정 세션 사유) 엑셀 섹션 행
@@ -16314,13 +16322,15 @@ const App = {
     if (!rows.length) return window.alert("내보낼 구성원이 없습니다.");
 
     const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
-      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종등급", "평가 피드백"];
+      "종합평가(본부장 원안)", "종합평가(조정세션)", "종합평가(재평가 요청)", "종합평가(재평가)",
+      "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종등급", "평가 피드백"];
     const out = [["[구성원 평가 결과]"], header];
     rows.forEach((emp, i) => {
       const m = memberScoreCells(emp);
       out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
         ...scoreBlockCells(m), m.score, m.autoGrade,
         orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
+        orgRejectionCellFor(emp), orgStageCellFor(emp, "reeval"),
         m.presidentReason, m.chairmanReason, m.finalGrade,
         buildEvalFeedbackText(emp)]);
     });
@@ -16460,7 +16470,8 @@ const App = {
       .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
     if (!evaluatees.length) return window.alert("내보낼 구성원이 없습니다.");
     const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
-      "종합평가(본부장 원안)", "종합평가(조정세션)", "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "평가 피드백", "AI 피드백"];
+      "종합평가(본부장 원안)", "종합평가(조정세션)", "종합평가(재평가 요청)", "종합평가(재평가)",
+      "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "평가 피드백", "AI 피드백"];
     const out = [["[구성원 평가 결과]"], header];
     evaluatees.forEach((emp, i) => {
       const m = memberScoreCells(emp);
@@ -16481,6 +16492,7 @@ const App = {
       out.push([i + 1, emp.name, emp.employeeNo || "", ROLE_LABELS[emp.role] || emp.role, emp.division || "", emp.team || "",
         ...scoreBlockCells(m), m.score, m.autoGrade,
         orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
+        orgRejectionCellFor(emp), orgStageCellFor(emp, "reeval"),
         m.presidentReason, m.chairmanReason, m.adminReason, m.finalGrade,
         buildEvalFeedbackText(emp), aiFeedbackText]);
     });
