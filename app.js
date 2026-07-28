@@ -7239,16 +7239,14 @@ function renderAiOptOutManager(targetUsers) {
   const optOutUsers = targetUsers.filter((user) => optOutIds.has(user.id)).sort(compareEmployeesForDisplay);
   const addableUsers = targetUsers.filter((user) => !optOutIds.has(user.id)).sort(compareEmployeesForDisplay);
   return `
-    <div class="component-card">
+    <div class="component-card" id="ai-optout-panel">
       <h3>AI기능 활용 비동의자 관리</h3>
       <p class="muted">사전 설문 등으로 AI 기능(AI평가, AI 피드백 생성, AI 평가자 성향 분석) 활용에 동의하지 않은 구성원을 등록합니다. 등록된 구성원도 평가 자체는 정상적으로 진행되며, AI 관련 기능에서만 제외됩니다.</p>
       <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">
         <div class="field" style="flex:1;min-width:240px;margin:0;">
           <label for="new_ai_optout_id">등록 대상자 <span class="muted" style="font-weight:400;">(현재 ${optOutUsers.length}명 등록)</span></label>
-          <select id="new_ai_optout_id">
-            <option value="">구성원 선택</option>
-            ${addableUsers.map((user) => `<option value="${esc(user.id)}">${esc(userOptionLabel(user))}</option>`).join("")}
-          </select>
+          ${userPicker("new_ai_optout_id", "", addableUsers, "ai_optout_picker_options")}
+          <datalist id="ai_optout_picker_options">${addableUsers.map((user) => `<option value="${esc(userOptionLabel(user))}"></option>`).join("")}</datalist>
         </div>
         <button class="button secondary" ${addableUsers.length ? "" : "disabled"} onclick="App.addAiOptOutUser()">비동의자로 등록</button>
       </div>
@@ -7267,6 +7265,29 @@ function renderAiOptOutManager(targetUsers) {
       </div>` : ""}
     </div>
   `;
+}
+
+// AI 비동의자 등록/해제 후 전체 페이지를 다시 그리면 큰 구성원 목록 화면의 스크롤
+// 위치가 맨 위로 튀어버리므로, 이 패널만 부분적으로 다시 그리고 스크롤 위치를 그대로
+// 유지한다(조직 관리/최종 조정 패널에 이미 쓰이는 refreshXxxPanel 패턴과 동일).
+function refreshAiOptOutPanel(message = "") {
+  const panel = document.getElementById("ai-optout-panel");
+  if (!panel) return render();
+  // 이 패널은 평가 세팅 모달의 스크롤 가능한 본문(.cycle-settings-body) 안에 떠 있어
+  // 실제로 스크롤되는 건 window가 아니라 그 요소다 — window.scrollY만 보존하면
+  // 모달 안 스크롤 위치는 여전히 맨 위로 튄다.
+  const scrollContainer = panel.closest(".cycle-settings-body");
+  const savedScrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+  const targetUsers = cycleUsers().filter(isEvaluatee).sort(compareEmployeesForDisplay);
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderAiOptOutManager(targetUsers).trim();
+  const nextPanel = wrapper.firstElementChild;
+  if (message) {
+    nextPanel.insertAdjacentHTML("afterbegin", `<div class="notice ok" style="margin-bottom:10px;">${esc(message)}</div>`);
+  }
+  panel.replaceWith(nextPanel);
+  if (scrollContainer) scrollContainer.scrollTop = savedScrollTop;
+  else window.scrollTo({ top: savedScrollTop, behavior: "auto" });
 }
 
 function renderEvaluatorWeightConfig() {
@@ -16170,25 +16191,24 @@ const App = {
   // AI기능 활용 비동의자 등록 — 평가 자체는 정상 진행하되 AI평가/AI 피드백/AI 평가자
   // 성향 분석에서만 제외한다("평가 제외자"와는 별개 개념).
   addAiOptOutUser() {
-    const userId = valueOf("new_ai_optout_id");
-    if (!userId) return window.alert("등록할 구성원을 선택해 주세요.");
+    const cycle = selectedCycle();
+    const targetUsers = cycleUsers(cycle).filter(isEvaluatee);
+    const userId = userIdFromPicker("new_ai_optout_id", targetUsers);
+    if (!userId) return window.alert("등록할 구성원을 이름으로 검색해 선택해 주세요.");
     const user = userById(userId);
     if (!user) return window.alert("구성원을 찾을 수 없습니다.");
-    const cycle = selectedCycle();
     cycle.aiOptOutUserIds = Array.isArray(cycle.aiOptOutUserIds) ? cycle.aiOptOutUserIds : [];
     if (cycle.aiOptOutUserIds.includes(userId)) return window.alert("이미 등록된 구성원입니다.");
     cycle.aiOptOutUserIds.push(userId);
     saveState();
-    state.ui.flash = `${user.name}님을 AI기능 활용 비동의자로 등록했습니다.`;
-    render();
+    refreshAiOptOutPanel(`${user.name}님을 AI기능 활용 비동의자로 등록했습니다.`);
   },
   removeAiOptOutUser(userId) {
     const user = userById(userId);
     const cycle = selectedCycle();
     cycle.aiOptOutUserIds = (Array.isArray(cycle.aiOptOutUserIds) ? cycle.aiOptOutUserIds : []).filter((id) => id !== userId);
     saveState();
-    state.ui.flash = `${user?.name || ""}님의 AI기능 활용 비동의자 등록을 해제했습니다.`;
-    render();
+    refreshAiOptOutPanel(`${user?.name || ""}님의 AI기능 활용 비동의자 등록을 해제했습니다.`);
   },
   applyAutoTargetSelection() {
     const months = parseInt(valueOf("auto_exclude_months"), 10);
