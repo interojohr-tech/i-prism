@@ -719,6 +719,7 @@ function createCycle(name, users = state?.users || []) {
     upwardAssignments: buildDefaultUpwardAssignments(users),
     peerAssignments: buildDefaultPeerAssignments(users),
     resultSubmissions: {},
+    aiOptOutUserIds: [], // 사전 설문 등으로 AI 기능 활용에 동의하지 않은 인원(AI평가/AI 피드백/AI 평가자 성향 분석에서 제외)
   };
   users.forEach((user) => {
     if (isEvaluatee(user)) cycle.evaluations[user.id] = makeEmptyEvaluation(user.id);
@@ -1178,6 +1179,7 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
   if (cycle.useUpward === undefined) cycle.useUpward = true;
   if (cycle.usePeer === undefined) cycle.usePeer = true;
   if (cycle.useAttitude === undefined) cycle.useAttitude = true;
+  if (!Array.isArray(cycle.aiOptOutUserIds)) cycle.aiOptOutUserIds = [];
   if (!cycle.upwardStart) cycle.upwardStart = cycle.secondStart || "";
   if (!cycle.upwardEnd) cycle.upwardEnd = cycle.secondEnd || "";
   if (!cycle.peerStart) cycle.peerStart = cycle.upwardStart || cycle.secondStart || "";
@@ -1580,6 +1582,13 @@ function isRetired(user) {
 
 function isEvaluatee(user) {
   return Boolean(user && user.active !== false && !isRetired(user) && EVALUATEE_ROLES.includes(user.role));
+}
+
+// 사전 설문 등으로 AI 기능(AI평가/AI 피드백 생성/AI 평가자 성향 분석) 활용에 동의하지
+// 않아 등록된 인원인지 확인한다. cycle을 명시적으로 받아, 설정 화면에서 편집 중인
+// 사이클과 실제 평가가 진행되는 활성 사이클이 다를 수 있는 경우를 혼동하지 않게 한다.
+function isAiOptOut(userId, cycle) {
+  return Boolean(cycle && Array.isArray(cycle.aiOptOutUserIds) && cycle.aiOptOutUserIds.includes(userId));
 }
 
 function isExcludedFromEvaluatorOptions(user) {
@@ -6610,6 +6619,7 @@ function renderAdminPeopleTargets() {
         ${renderPeerCountConfig()}
         ${renderAutoTargetSelection(targetUsers)}
         ${renderEvaluationTargetManager(targetUsers)}
+        ${renderAiOptOutManager(targetUsers)}
         ${renderPeopleFilterBar(targetUsers)}
         ${renderPeoplePickerDatalists(evaluatorOptions, upwardTargetOptions, peerTargetOptions)}
         ${renderGroupedPeople(targetUsers, (employees) => renderEvaluatorTable(employees, evaluatorOptions, upwardTargetOptions, peerTargetOptions))}
@@ -7219,6 +7229,42 @@ function renderEvaluationTargetManager(targetUsers) {
         </div>
         <button class="button secondary" ${excluded.length ? "" : "disabled"} onclick="App.addEvaluationTarget()">평가 대상자로 변경</button>
       </div>
+    </div>
+  `;
+}
+
+function renderAiOptOutManager(targetUsers) {
+  const cycle = selectedCycle();
+  const optOutIds = new Set(Array.isArray(cycle.aiOptOutUserIds) ? cycle.aiOptOutUserIds : []);
+  const optOutUsers = targetUsers.filter((user) => optOutIds.has(user.id)).sort(compareEmployeesForDisplay);
+  const addableUsers = targetUsers.filter((user) => !optOutIds.has(user.id)).sort(compareEmployeesForDisplay);
+  return `
+    <div class="component-card">
+      <h3>AI기능 활용 비동의자 관리</h3>
+      <p class="muted">사전 설문 등으로 AI 기능(AI평가, AI 피드백 생성, AI 평가자 성향 분석) 활용에 동의하지 않은 구성원을 등록합니다. 등록된 구성원도 평가 자체는 정상적으로 진행되며, AI 관련 기능에서만 제외됩니다.</p>
+      <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">
+        <div class="field" style="flex:1;min-width:240px;margin:0;">
+          <label for="new_ai_optout_id">등록 대상자 <span class="muted" style="font-weight:400;">(현재 ${optOutUsers.length}명 등록)</span></label>
+          <select id="new_ai_optout_id">
+            <option value="">구성원 선택</option>
+            ${addableUsers.map((user) => `<option value="${esc(user.id)}">${esc(userOptionLabel(user))}</option>`).join("")}
+          </select>
+        </div>
+        <button class="button secondary" ${addableUsers.length ? "" : "disabled"} onclick="App.addAiOptOutUser()">비동의자로 등록</button>
+      </div>
+      ${optOutUsers.length ? `
+      <div class="table-wrap" style="margin-top:10px;">
+        <table>
+          <thead><tr><th>구성원</th><th>조직</th><th>등록 해제</th></tr></thead>
+          <tbody>
+            ${optOutUsers.map((user) => `<tr>
+              <td><strong>${esc(user.name)}</strong> <span class="muted">${esc(user.employeeNo || "")}</span></td>
+              <td>${esc(user.division || "-")} · ${esc(user.team || "-")}</td>
+              <td><button class="button danger sm" onclick="App.removeAiOptOutUser('${user.id}')">해제</button></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>` : ""}
     </div>
   `;
 }
@@ -9149,6 +9195,7 @@ function renderAdminAdjustments() {
 
 // 최종 조정 — 최종 승인 형식의 필터·정렬 가능한 구성원 상세 결과 테이블
 function renderAdjustmentResultPanel(evaluatees) {
+  const cycle = selectedCycle();
   const resultCache = new Map();
   const getR = (id) => { if (!resultCache.has(id)) resultCache.set(id, calculateFinal(id)); return resultCache.get(id); };
 
@@ -9241,10 +9288,12 @@ function renderAdjustmentResultPanel(evaluatees) {
                     ${locked
                       ? `<div class="notice report-feedback" style="min-width:380px;font-size:12px;white-space:pre-wrap;word-break:break-word;">${esc(adjFeedback)}</div>`
                       : `<textarea id="adj_feedback_${employee.id}" class="adj-feedback-area" style="min-width:380px;min-height:130px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">${esc(adjFeedback)}</textarea>`}
-                    <button onclick="App.openAIFeedbackModal('${employee.id}')"
-                      style="margin-top:6px;display:flex;align-items:center;gap:5px;font-size:12px;padding:4px 10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">
-                      🤖 AI 피드백 ${(evaluation.aiFeedback?.generatedAt) ? "✔" : "생성"}
-                    </button>
+                    ${isAiOptOut(employee.id, cycle)
+                      ? `<button disabled title="AI기능 활용 비동의자로 등록된 인원입니다." style="margin-top:6px;display:flex;align-items:center;gap:5px;font-size:12px;padding:4px 10px;background:var(--line);color:var(--muted);border:none;border-radius:6px;cursor:not-allowed;white-space:nowrap;">🤖 AI 비동의</button>`
+                      : `<button onclick="App.openAIFeedbackModal('${employee.id}')"
+                          style="margin-top:6px;display:flex;align-items:center;gap:5px;font-size:12px;padding:4px 10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">
+                          🤖 AI 피드백 ${(evaluation.aiFeedback?.generatedAt) ? "✔" : "생성"}
+                        </button>`}
                   </td>
                   <td style="text-align:center;"><label class="adj-pub-check" title="리포트 공개"><input type="checkbox" id="adj_pub_${employee.id}" ${evaluation.published ? "checked" : ""} ${canPub ? "" : "disabled"} /><span></span></label></td>
                 </tr>`;
@@ -10756,6 +10805,10 @@ async function callAIPerformanceEval(employeeId, silent = false, cycleId = null)
   const evaluation = (cycle.evaluations || {})[employeeId];
   if (!employee || !evaluation) return;
 
+  // AI기능 활용 비동의자로 등록된 인원은 AI평가를 실행하지 않는다(사이클의 AI평가
+  // 사용 설정과 무관하게 항상 제외).
+  if (isAiOptOut(employeeId, cycle)) return;
+
   // 이미 완료 상태면 재실행 안 함
   if (evaluation.aiEval?.status === "done") return;
 
@@ -11033,6 +11086,7 @@ async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
   const employee = cycleUsers().find(u => u.id === employeeId);
   const evaluation = (cycle.evaluations || {})[employeeId];
   if (!employee || !evaluation) throw new Error("평가 데이터를 찾을 수 없습니다.");
+  if (isAiOptOut(employeeId, cycle)) throw new Error("AI기능 활용 비동의자로 등록된 인원입니다.");
 
   const rawFeedback = getEvaluatorOverallFeedback(evaluation, employee, true, true);
   const title = employee.title || "";
@@ -14433,7 +14487,8 @@ const App = {
   },
   async generateAllAIFeedback() {
     const cycle = activeCycle();
-    const evaluatees = cycleUsers(cycle).filter(u => isEvaluatee(u) && u.active !== false);
+    // AI기능 활용 비동의자는 일괄 생성 대상에서 제외한다.
+    const evaluatees = cycleUsers(cycle).filter(u => isEvaluatee(u) && u.active !== false && !isAiOptOut(u.id, cycle));
     if (!evaluatees.length) { window.alert("처리할 평가 대상자가 없습니다."); return; }
     if (!window.confirm(`${evaluatees.length}명에 대해 AI 피드백을 일괄 생성합니다.\n기존 AI 피드백은 덮어씌워집니다. 진행하시겠습니까?`)) return;
 
@@ -14522,11 +14577,12 @@ const App = {
     if (!cycle) return;
     const evaluatees = cycleUsers(cycle).filter(isEvaluatee);
 
-    // 1차·2차 평가자 목록 수집 (중복 제거)
+    // 1차·2차 평가자 목록 수집 (중복 제거). AI기능 활용 비동의자는 평가자로서도 분석
+    // 대상에서 제외한다.
     const evaluatorIds = [...new Set([
       ...evaluatees.map(e => e.evaluator1Id).filter(Boolean),
       ...evaluatees.map(e => e.evaluator2Id).filter(Boolean),
-    ])];
+    ])].filter((id) => !isAiOptOut(id, cycle));
     if (!evaluatorIds.length) return window.alert("분석할 평가자가 없습니다.");
 
     state.ui.aiTendencyModal = { open: true, running: true, completed: 0, total: evaluatorIds.length, currentName: "" };
@@ -16109,6 +16165,29 @@ const App = {
     ensureCycleEvaluations(cycle, cycle.usersSnapshot);
     saveState();
     state.ui.flash = `${source.name}님을 평가 대상자로 변경했습니다.`;
+    render();
+  },
+  // AI기능 활용 비동의자 등록 — 평가 자체는 정상 진행하되 AI평가/AI 피드백/AI 평가자
+  // 성향 분석에서만 제외한다("평가 제외자"와는 별개 개념).
+  addAiOptOutUser() {
+    const userId = valueOf("new_ai_optout_id");
+    if (!userId) return window.alert("등록할 구성원을 선택해 주세요.");
+    const user = userById(userId);
+    if (!user) return window.alert("구성원을 찾을 수 없습니다.");
+    const cycle = selectedCycle();
+    cycle.aiOptOutUserIds = Array.isArray(cycle.aiOptOutUserIds) ? cycle.aiOptOutUserIds : [];
+    if (cycle.aiOptOutUserIds.includes(userId)) return window.alert("이미 등록된 구성원입니다.");
+    cycle.aiOptOutUserIds.push(userId);
+    saveState();
+    state.ui.flash = `${user.name}님을 AI기능 활용 비동의자로 등록했습니다.`;
+    render();
+  },
+  removeAiOptOutUser(userId) {
+    const user = userById(userId);
+    const cycle = selectedCycle();
+    cycle.aiOptOutUserIds = (Array.isArray(cycle.aiOptOutUserIds) ? cycle.aiOptOutUserIds : []).filter((id) => id !== userId);
+    saveState();
+    state.ui.flash = `${user?.name || ""}님의 AI기능 활용 비동의자 등록을 해제했습니다.`;
     render();
   },
   applyAutoTargetSelection() {
@@ -21178,6 +21257,7 @@ window.addEventListener("storage", (e) => {
         const ev = evals[uid];
         if (ev?.status?.self !== "submitted") continue;
         if (ev?.aiEval?.status === "done") continue;
+        if (isAiOptOut(uid, cycle)) continue;
         pending.push({ cycle, uid });
       }
     }
