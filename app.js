@@ -5245,8 +5245,11 @@ function renderApprovalPage(user) {
     return true;
   });
   const approvalReady = allEvaluationsComplete && allDivisionsSubmitted;
-  const canPresidentApprove = user.role === "president" && approvalReady && !presidentApproved;
-  const canChairmanApprove  = user.role === "chairman"  && presidentApproved && !chairmanApproved;
+  // 승인요청(App.requestApproval)이 걸린 사이클에서만 승인 버튼을 노출한다 — 그렇지
+  // 않으면 평가가 모두 끝난 다른(예: 과거) 사이클이 드롭다운에 선택된 상태로 실수로
+  // 승인 버튼을 누를 수 있다.
+  const canPresidentApprove = user.role === "president" && Boolean(cycle.approvalRequested) && approvalReady && !presidentApproved;
+  const canChairmanApprove  = user.role === "chairman"  && Boolean(cycle.approvalRequested) && presidentApproved && !chairmanApproved;
   // 본인이 등급을 조정할 차례일 때만 조정 가능
   // 사장: 모든 준비 완료 & 아직 미승인 / 회장: 사장 승인 후 & 아직 미확정
   const canAdjustNow = user.role === "president"
@@ -8708,7 +8711,7 @@ function renderAdminGrades() {
                 ${GRADES.map((parentGrade) => {
                   const row = state.distributionMatrix[parentGrade] || {};
                   const sum = GRADES.reduce((total, grade) => total + Number(row[grade] || 0), 0);
-                  return `<tr><td>${gradeBadge(parentGrade)}</td>${GRADES.map((grade) => `<td><input class="compact-input" id="dist_${parentGrade}_${grade}" type="number" min="0" max="100" value="${esc(row[grade] || 0)}" /></td>`).join("")}<td class="score">${sum}%</td></tr>`;
+                  return `<tr><td>${gradeBadge(parentGrade)}</td>${GRADES.map((grade) => `<td><input class="compact-input" id="dist_${parentGrade}_${grade}" type="number" min="0" max="100" value="${esc(row[grade] || 0)}" oninput="App.recalcDistSum('${parentGrade}')" /></td>`).join("")}<td class="score" id="dist_sum_${parentGrade}" style="${sum !== 100 ? "color:#dc2626;font-weight:700;" : ""}">${sum}%</td></tr>`;
                 }).join("")}
               </tbody>
             </table>
@@ -10752,6 +10755,17 @@ function stageComponentScore(employee, stageEv) {
   return Math.round(v * 10) / 10;
 }
 
+// 가중치 합계가 0보다 크면 실제 가중치로, 전부 0(미설정)이면 단순 평균으로 계산한다.
+// 가중치가 정확히 0인 항목(참고용)은 두 경우 모두 일관되게 0으로 취급해야 하므로
+// 분자·분모에 동일한 weight 값을 사용한다 — 한쪽만 "|| 1" 같은 폴백을 쓰면 0가중치
+// 항목이 분모에서는 빠지고 분자에는 남는 비대칭이 생겨 점수가 오염된다.
+function weightedAverage(items) {
+  if (!items.length) return null;
+  const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
+  if (totalWeight > 0) return items.reduce((sum, item) => sum + item.score * item.weight, 0) / totalWeight;
+  return items.reduce((sum, item) => sum + item.score, 0) / items.length;
+}
+
 function deriveComponentScore(componentData) {
   if (!componentData) return null;
   if (componentData.achievements?.length) {
@@ -10759,8 +10773,7 @@ function deriveComponentScore(componentData) {
       .map((item) => ({ score: toNumberOrNull(item.score), weight: Number(item.weight || 0) }))
       .filter((item) => item.score !== null);
     if (weighted.length) {
-      const totalWeight = weighted.reduce((total, item) => total + (item.weight || 0), 0) || weighted.length;
-      const value = weighted.reduce((total, item) => total + item.score * (item.weight || 1), 0) / totalWeight;
+      const value = weightedAverage(weighted);
       return Math.round(value * 10) / 10;
     }
   }
@@ -10963,19 +10976,28 @@ ${achSchemaExamples}
     if (!response.ok) throw new Error("API 오류");
     const data = await response.json();
     const result = JSON.parse(data.choices[0].message.content);
-    // 업적별 점수 배열 처리
+    // 업적별 점수 배열 처리. AI가 실제 업적 개수 범위를 벗어난 index를 주면(환각 등)
+    // 신뢰할 수 없으므로 제외한다.
     const achResults = Array.isArray(result.achievements) ? result.achievements : [];
-    const totalScore = Math.min(100, Math.max(0, Number(result.totalScore) || 0));
+    const validAchResults = achResults.filter(a => Number.isInteger(a.index) && a.index >= 1 && a.index <= achievements.length);
+    const achievementScores = validAchResults.map(a => ({
+      index: a.index,
+      score: Math.min(100, Math.max(0, Number(a.score) || 0)),
+      rationale: a.rationale || "",
+    }));
+    // AI가 보고한 총점을 그대로 신뢰하지 않고, 검증된 업적별 점수 × 실제 업적 가중치로
+    // 재계산해서 사용한다. 재계산할 근거가 없을 때만(빈 배열 등) AI 총점을 대체값으로 쓴다.
+    const recomputable = achievementScores.map(a => ({ score: a.score, weight: Number(achievements[a.index - 1]?.weight || 0) }));
+    const recomputedTotal = recomputable.length ? weightedAverage(recomputable) : null;
+    const totalScore = recomputedTotal !== null
+      ? Math.round(recomputedTotal * 10) / 10
+      : Math.min(100, Math.max(0, Number(result.totalScore) || 0));
     // 하위 호환: totalScore를 score로도 저장
     evaluation.aiEval = {
       status: "done",
       score: totalScore,
       rationale: result.totalRationale || "",
-      achievementScores: achResults.map(a => ({
-        index: a.index,
-        score: Math.min(100, Math.max(0, Number(a.score) || 0)),
-        rationale: a.rationale || "",
-      })),
+      achievementScores,
     };
   } catch (e) {
     evaluation.aiEval = { status: "failed", error: e.message };
@@ -17085,7 +17107,28 @@ const App = {
     state.ui.flash = `전체 ${divisions.length}개 본부 · ${count}명에게 템플릿 설정을 일괄 적용했습니다.`;
     render();
   },
+  // 본부 등급별 배분률 입력 중 해당 행의 합계를 실시간으로 다시 계산해 표시한다.
+  // 저장 시점 검증(saveGrades)과 별개로, 100%가 아닐 때 바로 눈에 띄도록 색을 바꾼다.
+  recalcDistSum(parentGrade) {
+    const sumCell = document.getElementById(`dist_sum_${parentGrade}`);
+    if (!sumCell) return;
+    const sum = GRADES.reduce((total, grade) => total + Number(valueOf(`dist_${parentGrade}_${grade}`) || 0), 0);
+    sumCell.textContent = `${sum}%`;
+    sumCell.style.color = sum !== 100 ? "#dc2626" : "";
+    sumCell.style.fontWeight = sum !== 100 ? "700" : "";
+  },
   saveGrades() {
+    // 배분율 합계가 100이 아닌 본부 등급 행이 있으면 저장을 막는다. 여기서 검증하는
+    // 것은 관리자가 설정하는 "가이드 비율" 자체이며, 실제 종합평가 제출 시 인원수가
+    // 정수로 나누어지지 않아 가이드와 다소 어긋나는 것은 별개 문제로 이미
+    // saveOrgResultSubmission에서 ceil 기준으로 허용하고 있다(여기서 손대지 않는다).
+    const badRows = GRADES.filter((grade) => {
+      const sum = GRADES.reduce((total, childGrade) => total + Number(valueOf(`dist_${grade}_${childGrade}`) || 0), 0);
+      return sum !== 100;
+    });
+    if (badRows.length) {
+      return window.alert(`본부 등급별 배분률은 각 행의 합계가 100%여야 합니다.\n합계가 100%가 아닌 본부 등급: ${badRows.join(", ")}`);
+    }
     GRADES.forEach((grade) => {
       state.gradeThresholds[grade] = Number(valueOf(`threshold_${grade}`) || 0);
       state.distributionMatrix[grade] = state.distributionMatrix[grade] || {};
@@ -18292,6 +18335,9 @@ const App = {
     const user = currentUser();
     if (user.role !== role) return window.alert("권한이 없습니다.");
     const cycle = selectedCycle();
+    // 화면 버튼은 승인요청된 사이클에서만 노출되지만, 승인요청 이후 사이클 드롭다운을
+    // 바꿔 다른 사이클을 선택한 채로 호출될 수 있으므로 액션 자체에서도 재검증한다.
+    if (!cycle.approvalRequested) return window.alert("이 사이클은 아직 인사총무팀의 승인요청이 되지 않았습니다.\n승인요청 이후에만 승인할 수 있습니다.");
     cycle.resultSubmissions = cycle.resultSubmissions || {};
     const labelMap = { president: "사장", chairman: "회장" };
     if (!window.confirm(`${labelMap[role]} 승인을 확정하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
