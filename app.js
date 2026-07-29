@@ -2493,27 +2493,30 @@ function renderDashboardTodos(user, tasks, hasActiveCycle) {
     }
   }
 
-  // 미완료 task만 표시 (완료된 항목은 목록에서 제거)
-  const pendingTasks = hasActiveCycle ? tasks.filter(t => !isCompletedStatus(t.status)) : [];
+  // 미완료 task 중, 실제 평가 기간이 되어 처리 가능한 것만 표시한다(완료된 항목,
+  // 아직 기간이 아니거나 이미 지난 항목은 "내 할 일" 목록에서 제외).
+  const pendingTasks = hasActiveCycle ? tasks.filter(t => !isCompletedStatus(t.status) && isTaskCurrentlyActionable(t)) : [];
   const taskMarkup = pendingTasks.length ? `<div class="task-list">${pendingTasks.slice(0, 8).map((task) => renderTaskButton(task, "")).join("")}</div>` : "";
   if (!alerts.length && !taskMarkup) return `<div class="empty">현재 처리할 일이 없습니다.</div>`;
   return `<div class="grid">${alerts.join("")}${taskMarkup}</div>`;
 }
 
+// 과제(task)가 지금 당장 처리 가능한 상태인지 — renderTaskButton의 pill 표시 기준
+// (ready && editable)과 동일한 기준이다. dashboardTaskAlerts(요약 알림)와
+// renderDashboardTodos(개별 할 일 목록)가 같은 기준을 공유해야, 아직 기간이 아니거나
+// 이미 지난 단계의 과제가 "내 할 일"에 나타나지 않는다.
+function isTaskCurrentlyActionable(task) {
+  if (task.type === "upward") return canEditUpward();
+  if (task.type === "peer") return canEditPeer();
+  return task.ready && canEditStage(task.stage, evaluations()[task.employee.id]);
+}
+
 function dashboardTaskAlerts(tasks) {
   const cycle = selectedCycle();
   const stageEnd = { first: cycle.firstEnd, second: cycle.secondEnd, upward: cycle.upwardEnd, peer: cycle.peerEnd };
-  // 개별 과제 행(renderTaskButton)은 canEditStage/canEditUpward/canEditPeer로 실제 기간을
-  // 확인해 "기간/단계 대기" 배지를 보여주는데, 이 요약 알림은 그 기간 체크 없이 미완료
-  // 건수만 세고 있어 아직 시작하지도 않은 단계에 "완료해야 합니다" 알림이 떴다.
-  // 개별 행과 동일한 기준으로 걸러 기간 중인 단계만 알림에 포함한다.
   const grouped = tasks
     .filter((task) => !isCompletedStatus(task.status))
-    .filter((task) => {
-      if (task.type === "upward") return canEditUpward();
-      if (task.type === "peer") return canEditPeer();
-      return task.ready && canEditStage(task.stage, evaluations()[task.employee.id]);
-    })
+    .filter(isTaskCurrentlyActionable)
     .reduce((acc, task) => {
       acc[task.stage] = acc[task.stage] || [];
       acc[task.stage].push(task);
