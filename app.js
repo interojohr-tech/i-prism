@@ -1185,6 +1185,9 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
   cycle.templateAssignments = cycle.templateAssignments || {};
   cycle.resultSubmissions = cycle.resultSubmissions || {};
   if (cycle.resultsVisible === undefined) cycle.resultsVisible = false;
+  // 이 필드가 생기기 전에 이미 결과 공개가 켜져 있던 사이클은, 실제 최초 공개 시각을
+  // 알 수 없으므로 지금 시점으로 보정한다(마이그레이션).
+  if (cycle.resultsVisible && !cycle.firstResultsPublishedAt) cycle.firstResultsPublishedAt = new Date().toISOString();
   if (cycle.useUpward === undefined) cycle.useUpward = true;
   if (cycle.usePeer === undefined) cycle.usePeer = true;
   if (cycle.useAttitude === undefined) cycle.useAttitude = true;
@@ -17193,6 +17196,11 @@ const App = {
     if (activeCycle().resultsVisible && !activeCycle().feedbackMgmtUnlocked) {
       activeCycle().feedbackMgmtUnlocked = true;
     }
+    // 구성원 성장 기록에 이 사이클 결과를 노출할지 판단하는 기준 — "최초로 결과공개된
+    // 시점" 이후 영구히 노출한다(이후 토글을 껐다 켜도 다시 잠기지 않음).
+    if (activeCycle().resultsVisible && !activeCycle().firstResultsPublishedAt) {
+      activeCycle().firstResultsPublishedAt = new Date().toISOString();
+    }
     saveState();
     showAdminAdjustmentMessage(activeCycle().resultsVisible ? "결과 공개가 켜졌습니다." : "결과 공개가 꺼졌습니다.");
   },
@@ -18749,6 +18757,7 @@ const App = {
     if (!chairmanApproved) return window.alert("회장 최종 확정이 완료된 뒤 전체 공개할 수 있습니다.");
     if (!canPublishFeedback()) return window.alert(periodMessage("feedback", activeCycle()));
     activeCycle().resultsVisible = true;
+    if (!activeCycle().firstResultsPublishedAt) activeCycle().firstResultsPublishedAt = new Date().toISOString();
     const targets = cycleUsers().filter((employee) => isEvaluatee(employee) && isSubmittedForAdminAdjustment(employee));
     if (!targets.length) return window.alert("제출 완료된 조직 결과가 없습니다.");
     targets.forEach((employee) => {
@@ -21049,13 +21058,10 @@ function renderDashboardEvalSection(target, requirePublished) {
     if (!isEvaluatee(targetInCycle)) return;
     const published = Boolean(c.resultsVisible && evaluation.published);
     if (requirePublished && !published) return; // 공개되지 않은 평가는 제외
-    // 구성원 성장 기록(멤버 대시보드)은 AI 피드백 생성이 끝난 사이클만 보여준다 —
-    // 관리자가 아직 AI 피드백을 생성하지 않았다면 결과를 검토·확정하기 전 단계로
-    // 본다. AI기능 활용 비동의자는 애초에 AI 피드백을 생성하지 않으므로 제외 대상에서 뺀다.
-    if (!requirePublished) {
-      const aiReady = isAiOptOut(target.id, c) || Boolean(evaluation.aiFeedback?.generatedAt);
-      if (!aiReady) return;
-    }
+    // 구성원 성장 기록(멤버 대시보드)은 "최종 결과/리포트 공개" 메뉴에서 해당 사이클
+    // 결과가 최초로 공개된 적이 있는 사이클만 보여준다. 이후 공개 토글을 껐다 켜도
+    // firstResultsPublishedAt은 계속 남아 있으므로 다시 가려지지 않는다.
+    if (!requirePublished && !c.firstResultsPublishedAt) return;
     // 해당 사이클 컨텍스트에서 결과 계산
     const card = withCycle(c.id, () => {
       const ev = c.evaluations?.[target.id];
