@@ -729,6 +729,11 @@ function createCycle(name, users = state?.users || []) {
       try { return { ...(state?.reportVisibility || DEFAULT_REPORT_VISIBILITY) }; }
       catch (e) { return { ...DEFAULT_REPORT_VISIBILITY }; }
     })(),
+    // 저성과자 AI 피드백 설정도 사이클마다 독립적으로 저장한다. 다만 이 설정은
+    // reportVisibility와 달리 "직전 사이클에서 무엇으로 바꿨든" 새 사이클은 항상
+    // 안전한 기본값(DEFAULT_AI_LOW_GRADE_FEEDBACK)에서 새로 시작한다 — 특정 사이클에서
+    // 켜둔 저성과자 톤이 이후 사이클에 의도치 않게 이어지지 않도록 하기 위함.
+    aiLowGradeFeedback: { ...DEFAULT_AI_LOW_GRADE_FEEDBACK },
   };
   users.forEach((user) => {
     if (isEvaluatee(user)) cycle.evaluations[user.id] = makeEmptyEvaluation(user.id);
@@ -1195,6 +1200,9 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
   // 리포트 공개 항목이 아직 사이클별로 분리되기 전에 만들어진 사이클은, 지금까지
   // 화면에 표시되던 대로 보이도록 현재 전역 설정값을 그대로 스냅샷으로 넣어준다.
   if (!cycle.reportVisibility) cycle.reportVisibility = { ...DEFAULT_REPORT_VISIBILITY, ...(state.reportVisibility || {}) };
+  // 저성과자 AI 피드백 설정도 마찬가지로, 사이클별 분리 이전에 만들어진 사이클은
+  // 그동안 적용되던 전역 설정값을 그대로 이어받도록 백필한다(동작 변화 없음).
+  if (!cycle.aiLowGradeFeedback) cycle.aiLowGradeFeedback = { ...DEFAULT_AI_LOW_GRADE_FEEDBACK, ...(state.aiLowGradeFeedback || {}) };
   if (!cycle.upwardStart) cycle.upwardStart = cycle.secondStart || "";
   if (!cycle.upwardEnd) cycle.upwardEnd = cycle.secondEnd || "";
   if (!cycle.peerStart) cycle.peerStart = cycle.upwardStart || cycle.secondStart || "";
@@ -8782,7 +8790,7 @@ function renderAnswerGradeScalePanel() {
 
 function renderAdminReports() {
   const visibility = selectedCycle().reportVisibility || DEFAULT_REPORT_VISIBILITY;
-  const lowGrade = state.aiLowGradeFeedback || DEFAULT_AI_LOW_GRADE_FEEDBACK;
+  const lowGrade = selectedCycle().aiLowGradeFeedback || DEFAULT_AI_LOW_GRADE_FEEDBACK;
   return `
     <div class="grid">
       <section class="panel">
@@ -11157,7 +11165,7 @@ async function callAIFeedbackAPI(employeeId, fastMode = false, signal = null) {
   const rawFeedback = getEvaluatorOverallFeedback(evaluation, employee, true, true);
   const title = employee.title || "";
   const finalGrade = calculateFinal(employeeId).finalGrade || "";
-  const lowGradeSettings = state.aiLowGradeFeedback || DEFAULT_AI_LOW_GRADE_FEEDBACK;
+  const lowGradeSettings = cycle.aiLowGradeFeedback || DEFAULT_AI_LOW_GRADE_FEEDBACK;
   // 저성과자(퇴사 권유 톤) 피드백 적용 여부 — "리포트 설정"에서 관리자가 고른 기준 등급
   // (threshold) 이하 전부 적용. 코드에서 직접 판정하며 AI 판단에 맡기지 않는다.
   const isLowGradeTone =
@@ -17181,7 +17189,7 @@ const App = {
   saveAiLowGradeFeedbackSettings() {
     const threshold = document.querySelector('input[name="ai_low_grade_threshold"]:checked')?.value || DEFAULT_AI_LOW_GRADE_FEEDBACK.threshold;
     const refMode = document.querySelector('input[name="ai_low_grade_ref_mode"]:checked')?.value || DEFAULT_AI_LOW_GRADE_FEEDBACK.refMode;
-    state.aiLowGradeFeedback = { threshold, refMode };
+    selectedCycle().aiLowGradeFeedback = { threshold, refMode };
     saveState();
     state.ui.flash = "저성과자 AI 피드백 설정을 저장하였습니다.";
     render();
