@@ -6171,12 +6171,12 @@ function renderAdminProgress() {
   const cycle = selectedCycle();
   return `
     <div class="grid">
-      <!-- 평가명 + 상태 -->
+      <!-- 평가명 + 기준일 -->
       <section class="panel">
         <div class="panel-head">
           <div>
             <h2>평가 기본 정보</h2>
-            <p class="muted">평가명과 상태를 설정합니다.</p>
+            <p class="muted">평가명과 평가 기준일을 설정합니다.</p>
           </div>
           <div class="toolbar">
             <button class="button secondary" onclick="App.saveCycleSettings()">저장</button>
@@ -6185,14 +6185,6 @@ function renderAdminProgress() {
         <div class="panel-body">
           <div class="form-grid">
             ${adminInput("cycle_name", "평가명", cycle.name)}
-            <div class="field">
-              <label for="cycle_status">사이클 상태</label>
-              <select id="cycle_status">
-                <option value="paused" ${cycle.status === "paused" ? "selected" : ""}>⏸ 중지</option>
-                <option value="active" ${cycle.status === "active" ? "selected" : ""}>🟢 진행</option>
-                <option value="done"   ${cycle.status === "done"   ? "selected" : ""}>✅ 평가 완료</option>
-              </select>
-            </div>
             <div class="field">
               <label for="cycle_referenceDate">평가 기준일</label>
               <input type="date" id="cycle_referenceDate" value="${cycle.referenceDate || ""}" onchange="App.autoFillPhaseDates(this.value)" />
