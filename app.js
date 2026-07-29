@@ -158,11 +158,11 @@ const DEFAULT_REPORT_VISIBILITY = {
 
 // AI 피드백 생성 시 "퇴사 권유" 톤(저성과자 특별 지침)을 적용할 등급 범위와, 그 경우
 // 참고자료를 어떤 방식으로 안내할지에 대한 전역 설정.
-// threshold: "C"(C·D등급 모두 적용) | "D"(D등급만 적용, 기본값) | "none"(적용 안 함)
-// refMode: "resign"(실업급여·구인구직 사이트 고정 안내, 기본값) | "normal"(다른 등급과 동일하게 사내 참고자료 카탈로그 매칭)
+// threshold: "C"(C·D등급 모두 적용) | "D"(D등급만 적용) | "none"(적용 안 함, 기본값)
+// refMode: "resign"(실업급여·구인구직 사이트 고정 안내) | "normal"(다른 등급과 동일하게 사내 참고자료 카탈로그 매칭, 기본값)
 const DEFAULT_AI_LOW_GRADE_FEEDBACK = {
-  threshold: "D",
-  refMode: "resign",
+  threshold: "none",
+  refMode: "normal",
 };
 
 const STAGE_LABELS = {
@@ -8819,15 +8819,15 @@ function renderAdminReports() {
             <h3>적용 대상 등급</h3>
             <div class="radio-card-group">
               ${radioCard("ai_low_grade_threshold", "C", "C등급 이하 (C·D등급 모두 적용)", "", lowGrade.threshold)}
-              ${radioCard("ai_low_grade_threshold", "D", "D등급만 적용", "기본값", lowGrade.threshold)}
-              ${radioCard("ai_low_grade_threshold", "none", "적용 안 함", "모든 등급에 일반 성장형 피드백 사용", lowGrade.threshold)}
+              ${radioCard("ai_low_grade_threshold", "D", "D등급만 적용", "", lowGrade.threshold)}
+              ${radioCard("ai_low_grade_threshold", "none", "적용 안 함", "기본값 · 모든 등급에 일반 성장형 피드백 사용", lowGrade.threshold)}
             </div>
           </div>
           <div class="component-card">
             <h3>참고자료 제공 방식</h3>
             <div class="radio-card-group">
-              ${radioCard("ai_low_grade_ref_mode", "resign", "실업급여 안내·구인구직 사이트 안내", "기본값", lowGrade.refMode)}
-              ${radioCard("ai_low_grade_ref_mode", "normal", "다른 등급과 동일하게 사내 참고자료 카탈로그에서 추천", "", lowGrade.refMode)}
+              ${radioCard("ai_low_grade_ref_mode", "resign", "실업급여 안내·구인구직 사이트 안내", "", lowGrade.refMode)}
+              ${radioCard("ai_low_grade_ref_mode", "normal", "다른 등급과 동일하게 사내 참고자료 카탈로그에서 추천", "기본값", lowGrade.refMode)}
             </div>
           </div>
         </div>
@@ -17179,8 +17179,8 @@ const App = {
     if (preview) preview.innerHTML = renderReportPreview(currentReportVisibilityFromDom());
   },
   saveAiLowGradeFeedbackSettings() {
-    const threshold = document.querySelector('input[name="ai_low_grade_threshold"]:checked')?.value || "D";
-    const refMode = document.querySelector('input[name="ai_low_grade_ref_mode"]:checked')?.value || "resign";
+    const threshold = document.querySelector('input[name="ai_low_grade_threshold"]:checked')?.value || DEFAULT_AI_LOW_GRADE_FEEDBACK.threshold;
+    const refMode = document.querySelector('input[name="ai_low_grade_ref_mode"]:checked')?.value || DEFAULT_AI_LOW_GRADE_FEEDBACK.refMode;
     state.aiLowGradeFeedback = { threshold, refMode };
     saveState();
     state.ui.flash = "저성과자 AI 피드백 설정을 저장하였습니다.";
