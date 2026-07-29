@@ -2503,8 +2503,17 @@ function renderDashboardTodos(user, tasks, hasActiveCycle) {
 function dashboardTaskAlerts(tasks) {
   const cycle = selectedCycle();
   const stageEnd = { first: cycle.firstEnd, second: cycle.secondEnd, upward: cycle.upwardEnd, peer: cycle.peerEnd };
+  // 개별 과제 행(renderTaskButton)은 canEditStage/canEditUpward/canEditPeer로 실제 기간을
+  // 확인해 "기간/단계 대기" 배지를 보여주는데, 이 요약 알림은 그 기간 체크 없이 미완료
+  // 건수만 세고 있어 아직 시작하지도 않은 단계에 "완료해야 합니다" 알림이 떴다.
+  // 개별 행과 동일한 기준으로 걸러 기간 중인 단계만 알림에 포함한다.
   const grouped = tasks
     .filter((task) => !isCompletedStatus(task.status))
+    .filter((task) => {
+      if (task.type === "upward") return canEditUpward();
+      if (task.type === "peer") return canEditPeer();
+      return task.ready && canEditStage(task.stage, evaluations()[task.employee.id]);
+    })
     .reduce((acc, task) => {
       acc[task.stage] = acc[task.stage] || [];
       acc[task.stage].push(task);
