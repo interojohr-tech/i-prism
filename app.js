@@ -6082,6 +6082,9 @@ function renderCycleSettingsModal() {
           ${renderAdminSection(section)}
         </div>
       </div>
+      ${state.ui.mailSettingsModal ? renderMailSettingsModal() : ""}
+      ${state.ui.mailEditor ? renderMailEditorModal() : ""}
+      ${state.ui.mailComposeModal ? renderMailComposeModal() : ""}
     </div>`;
 }
 
@@ -6227,6 +6230,7 @@ function renderAdminProgress() {
             <p class="muted">상태가 <strong>진행</strong>이고 설정 기간 안에 있을 때만 각 단계 제출이 가능합니다.</p>
           </div>
           <div class="toolbar">
+            <button class="button secondary" onclick="App.openMailSettings()">📧 평가 독려 메일 자동 발송 설정</button>
             <button class="button secondary" onclick="App.saveCycleSettings()">세팅 저장</button>
           </div>
         </div>
