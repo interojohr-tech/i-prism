@@ -720,6 +720,15 @@ function createCycle(name, users = state?.users || []) {
     peerAssignments: buildDefaultPeerAssignments(users),
     resultSubmissions: {},
     aiOptOutUserIds: [], // 사전 설문 등으로 AI 기능 활용에 동의하지 않은 인원(AI평가/AI 피드백/AI 평가자 성향 분석에서 제외)
+    // 리포트 공개 항목은 사이클마다 독립적으로 저장한다 — 나중에 다른 사이클에서
+    // 설정을 바꿔도 이미 지나간 사이클의 성장 기록·리포트 표시는 그대로 유지되어야
+    // 하기 때문. 새 사이클은 생성 시점의 전역(가장 최근에 쓰던) 설정을 시작값으로 물려받는다.
+    // (state는 최초 부팅 시 createDefaultState → createCycle 경로에서 아직 초기화 전이라
+    // 참조 자체가 TDZ 에러를 낼 수 있어 try/catch로 방어한다.)
+    reportVisibility: (() => {
+      try { return { ...(state?.reportVisibility || DEFAULT_REPORT_VISIBILITY) }; }
+      catch (e) { return { ...DEFAULT_REPORT_VISIBILITY }; }
+    })(),
   };
   users.forEach((user) => {
     if (isEvaluatee(user)) cycle.evaluations[user.id] = makeEmptyEvaluation(user.id);
@@ -1180,6 +1189,9 @@ function ensureCycleEvaluations(cycle, users = cycle.usersSnapshot || state.user
   if (cycle.usePeer === undefined) cycle.usePeer = true;
   if (cycle.useAttitude === undefined) cycle.useAttitude = true;
   if (!Array.isArray(cycle.aiOptOutUserIds)) cycle.aiOptOutUserIds = [];
+  // 리포트 공개 항목이 아직 사이클별로 분리되기 전에 만들어진 사이클은, 지금까지
+  // 화면에 표시되던 대로 보이도록 현재 전역 설정값을 그대로 스냅샷으로 넣어준다.
+  if (!cycle.reportVisibility) cycle.reportVisibility = { ...DEFAULT_REPORT_VISIBILITY, ...(state.reportVisibility || {}) };
   if (!cycle.upwardStart) cycle.upwardStart = cycle.secondStart || "";
   if (!cycle.upwardEnd) cycle.upwardEnd = cycle.secondEnd || "";
   if (!cycle.peerStart) cycle.peerStart = cycle.upwardStart || cycle.secondStart || "";
@@ -5791,7 +5803,7 @@ function renderReport(user) {
   if (!isEvaluatee(user)) return `<div class="empty">이 계정은 리포트 대상이 아닙니다.</div>`;
   const evaluation = evaluations()[user.id];
   const result = calculateFinal(user.id);
-  const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const visibility = activeCycle()?.reportVisibility || DEFAULT_REPORT_VISIBILITY;
   const showCoverResult = visibility.finalGrade || visibility.finalScore;
   const hasAIFeedback = !!(evaluation?.aiFeedback?.generatedAt);
   const hasVisibleDetail = showCoverResult || visibility.summary || visibility.upwardSummary || visibility.peerSummary || (hasAIFeedback && (visibility.finalFeedback || visibility.feedbackUpward || visibility.feedbackPeer));
@@ -8762,7 +8774,7 @@ function renderAnswerGradeScalePanel() {
 }
 
 function renderAdminReports() {
-  const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const visibility = selectedCycle().reportVisibility || DEFAULT_REPORT_VISIBILITY;
   const lowGrade = state.aiLowGradeFeedback || DEFAULT_AI_LOW_GRADE_FEEDBACK;
   return `
     <div class="grid">
@@ -10827,7 +10839,7 @@ function getProgressStats(scopeUsers = cycleUsers().filter(isEvaluatee)) {
 }
 
 function getPublishedFeedback(evaluation, employee, visibility) {
-  const vis = visibility || state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const vis = visibility || activeCycle()?.reportVisibility || DEFAULT_REPORT_VISIBILITY;
   const includeUpward = vis.feedbackUpward !== false;
   const includePeer = vis.feedbackPeer !== false;
   let feedback = evaluation.adjustment.feedback || getEvaluatorOverallFeedback(evaluation, employee, includeUpward, includePeer);
@@ -17145,7 +17157,12 @@ const App = {
     render();
   },
   saveReportSettings() {
-    state.reportVisibility = currentReportVisibilityFromDom();
+    const visibility = currentReportVisibilityFromDom();
+    selectedCycle().reportVisibility = { ...visibility };
+    // 전역값도 함께 갱신 — 새 사이클을 만들 때 가장 최근에 쓰던 설정을 시작값으로
+    // 물려받기 위한 것일 뿐, 다른(과거) 사이클의 표시에는 영향을 주지 않는다.
+    // 두 곳이 같은 객체를 참조하지 않도록 각각 별도로 복사해 둔다.
+    state.reportVisibility = { ...visibility };
     saveState();
     state.ui.flash = "리포트 설정을 저장하였습니다.";
     render();
@@ -17951,7 +17968,7 @@ const App = {
       const evaluation = (cycle.evaluations || {})[employeeId];
       if (!evaluation) return `<div class="empty">평가 데이터가 없습니다.</div>`;
       const result = calculateFinal(employeeId);
-      const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+      const visibility = cycle.reportVisibility || DEFAULT_REPORT_VISIBILITY;
       const showCoverResult = visibility.finalGrade || visibility.finalScore;
       const hasAIFeedback = !!(evaluation?.aiFeedback?.generatedAt);
       const hasVisibleDetail = showCoverResult || visibility.summary || visibility.upwardSummary || visibility.peerSummary || hasAIFeedback;
@@ -20972,7 +20989,7 @@ function renderDashboardGoalsSection(target) {
 // ignorePublished=true: 멤버 대시보드(관리자)는 미공개 AI 피드백·성향분석도 표시
 function dashboardEvalCardHtml(target, cycle, evaluation, published, ignorePublished) {
   const result = calculateFinal(target.id);
-  const visibility = state.reportVisibility || DEFAULT_REPORT_VISIBILITY;
+  const visibility = cycle.reportVisibility || DEFAULT_REPORT_VISIBILITY;
   const showCoverResult = visibility.finalGrade || visibility.finalScore;
 
   const summaryComponents = [
@@ -20986,12 +21003,6 @@ function dashboardEvalCardHtml(target, cycle, evaluation, published, ignorePubli
   const hasAIFeedback = !!(evaluation?.aiFeedback?.generatedAt);
 
   return `
-    <div style="border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:14px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--line);">
-        <strong style="font-size:16px;">${esc(cycle.name)}</strong>
-        ${published ? `<span class="pill green">공개</span>` : `<span class="pill amber">미공개</span>`}
-      </div>
-
       ${showCoverResult ? `
       <div class="dash-eval-grid" style="margin-bottom:16px;">
         ${visibility.finalGrade ? `<div class="dash-eval-card"><span>최종 등급</span><strong class="grade-text grade-${result.finalGrade}">${esc(result.finalGrade || "-")}</strong></div>` : ""}
@@ -21020,7 +21031,7 @@ function dashboardEvalCardHtml(target, cycle, evaluation, published, ignorePubli
 
       ${!showCoverResult && !summaryComponents.length && !hasAIFeedback ? `
       <div class="empty" style="padding:12px 0;">현재 공개된 리포트 항목이 없습니다.</div>` : ""}
-    </div>`;
+  `;
 }
 
 // 대시보드 - 평가 결과/피드백 섹션 (모든 사이클 이력)
@@ -21038,13 +21049,30 @@ function renderDashboardEvalSection(target, requirePublished) {
     if (!isEvaluatee(targetInCycle)) return;
     const published = Boolean(c.resultsVisible && evaluation.published);
     if (requirePublished && !published) return; // 공개되지 않은 평가는 제외
+    // 구성원 성장 기록(멤버 대시보드)은 AI 피드백 생성이 끝난 사이클만 보여준다 —
+    // 관리자가 아직 AI 피드백을 생성하지 않았다면 결과를 검토·확정하기 전 단계로
+    // 본다. AI기능 활용 비동의자는 애초에 AI 피드백을 생성하지 않으므로 제외 대상에서 뺀다.
+    if (!requirePublished) {
+      const aiReady = isAiOptOut(target.id, c) || Boolean(evaluation.aiFeedback?.generatedAt);
+      if (!aiReady) return;
+    }
     // 해당 사이클 컨텍스트에서 결과 계산
     const card = withCycle(c.id, () => {
       const ev = c.evaluations?.[target.id];
       if (!ev) return "";
       return dashboardEvalCardHtml(targetInCycle, c, ev, published, !requirePublished);
     });
-    if (card) cards.push(card);
+    if (!card) return;
+    // 사이클별로 접어서 표시 — 필요할 때만 펼쳐서 본다(기본은 접힘).
+    cards.push(`
+      <details class="dash-eval-cycle">
+        <summary class="dash-eval-cycle-summary">
+          <span>${esc(c.name)}</span>
+          ${published ? `<span class="pill green">공개</span>` : `<span class="pill amber">미공개</span>`}
+        </summary>
+        <div class="dash-eval-cycle-body">${card}</div>
+      </details>
+    `);
   });
   return `
     <section class="panel">

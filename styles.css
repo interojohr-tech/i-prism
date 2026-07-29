@@ -1483,6 +1483,17 @@ label.tag-checkbox-pill.active { background: var(--primary-lt); border-color: va
 .dash-eval-card strong { font-size: 22px; color: var(--ink); }
 .grade-text { font-weight: 800; }
 
+/* 성장 기록 - 사이클별 평가 결과 토글(접기/펼치기) */
+.dash-eval-cycle { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
+.dash-eval-cycle-summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 16px 20px; cursor: pointer; font-size: 16px; font-weight: 700; list-style: revert;
+  background: var(--surface-2);
+}
+.dash-eval-cycle-summary::marker { color: var(--muted); }
+.dash-eval-cycle[open] .dash-eval-cycle-summary { border-bottom: 1px solid var(--line); }
+.dash-eval-cycle-body { padding: 20px; }
+
 /* 자동 메일 설정 모달 */
 .mail-sec-title { font-size: 14px; font-weight: 700; color: var(--ink); margin: 18px 0 4px; }
 .mail-sec-title:first-child { margin-top: 0; }
