@@ -1620,7 +1620,7 @@ function isExcludedFromEvaluatorOptions(user) {
 }
 
 function isEvaluatorCandidate(user) {
-  return Boolean(user && user.active !== false && !isExcludedFromEvaluatorOptions(user));
+  return Boolean(user && user.active !== false && !isRetired(user) && !isExcludedFromEvaluatorOptions(user));
 }
 
 function buildNavSections(tabs, user) {
@@ -16989,8 +16989,9 @@ const App = {
   autoAssignEvaluators() {
     if (!window.confirm("조직 관리 탭의 현재 조직도 기준으로 평가 대상자 및 평가자를 자동 지정합니다.\n기존 평가자 배정과 동료·상향평가 배정이 초기화됩니다. 계속하시겠습니까?")) return;
     const cycle = selectedCycle();
-    // 조직도(state.users)에서 평가 대상자를 새로 동기화
-    const orgUsers = state.users.filter(u => u.role !== "admin" && u.active !== false);
+    // 조직도(state.users)에서 평가 대상자를 새로 동기화 — 퇴사 처리된 인원은 현재
+    // 조직도에 없는 사람이므로 스냅샷과 평가자 후보 풀 어디에도 포함되면 안 된다.
+    const orgUsers = state.users.filter(u => u.role !== "admin" && u.active !== false && !isRetired(u));
     // 기존 스냅샷의 평가 데이터(이미 작성된 평가)는 유지하면서 조직 정보만 갱신
     const existingSnapshot = cycle.usersSnapshot || [];
     const existingMap = new Map(existingSnapshot.map(u => [u.id, u]));
