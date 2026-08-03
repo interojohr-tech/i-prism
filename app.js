@@ -915,6 +915,14 @@ function normalizeState(nextState) {
   nextState.distributionMatrix = { ...defaults.distributionMatrix, ...(nextState.distributionMatrix || {}) };
   nextState.reportVisibility = { ...DEFAULT_REPORT_VISIBILITY, ...(nextState.reportVisibility || {}) };
   nextState.aiLowGradeFeedback = { ...DEFAULT_AI_LOW_GRADE_FEEDBACK, ...(nextState.aiLowGradeFeedback || {}) };
+  // 결재라인(사장 승인 라인) — 처음 도입되는 필드라 저장된 값이 없으면, 지금까지
+  // 항상 사장 1명이 결재라인에 있던 것과 동일하게 보이도록 현재 재직 중인 사장
+  // role 사용자 전원으로 자동 채운다. 이미 퇴사 처리된 사장은 여기 포함되지 않는다.
+  if (!Array.isArray(nextState.approvalLinePresidentIds)) {
+    nextState.approvalLinePresidentIds = nextState.users
+      .filter((u) => u.role === "president" && u.active !== false && !isRetired(u))
+      .map((u) => u.id);
+  }
   nextState.peerCount = Number.isInteger(nextState.peerCount) && nextState.peerCount > 0 ? nextState.peerCount : 3;
   nextState.goalCycles = Array.isArray(nextState.goalCycles) && nextState.goalCycles.length ? nextState.goalCycles : defaults.goalCycles;
   nextState.goals = Array.isArray(nextState.goals) ? nextState.goals : [];
@@ -1614,6 +1622,15 @@ function isAiOptOut(userId, cycle) {
   return Boolean(cycle && Array.isArray(cycle.aiOptOutUserIds) && cycle.aiOptOutUserIds.includes(userId));
 }
 
+// 결재라인(사장 승인 라인)에 실제로 활성화된 사장들 — 등록되어 있어도 퇴사·비활성
+// 처리되면 이 목록에서 항상 자동으로 빠진다. 이 배열이 비어있으면(계정이 아예
+// 없거나, 계정은 있지만 결재라인에서 뺀 경우 모두) "사장 승인 단계 없음"으로
+// 취급해 승인요청 즉시 회장이 최종 확정할 수 있다.
+function activeApprovalLinePresidents() {
+  const ids = Array.isArray(state.approvalLinePresidentIds) ? state.approvalLinePresidentIds : [];
+  return ids.map((id) => userById(id)).filter((u) => u && u.role === "president" && u.active !== false && !isRetired(u));
+}
+
 function isExcludedFromEvaluatorOptions(user) {
   const text = [user?.position, user?.title, user?.jobTitle].filter(Boolean).join(" ");
   return Boolean(user?.excludedFromEvaluation || /사외이사|(^|[\s/])감사($|[\s/])|임원\(비상근\)/.test(text));
@@ -2234,12 +2251,15 @@ function renderEvalDashboard() {
   const upPct     = pct(upDone, upTotal);
   const peerPct   = pct(peerDone, peerTotal);
 
-  // 승인 단계 파악
+  // 승인 단계 파악 — 결재라인에 사장이 없으면 1차/2차 구분 없이 단일 단계로 표시
   const submissions = cycle.resultSubmissions || {};
-  const presidentDone = Boolean(submissions["approval:president"]?.submitted);
+  const hasPresidentLine = activeApprovalLinePresidents().length > 0;
+  const presidentDone = allActivePresidentsApproved(cycle);
   const chairmanDone  = Boolean(submissions["approval:chairman"]?.submitted);
-  const approvalStatus = chairmanDone ? "최종 확정 완료" : presidentDone ? "2차 승인 진행중" : "1차 승인 진행중";
-  const approvalColor  = chairmanDone ? "var(--green)" : presidentDone ? "var(--orange)" : "var(--amber)";
+  const approvalStatus = chairmanDone
+    ? "최종 확정 완료"
+    : !hasPresidentLine ? "승인 진행중" : (presidentDone ? "2차 승인 진행중" : "1차 승인 진행중");
+  const approvalColor  = chairmanDone ? "var(--green)" : (hasPresidentLine && presidentDone) ? "var(--orange)" : "var(--amber)";
 
   // 결과 공개 상태
   const resultVisible = cycle.resultsVisible;
@@ -2343,8 +2363,8 @@ function renderEvalDashboard() {
       ${pctCard("동료평가 응답률", peerDone, peerTotal || 1)}
       ${metricCard("승인 진행",
         `<span style="color:${approvalColor};font-size:15px;font-weight:700;">${esc(approvalStatus)}</span>`,
-        chairmanDone?"최종 확정 완료":presidentDone?"2차 승인 대기중":"1차 승인 진행중",
-        chairmanDone?"green":presidentDone?"orange":"amber")}
+        chairmanDone ? "최종 확정 완료" : !hasPresidentLine ? "회장 확정 대기중" : (presidentDone ? "2차 승인 대기중" : "1차 승인 진행중"),
+        chairmanDone ? "green" : (hasPresidentLine && presidentDone) ? "orange" : "amber")}
       ${metricCard("결과 공개 상태",
         `<span style="color:${resultColor};font-size:18px;font-weight:700;">${esc(resultStatus)}</span>`,
         resultNote,
@@ -4673,14 +4693,20 @@ function formatTaskStatusLabel(task) {
   return `${task.employee?.name || "대상자"} ${task.label}${team}`;
 }
 
+function executiveStatusFor(role, user) {
+  if (!user) return { role, user: null, incompleteTasks: ["계정 없음"], completed: false };
+  const incompleteTasks = getTasksForUser(user).filter((task) => !isCompletedStatus(task.status)).map(formatTaskStatusLabel);
+  return { role, user, incompleteTasks, completed: incompleteTasks.length === 0 };
+}
+
+// 회장은 기존처럼 단일 고정, 사장은 결재라인에 등록된 전원 각각을 검사한다.
+// 결재라인에 사장이 없으면 사장 쪽 배열이 비어있어 아래 every()가 자동 통과된다.
 function getExecutiveEvaluationStatuses() {
-  return ["president", "chairman"]
-    .map((role) => {
-      const user = cycleUsers().find((candidate) => candidate.role === role && candidate.active !== false) || state.users.find((candidate) => candidate.role === role && candidate.active !== false);
-      if (!user) return { role, user: null, incompleteTasks: ["계정 없음"], completed: false };
-      const incompleteTasks = getTasksForUser(user).filter((task) => !isCompletedStatus(task.status)).map(formatTaskStatusLabel);
-      return { role, user, incompleteTasks, completed: incompleteTasks.length === 0 };
-    });
+  const chairman = cycleUsers().find((candidate) => candidate.role === "chairman" && candidate.active !== false) || state.users.find((candidate) => candidate.role === "chairman" && candidate.active !== false);
+  return [
+    ...activeApprovalLinePresidents().map((user) => executiveStatusFor("president", user)),
+    executiveStatusFor("chairman", chairman),
+  ];
 }
 
 function getFinalAdjustmentReadiness() {
@@ -4721,8 +4747,16 @@ function blockIfRelativeGroupUnconfirmed(cycle) {
 }
 
 // ── 평가 흐름 상태 헬퍼 (5단계: 세팅→평가→종합→사장→회장) ─────────────────
+// 결재라인에 등록된 사장 전원이 각자 자기 범위를 승인했는지. 등록된 사장이
+// 없으면(activeApprovalLinePresidents()가 빈 배열) every()가 공집합에 대해
+// true를 반환하므로 별도 분기 없이 자동으로 "사장 승인 단계 없음"이 된다.
+function allActivePresidentsApproved(cycle) {
+  const presidents = activeApprovalLinePresidents();
+  const submissions = cycle?.resultSubmissions || {};
+  return presidents.every((p) => Boolean(submissions[`approval:president:${p.id}`]?.submitted));
+}
 function isPresidentApprovalDone() {
-  return Boolean(activeCycle()?.resultSubmissions?.["approval:president"]?.submitted);
+  return allActivePresidentsApproved(activeCycle());
 }
 function isChairmanApprovalDone() {
   return Boolean(activeCycle()?.resultSubmissions?.["approval:chairman"]?.submitted);
@@ -4733,13 +4767,18 @@ function isAnyDivisionSubmitted() {
   );
 }
 function getEvalFlowStage() {
-  // 1=평가 세팅, 2=평가 수행 중, 3=종합평가, 4=사장 승인, 5=회장 승인, 6=리포트 공개
+  // 1=평가 세팅, 2=평가 수행 중, 3=종합평가, 4=사장 승인(결재라인에 사장이 있을 때만),
+  // 5=회장 승인, 6=리포트 공개
   const cycle = selectedCycle();
   if (!cycle) return 1;
   if (cycle.resultsVisible) return 6;             // 리포트 공개
   if (isChairmanApprovalDone()) return 6;         // 회장 확정 → 리포트 공개 단계
-  if (isPresidentApprovalDone()) return 5;        // 사장 승인 완료 → 회장 승인 대기
-  if (isAnyDivisionSubmitted() || isFinalAdjustmentReady()) return 4; // 종합평가 제출 → 사장 승인 대기
+  const hasPresidentLine = activeApprovalLinePresidents().length > 0;
+  // isPresidentApprovalDone()은 결재라인에 사장이 없으면 항상 true이므로, 그 경우
+  // 4단계(사장 승인) 자체를 건너뛰고 바로 5단계(회장 승인 대기)로 취급해야 한다 —
+  // 그렇지 않으면 평가가 시작도 안 한 시점에 "회장 승인 대기"로 잘못 표시된다.
+  if (hasPresidentLine && isPresidentApprovalDone()) return 5; // 사장 전원 승인 완료 → 회장 승인 대기
+  if (isAnyDivisionSubmitted() || isFinalAdjustmentReady()) return hasPresidentLine ? 4 : 5; // 종합평가 제출 → 사장 승인 대기(없으면 바로 회장 승인 대기)
   if (cycle.status !== "active") return 1;        // 진행 전(중지) → 세팅 단계
   return 2;                                        // 평가 수행 중
 }
@@ -5218,36 +5257,20 @@ function renderApprovalPage(user) {
 
   const cycle = selectedCycle();
   const allUsers = cycleUsers();
+  const activePresidents = activeApprovalLinePresidents();
+  const hasPresidentLine = activePresidents.length > 0;
 
-  // 사장: COO 조직 하위 구성원만 / 회장: 전체
-  // COO 하위 조직 이름을 org 트리에서 재귀 수집
-  const presidentOrgNames = (() => {
-    if (user.role !== "president") return null;
-    const nodes = (state.organizationNodes && state.organizationNodes.length)
-      ? state.organizationNodes
-      : defaultOrganizationNodes();
-    // 사장 계정의 division(= "COO")으로 루트 노드 찾기
-    const rootName = user.division || "COO";
-    const rootNode = nodes.find(n => n.name === rootName);
-    if (!rootNode) return new Set([rootName]);
-    const result = new Set();
-    const collect = (parentId) => {
-      nodes.filter(n => n.parentId === parentId).forEach(n => {
-        result.add(n.name);
-        collect(n.id);
-      });
-    };
-    result.add(rootNode.name);
-    collect(rootNode.id);
-    return result;
-  })();
+  // 사장인데 결재라인에서 빠져있으면(제외되었거나 아직 등록되지 않음) 접근 차단
+  if (user.role === "president" && !activePresidents.some((p) => p.id === user.id)) {
+    return `<div class="empty">결재라인에 등록되어 있지 않습니다.<br/>조직 관리 &gt; 결재 라인 설정에서 확인해 주세요.</div>`;
+  }
+
+  // 사장: 본인이 속한 조직의 하위 구성원만 / 회장: 전체
+  const presidentScope = user.role === "president" ? presidentScopeUserIds(user) : null;
 
   const evaluatees = allUsers.filter(emp => {
     if (!isEvaluatee(emp)) return false;
-    if (user.role === "president") {
-      // COO 하위 조직에 속하는 구성원만
-      return presidentOrgNames.has(emp.division) || presidentOrgNames.has(emp.team);
-    }
+    if (user.role === "president") return presidentScope.has(emp.id);
     return true; // 회장: 전체
   });
 
@@ -5258,12 +5281,23 @@ function renderApprovalPage(user) {
     return resultCache.get(id);
   };
 
-  // 승인 상태 키
-  const presidentApprovedKey = "approval:president";
-  const chairmanApprovedKey = "approval:chairman";
+  // 승인 상태
   cycle.resultSubmissions = cycle.resultSubmissions || {};
-  const presidentApproved = Boolean(cycle.resultSubmissions[presidentApprovedKey]?.submitted);
-  const chairmanApproved  = Boolean(cycle.resultSubmissions[chairmanApprovedKey]?.submitted);
+  // 로그인한 사장 "본인"의 승인 여부(사장 화면의 버튼/배지 기준) — 다른 사장의
+  // 진행 상황과는 무관하다.
+  const myPresidentApproved = user.role === "president"
+    ? Boolean(cycle.resultSubmissions[`approval:president:${user.id}`]?.submitted)
+    : null;
+  // 결재라인에 등록된 사장 각자의 승인 상태(회장 화면의 현황 목록, 회장 확정 가능
+  // 여부 판단에 사용). 등록된 사장이 없으면 빈 배열 → every()가 자동으로 true.
+  const presidentApprovalList = activePresidents.map((p) => ({
+    user: p,
+    approved: Boolean(cycle.resultSubmissions[`approval:president:${p.id}`]?.submitted),
+  }));
+  const allPresidentsApproved = presidentApprovalList.every((p) => p.approved);
+  const chairmanApprovedKey = "approval:chairman";
+  const chairmanApproval = cycle.resultSubmissions[chairmanApprovedKey];
+  const chairmanApproved = Boolean(chairmanApproval?.submitted);
 
   // 모든 평가 완료 여부 + 모든 본부 종합평가 제출 여부 (조정 세션 대기 중인 본부도
   // 본부장이 원안 등급을 이미 입력·저장한 상태이므로 입력 완료로 취급한다 — 그렇지
@@ -5283,13 +5317,14 @@ function renderApprovalPage(user) {
   // 승인요청(App.requestApproval)이 걸린 사이클에서만 승인 버튼을 노출한다 — 그렇지
   // 않으면 평가가 모두 끝난 다른(예: 과거) 사이클이 드롭다운에 선택된 상태로 실수로
   // 승인 버튼을 누를 수 있다.
-  const canPresidentApprove = user.role === "president" && Boolean(cycle.approvalRequested) && approvalReady && !presidentApproved;
-  const canChairmanApprove  = user.role === "chairman"  && Boolean(cycle.approvalRequested) && presidentApproved && !chairmanApproved;
+  const canPresidentApprove = user.role === "president" && Boolean(cycle.approvalRequested) && approvalReady && !myPresidentApproved;
+  const canChairmanApprove  = user.role === "chairman"  && Boolean(cycle.approvalRequested) && allPresidentsApproved && !chairmanApproved;
   // 본인이 등급을 조정할 차례일 때만 조정 가능
-  // 사장: 모든 준비 완료 & 아직 미승인 / 회장: 사장 승인 후 & 아직 미확정
+  // 사장: 모든 준비 완료 & 아직 미승인(본인 기준) / 회장: 사장 전원 승인 후(또는
+  // 결재라인에 사장이 없으면 즉시) & 아직 미확정
   const canAdjustNow = user.role === "president"
-    ? (approvalReady && !presidentApproved)
-    : (presidentApproved && !chairmanApproved);
+    ? (approvalReady && !myPresidentApproved)
+    : (allPresidentsApproved && !chairmanApproved);
   const adjustLocked = !canAdjustNow;
 
   // ── 통계 데이터 (캐시 활용) ──
@@ -5372,14 +5407,19 @@ function renderApprovalPage(user) {
   } else if (!allDivisionsSubmitted) {
     const unsubmitted = divisionStatuses.filter(d => !isGroupInputComplete(d)).map(d => d.division).join(", ");
     stepBanner = `<div class="notice warn"><strong>⚠ 종합평가 미완료:</strong> 미제출 본부: ${esc(unsubmitted)} — 모든 본부의 종합평가 제출 후 승인이 가능합니다.</div>`;
-  } else if (!presidentApproved) {
-    stepBanner = user.role === "president"
-      ? `<div class="notice" style="background:var(--primary-weak);border-color:#9dc3ff;"><strong>✔ 모든 평가 및 종합평가가 완료되었습니다.</strong> 결과를 검토하고 사장 승인을 진행해 주세요.</div>`
-      : `<div class="notice warn"><strong>⚠ 사장 승인 대기:</strong> 사장 승인 완료 후 회장 최종 승인이 가능합니다.</div>`;
+  } else if (hasPresidentLine && !allPresidentsApproved) {
+    if (user.role === "president") {
+      stepBanner = myPresidentApproved
+        ? `<div class="notice ok"><strong>✔ 승인을 완료했습니다.</strong> 다른 사장의 승인을 기다리는 중입니다.</div>`
+        : `<div class="notice" style="background:var(--primary-weak);border-color:#9dc3ff;"><strong>✔ 모든 평가 및 종합평가가 완료되었습니다.</strong> 결과를 검토하고 사장 승인을 진행해 주세요.</div>`;
+    } else {
+      const pendingNames = presidentApprovalList.filter((p) => !p.approved).map((p) => p.user.name).join(", ");
+      stepBanner = `<div class="notice warn"><strong>⚠ 사장 승인 대기:</strong> ${esc(pendingNames)} 승인 완료 후 회장 최종 승인이 가능합니다.</div>`;
+    }
   } else if (!chairmanApproved) {
     stepBanner = user.role === "chairman"
-      ? `<div class="notice" style="background:var(--primary-weak);border-color:#9dc3ff;"><strong>✔ 사장 승인이 완료되었습니다.</strong> 결과를 최종 검토하고 승인해 주세요.</div>`
-      : `<div class="notice ok"><strong>✔ 사장 승인 완료.</strong> 회장 최종 승인 대기 중입니다.</div>`;
+      ? `<div class="notice" style="background:var(--primary-weak);border-color:#9dc3ff;"><strong>✔ ${hasPresidentLine ? "사장 승인이 완료되었습니다." : "모든 평가 및 종합평가가 완료되었습니다."}</strong> 결과를 최종 검토하고 승인해 주세요.</div>`
+      : `<div class="notice ok"><strong>✔ ${hasPresidentLine ? "사장 승인 완료." : "승인요청 완료."}</strong> 회장 최종 승인 대기 중입니다.</div>`;
   } else {
     stepBanner = `<div class="notice ok"><strong>✔ 모든 승인이 완료되었습니다.</strong> 평가 결과가 최종 확정되었습니다.</div>`;
   }
@@ -5389,7 +5429,7 @@ function renderApprovalPage(user) {
       <div class="panel-head">
         <div><h2>최종 승인</h2></div>
         <div class="toolbar">
-          <span class="pill ${presidentApproved ? "green" : "amber"}">사장 ${presidentApproved ? "승인완료" : "승인대기"}</span>
+          ${hasPresidentLine ? `<span class="pill ${allPresidentsApproved ? "green" : "amber"}">사장 ${allPresidentsApproved ? "승인완료" : "승인대기"}</span>` : ""}
           <span class="pill ${chairmanApproved ? "green" : "amber"}">회장 ${chairmanApproved ? "최종확정" : "확정대기"}</span>
           ${approvalReady ? `<button class="button secondary" onclick="App.exportApproval()">📥 엑셀 다운로드</button>` : ""}
           ${canPresidentApprove ? `<button class="button" onclick="App.doApproval('president')">사장 승인</button>` : ""}
@@ -5398,6 +5438,13 @@ function renderApprovalPage(user) {
       </div>
       <div class="panel-body grid">
         ${stepBanner}
+        ${(user.role === "chairman" && hasPresidentLine) ? `
+        <div class="component-card" style="padding:12px 16px;">
+          <div style="font-weight:700;margin-bottom:8px;font-size:13px;">사장 결재 현황</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">
+            ${presidentApprovalList.map((p) => `<span class="pill ${p.approved ? "green" : "amber"}">${esc(p.user.name)} ${p.approved ? "승인완료" : "승인대기"}</span>`).join("")}
+          </div>
+        </div>` : ""}
         ${approvalReady ? `
         <!-- 요약 지표 -->
         <div class="grid five">
@@ -5458,8 +5505,8 @@ function renderApprovalPage(user) {
               <span id="approval-result-count" class="pill" style="background:var(--primary-lt);color:var(--primary);font-size:12px;">${filteredEvaluatees.length} / ${totalCount}명</span>
               ${canAdjustNow
                 ? `<button class="button" onclick="App.saveApprovalAdjustments()">조정 저장</button>`
-                : `<button class="button" disabled title="${user.role === "chairman" && !presidentApproved ? "사장 승인 후 등급 조정이 가능합니다." : "현재는 등급 조정 단계가 아닙니다."}">조정 저장</button>
-                   <span class="pill amber" style="font-size:11px;">${user.role === "chairman" && !presidentApproved ? "사장 승인 대기" : (user.role === "president" && presidentApproved) || (user.role === "chairman" && chairmanApproved) ? "승인 완료 · 조정 마감" : "조정 단계 아님"}</span>`}
+                : `<button class="button" disabled title="${user.role === "chairman" && !allPresidentsApproved ? "사장 승인 후 등급 조정이 가능합니다." : "현재는 등급 조정 단계가 아닙니다."}">조정 저장</button>
+                   <span class="pill amber" style="font-size:11px;">${user.role === "chairman" && !allPresidentsApproved ? "사장 승인 대기" : (user.role === "president" && myPresidentApproved) || (user.role === "chairman" && chairmanApproved) ? "승인 완료 · 조정 마감" : "조정 단계 아님"}</span>`}
             </div>
           </div>
           <div class="panel-body">
@@ -6184,7 +6231,10 @@ function renderEvalFlowStageBanner() {
   const flowStage = getEvalFlowStage();
   const stageLabels = ["", "평가 세팅", "평가 수행 중", "종합평가", "사장 승인", "회장 승인", "리포트 공개"];
   const stageColors = ["","var(--muted)","var(--primary)","var(--amber)","var(--green)","var(--violet)","#0ea5e9"];
-  const lastStep = 6;
+  // 결재라인에 사장이 없으면 "사장 승인" 단계 자체를 스텝퍼에서 뺀다(흔적 없음 요구사항).
+  const hasPresidentLine = activeApprovalLinePresidents().length > 0;
+  const steps = [1,2,3,4,5,6].filter((s) => hasPresidentLine || s !== 4);
+  const lastStep = steps[steps.length - 1];
   return `
     <div class="panel" style="border-left:4px solid ${stageColors[flowStage]};">
       <div class="panel-body" style="padding:14px 18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
@@ -6193,7 +6243,7 @@ function renderEvalFlowStageBanner() {
           <div style="font-size:18px;font-weight:700;color:${stageColors[flowStage]};">STEP ${flowStage} · ${stageLabels[flowStage]}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          ${[1,2,3,4,5,6].map(s => `
+          ${steps.map(s => `
             <div style="display:flex;align-items:center;gap:4px;">
               <div style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;
                 background:${s<=flowStage?stageColors[s]:"var(--line)"};color:${s<=flowStage?"#fff":"var(--muted)"};">${s}</div>
@@ -7418,6 +7468,7 @@ function renderAdminOrganization() {
             <h2>조직 관리</h2>
           </div>
           <div class="toolbar">
+            <button class="button secondary" onclick="App.openApprovalLineSettings()">결재 라인 설정</button>
             <button class="button secondary" onclick="App.openRetireePanel()">퇴사자 관리</button>
             <button class="button" onclick="App.saveOrganizationSettings()">현재 세팅 저장</button>
           </div>
@@ -7441,7 +7492,54 @@ function renderAdminOrganization() {
     ${state.ui.showRetireePanel ? renderRetireePanelModal() : ""}
     ${state.ui.orgAddPopup === "org" ? renderOrgAddPopupModal() : ""}
     ${state.ui.orgAddPopup === "member" ? renderMemberAddPopupModal() : ""}
+    ${state.ui.showApprovalLineModal ? renderApprovalLineModal() : ""}
   `;
+}
+
+// 결재 라인 설정 팝업 — 사장 역할 사용자 중 실제 결재라인에 활성화할 사람을 고른다.
+// 범위(하위 조직)는 각 사장 계정 자신의 조직 배치(division/orgNodeId)에서 자동으로
+// 계산되므로 여기서는 멤버십(포함 여부)만 다룬다.
+function renderApprovalLineModal() {
+  const presidentCandidates = state.users
+    .filter((u) => u.role === "president" && u.active !== false && !isRetired(u))
+    .sort(compareEmployeesForDisplay);
+  const activeIds = new Set(Array.isArray(state.approvalLinePresidentIds) ? state.approvalLinePresidentIds : []);
+  const chairman = state.users.find((u) => u.role === "chairman" && u.active !== false && !isRetired(u));
+  return `
+    <div class="goal-modal-overlay" style="z-index:450;" onclick="if(event.target===this)App.closeApprovalLineSettings()">
+      <div class="goal-modal" style="max-width:560px;width:96%;max-height:90vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>결재 라인 설정</h2>
+          <button class="modal-x" onclick="App.closeApprovalLineSettings()">×</button>
+        </div>
+        <div class="goal-modal-body" style="padding:20px;">
+          <p class="muted" style="margin:0 0 14px;">
+            체크된 사장은 각자 자신이 속한 조직(조직도 상 배치 기준)의 하위 구성원 평가 결과만 승인합니다.
+            등록된 사장 전원이 승인해야 회장이 최종 확정할 수 있습니다. 아무도 체크하지 않으면 승인요청 즉시
+            회장이 바로 최종 확정할 수 있습니다.
+          </p>
+          ${presidentCandidates.length ? `
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${presidentCandidates.map((u) => `
+              <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;">
+                <input type="checkbox" id="approval_line_${u.id}" ${activeIds.has(u.id) ? "checked" : ""} style="width:16px;height:16px;" />
+                <div>
+                  <strong>${esc(u.name)}</strong>
+                  <div class="muted" style="font-size:12px;">${esc(u.division || u.orgRoot || "조직 미지정")}</div>
+                </div>
+              </label>`).join("")}
+          </div>` : `<div class="empty" style="padding:20px 0;">사장 권한을 가진 재직 중인 구성원이 없습니다.</div>`}
+          <div class="component-card" style="margin-top:16px;padding:12px 14px;">
+            <div class="muted" style="font-size:12px;">회장(단일 고정, 최종 확정 담당)</div>
+            <strong>${chairman ? esc(chairman.name) : "등록된 회장 계정이 없습니다"}</strong>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeApprovalLineSettings()">취소</button>
+          <button class="button" onclick="App.saveApprovalLine()">저장</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 function renderOrgAddPopupModal() {
@@ -8032,6 +8130,32 @@ function descendantOrgNodeIds(nodeId, tree = buildOrganizationTree()) {
     ids.push(...descendantOrgNodeIds(child.id, tree));
   });
   return ids;
+}
+
+// 이 사용자가 조직도 상 어느 노드에 속해 있는지 찾는다. orgNodeId가 있으면 그것을
+// 우선 쓰고(가장 정확), 없으면(레거시 데이터) division/orgRoot 이름으로 매칭한다.
+function orgNodeForUser(user, tree = buildOrganizationTree()) {
+  if (user?.orgNodeId && tree.byId[user.orgNodeId]) return tree.byId[user.orgNodeId];
+  if (user?.division && user.division !== "미지정") {
+    const match = tree.nodes.find((n) => n.type === "division" && n.name === user.division);
+    if (match) return match;
+  }
+  if (user?.orgRoot) {
+    const match = tree.nodes.find((n) => n.type === "root" && n.name === user.orgRoot);
+    if (match) return match;
+  }
+  return null;
+}
+
+// 사장 결재 범위(자신이 속한 조직의 하위 구성원 id 집합, 본인 제외)
+function presidentScopeUserIds(presidentUser, tree = buildOrganizationTree()) {
+  const node = orgNodeForUser(presidentUser, tree);
+  if (!node) return new Set();
+  return new Set(
+    usersForOrganizationNode(node, tree)
+      .filter((u) => u.id !== presidentUser.id)
+      .map((u) => u.id)
+  );
 }
 
 function upsertOrganizationNodeRecord(node, parentId = node.parentId || "") {
@@ -9150,10 +9274,16 @@ function renderFeedbackMgmt() {
 function renderAdminAdjustments() {
   const readiness = getFinalAdjustmentReadiness();
   const cycle = selectedCycle();
-  // 사장·회장 최종 승인 현황
-  const presidentApproval = cycle.resultSubmissions?.["approval:president"];
+  // 사장·회장 최종 승인 현황 — 결재라인에 등록된 사장이 없으면 사장 승인 단계 자체를
+  // 건너뛴다(승인요청 즉시 회장 확정 가능).
+  const activePresidents = activeApprovalLinePresidents();
+  const hasPresidentLine = activePresidents.length > 0;
+  const presidentApprovalList = activePresidents.map((p) => ({
+    user: p,
+    submission: cycle.resultSubmissions?.[`approval:president:${p.id}`],
+  }));
+  const allPresidentsApproved = presidentApprovalList.every((p) => Boolean(p.submission?.submitted));
   const chairmanApproval  = cycle.resultSubmissions?.["approval:chairman"];
-  const presidentApproved = Boolean(presidentApproval?.submitted);
   const chairmanApproved  = Boolean(chairmanApproval?.submitted);
   const evaluatees = chairmanApproved ? readiness.evaluatees : [];
   if (chairmanApproved) evaluatees.forEach(ensureAdjustmentDefaults);
@@ -9173,19 +9303,22 @@ function renderAdminAdjustments() {
         </div>
       </div>
       <div class="approval-status-arrow">→</div>
-      <div class="approval-status-item ${presidentApproved ? "done" : "wait"}">
-        <span class="approval-status-icon">${presidentApproved ? "✔" : "⏳"}</span>
+      ${hasPresidentLine ? `
+      <div class="approval-status-item ${allPresidentsApproved ? "done" : "wait"}">
+        <span class="approval-status-icon">${allPresidentsApproved ? "✔" : "⏳"}</span>
         <div>
           <strong>사장 승인</strong>
-          <span>${presidentApproved ? `승인 완료 · ${esc(formatDateTime(presidentApproval.submittedAt))}` : (cycle.approvalRequested ? "승인 대기 중" : "승인요청 후 진행")}</span>
+          ${presidentApprovalList.length > 1
+            ? presidentApprovalList.map((p) => `<div style="font-size:11.5px;">${esc(p.user.name)}: ${p.submission?.submitted ? `승인 완료 · ${esc(formatDateTime(p.submission.submittedAt))}` : "승인 대기 중"}</div>`).join("")
+            : `<span>${allPresidentsApproved ? `승인 완료 · ${esc(formatDateTime(presidentApprovalList[0]?.submission?.submittedAt))}` : (cycle.approvalRequested ? "승인 대기 중" : "승인요청 후 진행")}</span>`}
         </div>
       </div>
-      <div class="approval-status-arrow">→</div>
+      <div class="approval-status-arrow">→</div>` : ""}
       <div class="approval-status-item ${chairmanApproved ? "done" : "wait"}">
         <span class="approval-status-icon">${chairmanApproved ? "✔" : "⏳"}</span>
         <div>
           <strong>회장 최종 확정</strong>
-          <span>${chairmanApproved ? `확정 완료 · ${esc(formatDateTime(chairmanApproval.submittedAt))}` : (presidentApproved ? "확정 대기 중" : "사장 승인 후 진행")}</span>
+          <span>${chairmanApproved ? `확정 완료 · ${esc(formatDateTime(chairmanApproval.submittedAt))}` : (allPresidentsApproved ? "확정 대기 중" : (hasPresidentLine ? "사장 승인 후 진행" : "승인요청 후 진행"))}</span>
         </div>
       </div>
     </div>`;
@@ -9212,7 +9345,11 @@ function renderAdminAdjustments() {
             }
             const groupStatuses = getRelativeGroupStatuses();
             const allGroupsSubmitted = groupStatuses.filter(g => g.groupName !== "미배정").every(isGroupInputComplete);
-            const canRequest = allGroupsSubmitted && !presidentApproved && !chairmanApproved;
+            // presidentApproved 조건은 넣지 않는다 — 결재라인에 사장이 없으면
+            // allPresidentsApproved가 항상 true라서(공집합의 every) 넣으면 승인요청
+            // 버튼이 영원히 비활성화되어 버린다. approvalRequested가 false인 시점에는
+            // 정상 경로상 회장 승인도 아직 없을 수밖에 없으므로 chairmanApproved만 확인.
+            const canRequest = allGroupsSubmitted && !chairmanApproved;
             return `<button class="button" ${canRequest ? "" : "disabled"} onclick="${canRequest ? "App.requestApproval()" : ""}" title="${canRequest ? "" : "모든 종합평가 완료 후 활성화됩니다."}">📨 승인요청</button>`;
           })()}
         </div>
@@ -9508,6 +9645,7 @@ function isGroupInputComplete(g) {
 
 function renderFinalAdjustmentReadiness(readiness) {
   const executiveIncomplete = readiness.executiveStatuses.filter((status) => !status.completed);
+  const executiveLabel = activeApprovalLinePresidents().length ? "사장/회장" : "회장";
   const previewMissing = (items) => {
     if (!items.length) return `<span class="muted">없음</span>`;
     const shown = items.slice(0, 4).map((item) => `<span class="pill amber">${esc(item)}</span>`).join("");
@@ -9558,7 +9696,7 @@ function renderFinalAdjustmentReadiness(readiness) {
       <div class="grid three">
         <div class="notice ${notSubmittedCount ? "warn" : "ok"}">종합평가 제출 ${totalGroupCount - notSubmittedCount}/${totalGroupCount}</div>
         <div class="notice ${needsSessionCount ? "warn" : "ok"}">조정 세션 ${needsSessionCount ? `${needsSessionCount}건 대기` : "없음"}</div>
-        <div class="notice ${executiveIncomplete.length ? "warn" : "ok"}">사장/회장 평가 완료 ${readiness.executiveStatuses.length - executiveIncomplete.length}/${readiness.executiveStatuses.length}</div>
+        <div class="notice ${executiveIncomplete.length ? "warn" : "ok"}">${executiveLabel} 평가 완료 ${readiness.executiveStatuses.length - executiveIncomplete.length}/${readiness.executiveStatuses.length}</div>
       </div>
       <div class="table-wrap">
         <table>
@@ -16500,9 +16638,12 @@ const App = {
       .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
     if (!rows.length) return window.alert("내보낼 구성원이 없습니다.");
 
+    // 결재라인에 사장이 없으면 "사장 조정" 컬럼 자체를 없앤다 — 사장 계정/결재라인
+    // 흔적이 남으면 안 되기 때문.
+    const hasPresidentLine = activeApprovalLinePresidents().length > 0;
     const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
       "종합평가(본부장 원안)", "종합평가(조정세션)", "종합평가(재평가 요청)", "종합평가(재평가)",
-      "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종등급", "평가 피드백"];
+      ...(hasPresidentLine ? ["사장 조정(이동·사유)"] : []), "회장 조정(이동·사유)", "최종등급", "평가 피드백"];
     const out = [["[구성원 평가 결과]"], header];
     rows.forEach((emp, i) => {
       const m = memberScoreCells(emp);
@@ -16510,7 +16651,7 @@ const App = {
         ...scoreBlockCells(m), m.score, m.autoGrade,
         orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
         orgRejectionCellFor(emp), orgStageCellFor(emp, "reeval"),
-        m.presidentReason, m.chairmanReason, m.finalGrade,
+        ...(hasPresidentLine ? [m.presidentReason] : []), m.chairmanReason, m.finalGrade,
         buildEvalFeedbackText(emp)]);
     });
     out.push([""]);
@@ -16648,9 +16789,10 @@ const App = {
     const evaluatees = cycleUsers().filter(isEvaluatee)
       .slice().sort((a, b) => (calculateFinal(b.id).rawScore ?? -1) - (calculateFinal(a.id).rawScore ?? -1));
     if (!evaluatees.length) return window.alert("내보낼 구성원이 없습니다.");
+    const hasPresidentLine = activeApprovalLinePresidents().length > 0;
     const header = ["순위", "이름", "사번", "역할", "본부", "팀", ...SCORE_BLOCK_HEADER, "종합점수", "자동등급",
       "종합평가(본부장 원안)", "종합평가(조정세션)", "종합평가(재평가 요청)", "종합평가(재평가)",
-      "사장 조정(이동·사유)", "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "평가 피드백", "AI 피드백"];
+      ...(hasPresidentLine ? ["사장 조정(이동·사유)"] : []), "회장 조정(이동·사유)", "최종조정(이동·사유)", "최종등급", "평가 피드백", "AI 피드백"];
     const out = [["[구성원 평가 결과]"], header];
     evaluatees.forEach((emp, i) => {
       const m = memberScoreCells(emp);
@@ -16672,7 +16814,7 @@ const App = {
         ...scoreBlockCells(m), m.score, m.autoGrade,
         orgStageCellFor(emp, "divisionHead"), orgStageCellFor(emp, "adjustmentSession"),
         orgRejectionCellFor(emp), orgStageCellFor(emp, "reeval"),
-        m.presidentReason, m.chairmanReason, m.adminReason, m.finalGrade,
+        ...(hasPresidentLine ? [m.presidentReason] : []), m.chairmanReason, m.adminReason, m.finalGrade,
         buildEvalFeedbackText(emp), aiFeedbackText]);
     });
     out.push([""]);
@@ -18316,6 +18458,23 @@ const App = {
     state.ui.retireePopupId = "";
     render();
   },
+  openApprovalLineSettings() {
+    state.ui.showApprovalLineModal = true;
+    render();
+  },
+  closeApprovalLineSettings() {
+    state.ui.showApprovalLineModal = false;
+    render();
+  },
+  saveApprovalLine() {
+    const presidentCandidates = state.users.filter((u) => u.role === "president" && u.active !== false && !isRetired(u));
+    const selectedIds = presidentCandidates.filter((u) => document.getElementById(`approval_line_${u.id}`)?.checked).map((u) => u.id);
+    state.approvalLinePresidentIds = selectedIds;
+    saveState();
+    state.ui.showApprovalLineModal = false;
+    state.ui.flash = selectedIds.length ? "결재 라인을 저장했습니다." : "결재 라인을 비웠습니다. 승인요청 시 사장 승인 없이 바로 회장 최종 확정이 가능합니다.";
+    render();
+  },
   openRetireePanel() {
     state.ui.showRetireePanel = true;
     state.ui.retireePanelSearch = "";
@@ -18382,10 +18541,21 @@ const App = {
     if (!cycle.approvalRequested) return window.alert("이 사이클은 아직 인사총무팀의 승인요청이 되지 않았습니다.\n승인요청 이후에만 승인할 수 있습니다.");
     cycle.resultSubmissions = cycle.resultSubmissions || {};
     const labelMap = { president: "사장", chairman: "회장" };
+    // 사장은 결재라인에 등록된 각자의 기록을 사용자 단위로 남긴다(여러 명일 수 있음).
+    // 회장은 기존처럼 단일 고정 키를 그대로 쓴다.
+    let submissionKey = `approval:${role}`;
+    if (role === "president") {
+      if (!activeApprovalLinePresidents().some((p) => p.id === user.id)) {
+        return window.alert("결재라인에 등록되어 있지 않습니다.\n조직 관리 > 결재 라인 설정에서 확인해 주세요.");
+      }
+      submissionKey = `approval:president:${user.id}`;
+    } else if (role === "chairman" && !allActivePresidentsApproved(cycle)) {
+      return window.alert("아직 승인하지 않은 사장이 있습니다.\n결재라인에 등록된 사장 전원이 승인해야 최종 확정할 수 있습니다.");
+    }
     if (!window.confirm(`${labelMap[role]} 승인을 확정하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
-    cycle.resultSubmissions[`approval:${role}`] = {
-      scopeKey: `approval:${role}`,
-      scopeLabel: `${labelMap[role]} 승인`,
+    cycle.resultSubmissions[submissionKey] = {
+      scopeKey: submissionKey,
+      scopeLabel: role === "president" ? `사장 승인 (${user.name})` : "회장 승인",
       scopeType: role,
       submitted: true,
       submittedBy: user.id,
@@ -18393,7 +18563,7 @@ const App = {
     };
     // 회장 최종 승인 시 결과 공개는 어드민이 수동으로 설정
     saveState();
-    state.ui.flash = role === "president" ? "사장 승인이 완료되었습니다. 회장 최종 확정을 기다립니다." : "회장 최종 승인이 완료되었습니다. 평가 결과가 공개됩니다.";
+    state.ui.flash = role === "president" ? "사장 승인이 완료되었습니다." : "회장 최종 승인이 완료되었습니다. 평가 결과가 공개됩니다.";
     render();
   },
   setApprovalDetail(employeeId) {
@@ -18555,11 +18725,17 @@ const App = {
   saveApprovalAdjustments() {
     const user = currentUser();
     const cycle = selectedCycle();
-    const presidentApproved = Boolean(cycle.resultSubmissions?.["approval:president"]?.submitted);
+    if (user.role === "president" && !activeApprovalLinePresidents().some((p) => p.id === user.id)) {
+      return window.alert("결재라인에 등록되어 있지 않습니다.");
+    }
+    const allPresidentsApproved = allActivePresidentsApproved(cycle);
+    const myPresidentApproved = user.role === "president"
+      ? Boolean(cycle.resultSubmissions?.[`approval:president:${user.id}`]?.submitted)
+      : null;
     const chairmanApproved  = Boolean(cycle.resultSubmissions?.["approval:chairman"]?.submitted);
-    // 본인이 조정할 차례인지 확인 (회장은 사장 승인 후에만 조정 가능)
-    if (user.role === "chairman" && !presidentApproved) return window.alert("사장 승인이 완료된 후에 등급을 조정할 수 있습니다.");
-    const myTurn = user.role === "president" ? !presidentApproved : (presidentApproved && !chairmanApproved);
+    // 본인이 조정할 차례인지 확인 (회장은 결재라인의 사장 전원 승인 후에만 조정 가능)
+    if (user.role === "chairman" && !allPresidentsApproved) return window.alert("사장 승인이 완료된 후에 등급을 조정할 수 있습니다.");
+    const myTurn = user.role === "president" ? !myPresidentApproved : (allPresidentsApproved && !chairmanApproved);
     if (!myTurn) return window.alert("이미 승인이 완료되어 등급을 조정할 수 없습니다.");
     const scoped = cycleUsers().filter(emp => {
       if (!isEvaluatee(emp)) return false;
