@@ -50,6 +50,7 @@ const GRADE_COLORS = {
 
 const ROLE_LABELS = {
   admin: "어드민",
+  goalAdmin: "관리자_목표관리",
   president: "사장",
   chairman: "회장",
   divisionHead: "본부장",
@@ -251,6 +252,9 @@ const SITEMAP_SECTIONS = [
 // 역할별 노출 메뉴 목록. getVisibleTabs()와 동일한 규칙을 따르되,
 // 사이클 진행 상태·개인별 배정 현황 등 유동적인 조건은 "구조상 노출 가능"으로 간주해 항상 포함한다.
 function getSiteMapTabs(role) {
+  // 관리자_목표관리는 목표 관리·공지사항 관리만 쓰는 별도 계정이라 다른 역할과
+  // 공통되는 아래 누적 로직(home/myDashboard 등)을 전부 건너뛴다.
+  if (role === "goalAdmin") return ["goals", "notices"];
   const tabs = role === "admin" ? [] : ["home"];
   if (EVALUATEE_ROLES.includes(role)) tabs.push("self");
   if (["president", "chairman", "divisionHead", "teamLead", "member"].includes(role)) tabs.push("tasks");
@@ -258,7 +262,8 @@ function getSiteMapTabs(role) {
   if (["president", "chairman", "divisionHead", "teamLead"].includes(role)) tabs.push("results");
   if (["president", "chairman"].includes(role)) tabs.push("approval");
   if (EVALUATEE_ROLES.includes(role)) tabs.push("report");
-  tabs.push("goals");
+  // 목표 관리: 관리자_인사(admin)는 제외 — 관리자_목표관리 전용 메뉴로 분리됨
+  if (role !== "admin") tabs.push("goals");
   if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("goalApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
@@ -922,6 +927,23 @@ function normalizeState(nextState) {
     nextState.approvalLinePresidentIds = nextState.users
       .filter((u) => u.role === "president" && u.active !== false && !isRetired(u))
       .map((u) => u.id);
+  }
+  // 관리자_목표관리 계정 — 목표 관리·공지사항 관리만 쓰는 별도 관리자 계정. 없으면
+  // 한 번만 생성한다. 조직도에는 배치하지 않는다(일반 직원 명단·평가자 후보 등에
+  // 섞여 보이지 않도록 isAdminAccount()로 별도 제외 처리하기 때문).
+  if (!nextState.users.some((u) => u.role === "goalAdmin")) {
+    nextState.users.push({
+      id: "u-goaladmin",
+      employeeNo: "GOALADMIN",
+      name: "관리자_목표관리",
+      email: "goaladmin@interojo.com",
+      role: "goalAdmin",
+      title: "목표관리자",
+      division: "",
+      team: "",
+      orgRoot: "",
+      active: true,
+    });
   }
   nextState.peerCount = Number.isInteger(nextState.peerCount) && nextState.peerCount > 0 ? nextState.peerCount : 3;
   nextState.goalCycles = Array.isArray(nextState.goalCycles) && nextState.goalCycles.length ? nextState.goalCycles : defaults.goalCycles;
@@ -1640,8 +1662,23 @@ function isEvaluatorCandidate(user) {
   return Boolean(user && user.active !== false && !isRetired(user) && !isExcludedFromEvaluatorOptions(user));
 }
 
+// 관리자 계정(인사/목표관리)은 조직도·구성원 명단·평가자 후보 등 일반 직원 목록에
+// 나타나면 안 된다. role === "admin" 리터럴만 걸러내던 기존 체크들은 새로 추가된
+// goalAdmin을 걸러내지 못하므로, 이 헬퍼로 두 관리자 역할을 함께 제외한다.
+function isAdminAccount(user) {
+  return Boolean(user && ["admin", "goalAdmin"].includes(user.role));
+}
+
 function buildNavSections(tabs, user) {
   const sections = [];
+  // ── 관리자_목표관리 전용: 목표 관리 · 시스템 관리(공지사항) 두 섹션만 ──
+  if (user.role === "goalAdmin") {
+    const goalTabs = tabs.filter((t) => ["goals", "goalCycles"].includes(t));
+    const sysTabs  = tabs.filter((t) => ["notices"].includes(t));
+    if (goalTabs.length) sections.push({ label: "목표 관리", items: goalTabs });
+    if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
+    return sections;
+  }
   // ── 어드민 전용 메뉴 순서: 나의 평가 → 평가 관리 → 목표 관리 → 성장 기록 조회 → 시스템 관리 ──
   if (user.role === "admin") {
     const myTabs   = tabs.filter((t) => ["home"].includes(t));
@@ -1994,6 +2031,9 @@ function render(loginError = "") {
 }
 
 function getVisibleTabs(user) {
+  // 관리자_목표관리는 목표 관리·공지사항 관리만 쓰는 별도 계정이라 다른 역할과
+  // 공통되는 아래 누적 로직(home/myDashboard 등)을 전부 건너뛴다.
+  if (user.role === "goalAdmin") return ["goals", "notices"];
   // 어드민은 대시보드(home) 없음
   const tabs = user.role === "admin" ? [] : ["home"];
   if (isEvaluatee(user)) tabs.push("self");
@@ -2002,8 +2042,8 @@ function getVisibleTabs(user) {
   if (["president", "chairman", "divisionHead", "teamLead"].includes(user.role)) tabs.push("results");
   if (["president", "chairman"].includes(user.role) && selectedCycle()?.approvalRequested) tabs.push("approval");
   if (isEvaluatee(user)) tabs.push("report");
-  // 목표 관리: 모든 계정 목표 조회/작성
-  tabs.push("goals");
+  // 목표 관리: 관리자_인사(admin)는 제외 — 관리자_목표관리 전용 메뉴로 분리됨
+  if (user.role !== "admin") tabs.push("goals");
   // 목표 승인: 조직장(승인자 가능 역할)
   if (["teamLead", "divisionHead", "president", "chairman"].includes(user.role)) tabs.push("goalApproval");
   // goalCycles 탭은 goals 탭에 통합됨
@@ -2057,11 +2097,11 @@ function renderRoute(user) {
   if (state.ui.tab === "feedbackMgmt") return user.role === "admin" ? renderFeedbackMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "admin") return renderAdmin(user);
   if (state.ui.tab === "organization") return user.role === "admin" ? renderAdminOrganization() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
-  if (state.ui.tab === "notices") return user.role === "admin" ? renderNoticesMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "notices") return ["admin", "goalAdmin"].includes(user.role) ? renderNoticesMgmt() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "resourceLibrary") return user.role === "admin" ? renderResourceLibrary() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "auditLog") return user.role === "admin" ? renderAuditLog() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "evalDashboard") return user.role === "admin" ? renderEvalDashboard() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
-  if (state.ui.tab === "goals") return user.role === "admin" ? renderGoalsList(user) : renderGoalCycleContent(user);
+  if (state.ui.tab === "goals") return ["admin", "goalAdmin"].includes(user.role) ? renderGoalsList(user) : renderGoalCycleContent(user);
   if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
   if (state.ui.tab === "myDashboard") return renderMyDashboard(user);
   if (state.ui.tab === "memberDashboard") return renderMemberDashboard(user);
@@ -6682,7 +6722,7 @@ function renderSubmitPolicyTab() {
 }
 
 function renderAdminPeopleTargets() {
-  const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && user.role !== "admin").sort(compareEmployeesForDisplay);
+  const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && !isAdminAccount(user)).sort(compareEmployeesForDisplay);
   const targetUsers = cycleUsers().filter(isEvaluatee).sort(compareEmployeesForDisplay);
   const upwardTargetOptions = targetUsers.filter((user) => ["teamLead", "divisionHead"].includes(user.role) && isEvaluatorCandidate(user)).sort(compareEmployeesForDisplay);
   const peerTargetOptions = targetUsers.filter(isEvaluatee).sort(compareEmployeesForDisplay);
@@ -7482,8 +7522,8 @@ function renderAdminOrganization() {
             </div>
           </div>
           <details class="org-group" data-detail-key="organization:member-list">
-            <summary>구성원 상세 목록 <span>${state.users.filter((user) => user.role !== "admin" && !isRetired(user)).length}명</span></summary>
-            ${renderGroupedPeople(state.users.filter((user) => user.role !== "admin" && !isRetired(user)), (employees) => renderOrganizationPeopleTable(employees, orgOptions))}
+            <summary>구성원 상세 목록 <span>${state.users.filter((user) => !isAdminAccount(user) && !isRetired(user)).length}명</span></summary>
+            ${renderGroupedPeople(state.users.filter((user) => !isAdminAccount(user) && !isRetired(user)), (employees) => renderOrganizationPeopleTable(employees, orgOptions))}
           </details>
         </div>
       </section>
@@ -7641,7 +7681,7 @@ function renderMemberAddPopupModal() {
 function renderRetireePanelModal() {
   const query = (state.ui.retireePanelSearch || "").toLowerCase();
   const retirees = state.users
-    .filter((user) => user.role !== "admin" && isRetired(user))
+    .filter((user) => !isAdminAccount(user) && isRetired(user))
     .filter((user) => !query || (user.name || "").toLowerCase().includes(query))
     .sort((a, b) => String(b.retireDate || "").localeCompare(String(a.retireDate || "")));
   return `
@@ -7685,7 +7725,7 @@ function renderRetireePanelModal() {
 
 function renderRetireePanel() {
   const retirees = state.users
-    .filter((user) => user.role !== "admin" && isRetired(user))
+    .filter((user) => !isAdminAccount(user) && isRetired(user))
     .sort((a, b) => String(b.retireDate || "").localeCompare(String(a.retireDate || "")));
   return `
     <section class="panel retiree-panel">
@@ -7775,7 +7815,7 @@ function renderOrganizationMemberInfoPanel() {
           <div class="field"><label>직책</label><input id="mip_title" value="${esc(user.title||"")}" /></div>
           <div class="field"><label>권한(역할)</label>
             <select id="mip_role">
-              ${["admin","chairman","president","divisionHead","teamLead","member"].map(r=>`<option value="${r}" ${user.role===r?"selected":""}>${ROLE_LABELS[r]||r}</option>`).join("")}
+              ${["admin","goalAdmin","chairman","president","divisionHead","teamLead","member"].map(r=>`<option value="${r}" ${user.role===r?"selected":""}>${ROLE_LABELS[r]||r}</option>`).join("")}
             </select>
           </div>
           <div class="field"><label>소속 조직 노드</label>
@@ -8052,7 +8092,7 @@ function buildOrganizationTree() {
   };
 
   (state.organizationNodes || []).forEach((node) => addNode({ ...node, manual: true }));
-  state.users.filter((user) => user.role !== "admin" && !isRetired(user)).forEach((user) => {
+  state.users.filter((user) => !isAdminAccount(user) && !isRetired(user)).forEach((user) => {
     if (user.orgNodeId) return;
     const root = addNode({ type: "root", name: user.orgRoot || "미지정" });
     if (user.division && user.division !== "미지정") {
@@ -8105,7 +8145,7 @@ function usersForOrganizationNode(node, tree = buildOrganizationTree()) {
   const descendantIds = new Set(descendantOrgNodeIds(node.id, tree));
   const path = organizationNodePath(node, tree);
   return state.users.filter((user) => {
-    if (user.role === "admin") return false;
+    if (isAdminAccount(user)) return false;
     if (isRetired(user)) return false;
     if (user.orgNodeId) return descendantIds.has(user.orgNodeId);
     if (node.type === "root") return (user.orgRoot || "미지정") === path.orgRoot;
@@ -14104,7 +14144,7 @@ function hasMissingPeerScores(answer, template = state.peerTemplate) {
 }
 
 function collectEvaluatorSettingsFromDom() {
-  const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && user.role !== "admin");
+  const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && !isAdminAccount(user));
   let valid = true;
   cycleUsers().filter(isEvaluatee).forEach((employee) => {
     const evaluator1 = document.getElementById(`emp_${employee.id}_evaluator1Id`);
@@ -16249,7 +16289,7 @@ const App = {
   saveEvaluators(employeeId) {
     const employee = cycleUserById(employeeId);
     if (!employee) return;
-    const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && user.role !== "admin");
+    const evaluatorOptions = state.users.filter((user) => isEvaluatorCandidate(user) && !isAdminAccount(user));
     const evaluator1Id = userIdFromPicker(`emp_${employeeId}_evaluator1Id`, evaluatorOptions);
     const evaluator2Id = userIdFromPicker(`emp_${employeeId}_evaluator2Id`, evaluatorOptions);
     if (evaluator1Id === employee.id || evaluator2Id === employee.id) return window.alert("본인을 평가자로 지정할 수 없습니다.");
@@ -16938,7 +16978,7 @@ const App = {
           const email = r[2] || "";
           if (!email) { skipped.push(`${rowNum}행 ${nm}(이메일 없음)`); continue; }
           const roleRaw = r[5] || "";
-          const role = roleByLabel[roleRaw] || (["admin","chairman","president","divisionHead","teamLead","member"].includes(roleRaw) ? roleRaw : "member");
+          const role = roleByLabel[roleRaw] || (["admin","goalAdmin","chairman","president","divisionHead","teamLead","member"].includes(roleRaw) ? roleRaw : "member");
           state.users.push({
             id: `u-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             name: nm,
@@ -18490,7 +18530,7 @@ const App = {
     const emptyEl = document.querySelector('.goal-modal-overlay .empty');
     const query = q.toLowerCase();
     const retirees = state.users
-      .filter((u) => u.role !== "admin" && isRetired(u))
+      .filter((u) => !isAdminAccount(u) && isRetired(u))
       .filter((u) => !query || (u.name || "").toLowerCase().includes(query))
       .sort((a, b) => String(b.retireDate || "").localeCompare(String(a.retireDate || "")));
     if (tbody) {
@@ -20086,8 +20126,8 @@ function goalDisplayProgress(goal, allGoals) {
 
 // 뷰어가 볼 수 있는 구성원 id 집합 (본인 + 하위 조직)
 function goalScopeUserIds(user) {
-  // 어드민·사장·회장은 항상 전사 전체
-  if (["admin", "president", "chairman"].includes(user.role)) {
+  // 어드민·관리자_목표관리·사장·회장은 항상 전사 전체
+  if (["admin", "goalAdmin", "president", "chairman"].includes(user.role)) {
     return new Set(state.users.map(u => u.id));
   }
 
@@ -20210,7 +20250,7 @@ function buildGoalTreeRows(goals) {
 }
 
 function renderGoalsList(user) {
-  const isAdmin = user.role === "admin";
+  const isAdmin = ["admin", "goalAdmin"].includes(user.role);
   const cycleRows = state.goalCycles.map(c => {
     const goalCount = state.goals.filter(g => g.cycleId === c.id).length;
     const statusColor = c.status === "active" ? "var(--success,#22c55e)" : "var(--muted)";
@@ -20265,7 +20305,7 @@ function renderGoalCycleDetailModal(user) {
   state.ui.activeGoalCycleId = cycleId;
   const cycle = activeGoalCycle();
   const isActive = cycle?.status === "active";
-  const isAdmin = user.role === "admin";
+  const isAdmin = ["admin", "goalAdmin"].includes(user.role);
   const content = !cycle
     ? `<div class="empty" style="padding:40px 0;">사이클을 찾을 수 없습니다.</div>`
     : (!isActive && isAdmin)
@@ -20334,7 +20374,7 @@ function renderGoalCycleListForUser(user, noActiveCycle) {
 }
 
 function renderGoalCycleContent(user, inModal = false) {
-  const isAdmin = user.role === "admin";
+  const isAdmin = ["admin", "goalAdmin"].includes(user.role);
 
   // ── 비어드민 분기 (모달 내부에서는 건너뜀) ──
   if (!isAdmin && !inModal) {
