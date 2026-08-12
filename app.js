@@ -931,10 +931,11 @@ function normalizeState(nextState) {
   // 관리자_목표관리 계정 — 목표 관리·공지사항 관리만 쓰는 별도 관리자 계정. 없으면
   // 한 번만 생성한다. 조직도에는 배치하지 않는다(일반 직원 명단·평가자 후보 등에
   // 섞여 보이지 않도록 isAdminAccount()로 별도 제외 처리하기 때문).
-  if (!nextState.users.some((u) => u.role === "goalAdmin")) {
+  const existingGoalAdmin = nextState.users.find((u) => u.role === "goalAdmin");
+  if (!existingGoalAdmin) {
     nextState.users.push({
       id: "u-goaladmin",
-      employeeNo: "GOALADMIN",
+      employeeNo: "admin_goal",
       name: "관리자_목표관리",
       email: "goaladmin@interojo.com",
       role: "goalAdmin",
@@ -944,6 +945,9 @@ function normalizeState(nextState) {
       orgRoot: "",
       active: true,
     });
+  } else if (existingGoalAdmin.employeeNo === "GOALADMIN") {
+    // 로그인 아이디 변경 요청 — 이전 기본값(GOALADMIN)으로 이미 생성된 계정을 갱신
+    existingGoalAdmin.employeeNo = "admin_goal";
   }
   nextState.peerCount = Number.isInteger(nextState.peerCount) && nextState.peerCount > 0 ? nextState.peerCount : 3;
   nextState.goalCycles = Array.isArray(nextState.goalCycles) && nextState.goalCycles.length ? nextState.goalCycles : defaults.goalCycles;
