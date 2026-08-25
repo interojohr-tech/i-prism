@@ -19843,6 +19843,14 @@ const App = {
         valueText = `${goal.metric.currentValue} → ${v}`;
         goal.metric.currentValue = v;
       }
+    } else {
+      // 정량 지표 없이 만든 목표는 체크인 시 진행률을 직접 입력한다.
+      const p = parseFloat(valueOf("checkin_progress"));
+      if (Number.isFinite(p)) {
+        const clamped = Math.max(0, Math.min(100, p));
+        valueText = `진행률 ${goal.progress || 0}% → ${clamped}%`;
+        goal.progress = clamped;
+      }
     }
     goal.status = status;
     goal.progress = computeGoalProgress(goal);
@@ -20884,7 +20892,11 @@ function renderGoalDetailPanel(goalId, user) {
           <div class="field"><label>${esc(goal.metric.name)} (현재 값)</label>
             <input type="number" id="checkin_value" value="${esc(goal.metric.currentValue)}" />
             <span class="muted" style="font-size:11px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</span>
-          </div>` : ""}
+          </div>` : `
+          <div class="field"><label>진행률 (%)</label>
+            <input type="number" id="checkin_progress" min="0" max="100" value="${esc(goal.progress || 0)}" />
+            <span class="muted" style="font-size:11px;">정량 지표를 쓰지 않는 목표라 진행률을 직접 입력합니다.</span>
+          </div>`}
         <div class="field"><label>(선택) 코멘트</label><textarea id="checkin_comment" rows="4" placeholder="아무리 작은 일, 고민거리라도 기록해 주세요."></textarea></div>
         <div class="field">
           <label>(선택) 첨부파일</label>
