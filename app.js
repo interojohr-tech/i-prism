@@ -20355,13 +20355,12 @@ function renderGoalCycleDetailModal(user) {
   const prevActive = state.ui.activeGoalCycleId;
   state.ui.activeGoalCycleId = cycleId;
   const cycle = activeGoalCycle();
-  const isActive = cycle?.status === "active";
-  const isAdmin = ["admin", "goalAdmin"].includes(user.role);
+  // 상태(진행/중지/마감)와 무관하게 사이클 내용은 누구나 조회할 수 있어야 하므로,
+  // 예전에 있던 "종료된 사이클은 관리자에게도 안 보여주고 상태 변경을 요구"하는
+  // 차단 로직은 제거한다 — 마감된 사이클도 그대로 열람 가능해야 함.
   const content = !cycle
     ? `<div class="empty" style="padding:40px 0;">사이클을 찾을 수 없습니다.</div>`
-    : (!isActive && isAdmin)
-      ? `<div class="empty" style="padding:40px 0;">이 사이클은 종료되었습니다.<br><span style="font-size:13px;color:var(--muted);">목표 내용을 조회하려면 사이클 설정에서 상태를 진행중으로 변경해 주세요.</span></div>`
-      : renderGoalCycleContent(user, true);
+    : renderGoalCycleContent(user, true);
   state.ui.activeGoalCycleId = prevActive;
   const fullscreen = !!state.ui.goalCycleDetailModal?.fullscreen;
   const modalStyle = fullscreen
