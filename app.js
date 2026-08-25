@@ -19409,8 +19409,8 @@ const App = {
         <div class="component-card" style="margin-top:10px;">
           <strong>${esc(goal.metric.name)}</strong>
           <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
-          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong></div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>성과 결과: ${goal.metric.currentValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span><strong style="color:var(--primary);">${prog}%</strong></div>
+          <div style="font-size:14px;color:var(--muted);margin-top:6px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
         </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
         ${hideCheckins ? "" : `
         <div style="font-weight:700;margin:16px 0 6px;">체크인 기록</div>
@@ -19853,7 +19853,8 @@ const App = {
     if (goal.metric) {
       const v = parseFloat(valueOf("checkin_value"));
       if (Number.isFinite(v)) {
-        valueText = `${goal.metric.currentValue} → ${v}`;
+        const unit = goal.metric.unit || "";
+        valueText = `${goal.metric.currentValue}${unit} → ${v}${unit}`;
         goal.metric.currentValue = v;
       }
     } else {
@@ -20912,7 +20913,7 @@ function renderGoalDetailPanel(goalId, user) {
         ${goal.metric ? `
           <div class="field"><label>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""} (현재 값)</label>
             <input type="number" id="checkin_value" value="${esc(goal.metric.currentValue)}" />
-            <span class="muted" style="font-size:11px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span>
+            <span class="muted" style="font-size:14px;display:block;margin-top:4px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span>
           </div>` : `
           <div class="field"><label>진행률 (%)</label>
             <input type="number" id="checkin_progress" min="0" max="100" value="${esc(goal.progress || 0)}" />
@@ -20973,9 +20974,9 @@ function renderGoalDetailPanel(goalId, user) {
           <strong>${esc(goal.metric.name)}</strong>
           <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);">
-            <span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong>
+            <span>성과 결과: ${goal.metric.currentValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span><strong style="color:var(--primary);">${prog}%</strong>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
+          <div style="font-size:14px;color:var(--muted);margin-top:6px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
         </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
 
         <div class="toolbar" style="margin:12px 0;">
@@ -21257,9 +21258,9 @@ function renderDashboardGoalModal(user) {
             <strong>${esc(goal.metric.name)}</strong>
             <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
             <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);">
-              <span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong>
+              <span>성과 결과: ${goal.metric.currentValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span><strong style="color:var(--primary);">${prog}%</strong>
             </div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
+            <div style="font-size:14px;color:var(--muted);margin-top:6px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
           </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
 
           <div class="goal-detail-tabs" style="margin-top:16px;">
