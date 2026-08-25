@@ -78,6 +78,11 @@ const RESOURCE_TYPES = {
 // 평가 사이클 진행 상태 라벨
 const CYCLE_STATUS_LABELS = { active: "진행중", paused: "중지", done: "평가 완료" };
 function cycleStatusLabel(status) { return CYCLE_STATUS_LABELS[status] || (status === "active" ? "진행중" : "중지"); }
+// 목표 사이클 진행 상태 라벨 — 값(active/paused/done)은 평가 사이클과 동일한 체계를
+// 그대로 재사용하되, 라벨만 목표 관리 화면 표기("진행"/"중지"/"마감")에 맞춘다.
+const GOAL_CYCLE_STATUS_LABELS = { active: "진행", paused: "중지", done: "마감" };
+function goalCycleStatusLabel(status) { return GOAL_CYCLE_STATUS_LABELS[status] || GOAL_CYCLE_STATUS_LABELS.done; }
+const GOAL_CYCLE_STATUS_COLORS = { active: "var(--success,#22c55e)", paused: "#d97706", done: "var(--muted)" };
 // 평가 완료(잠금) 상태: 결과 공개 설정 외 데이터 수정 불가
 function isCycleLocked(cycle = activeCycle()) { return cycle && cycle.status === "done"; }
 // 모든 사이클이 평가 완료면 "진행 중 평가 없음"
@@ -951,6 +956,21 @@ function normalizeState(nextState) {
   }
   nextState.peerCount = Number.isInteger(nextState.peerCount) && nextState.peerCount > 0 ? nextState.peerCount : 3;
   nextState.goalCycles = Array.isArray(nextState.goalCycles) && nextState.goalCycles.length ? nextState.goalCycles : defaults.goalCycles;
+  // 목표 사이클 상태를 3단계(active/paused/done)로 정리 — 예전 이진 체계(active 아니면
+  // 전부 "종료" 취급)에서 쓰이던 값(예: "ended", 빈 값)은 "마감"(done)으로 간주한다.
+  // 그리고 "진행"(active)은 항상 하나만 존재해야 하므로, 어떤 이유로든 여러 개가
+  // active로 남아있으면 가장 최근(생성일 기준) 것만 유지하고 나머지는 "중지"로 내린다.
+  {
+    const validStatuses = ["active", "paused", "done"];
+    nextState.goalCycles.forEach((c) => {
+      if (!validStatuses.includes(c.status)) c.status = "done";
+    });
+    const activeOnes = nextState.goalCycles.filter((c) => c.status === "active");
+    if (activeOnes.length > 1) {
+      const keep = activeOnes.slice().sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0];
+      activeOnes.forEach((c) => { if (c !== keep) c.status = "paused"; });
+    }
+  }
   nextState.goals = Array.isArray(nextState.goals) ? nextState.goals : [];
   nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
   nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
@@ -19058,6 +19078,9 @@ const App = {
     const memberScope = "team"; // 하위 호환용 기본값 유지
     const cycle = createGoalCycle(name, start, end, approvalEnabled, memberScope);
     cycle.goalVisibility = readGoalVisibilityMatrix("gc_vis");
+    // 새 사이클은 항상 "진행" 상태로 생성되므로, 기존에 진행 중이던 사이클이 있다면
+    // 자동으로 "중지"로 내려 "진행"은 항상 하나만 존재하도록 한다.
+    state.goalCycles.forEach((gc) => { if (gc.status === "active") gc.status = "paused"; });
     state.goalCycles.unshift(cycle);
     state.ui.activeGoalCycleId = cycle.id;
     state.ui.goalCycleModal = false;
@@ -19082,6 +19105,10 @@ const App = {
   },
   setGoalViewMode(mode) {
     state.ui.goalViewMode = mode;
+    render();
+  },
+  setGoalsListTab(tab) {
+    state.ui.goalsListTab = tab === "closed" ? "closed" : "open";
     render();
   },
   openGoalCycleDetail(cycleId) {
@@ -19116,7 +19143,13 @@ const App = {
     c.end = valueOf("gce_end");
     c.approvalEnabled = checked("gce_approval");
     c.readOnly = checked("gce_readonly");
-    c.status = valueOf("gce_status") || "active";
+    const nextStatus = valueOf("gce_status") || "active";
+    // "진행"으로 바꾸는 경우, 다른 사이클이 이미 진행 중이면 그쪽을 자동으로 "중지"로
+    // 내려 "진행"은 항상 하나만 존재하도록 한다.
+    if (nextStatus === "active") {
+      state.goalCycles.forEach((gc) => { if (gc.id !== c.id && gc.status === "active") gc.status = "paused"; });
+    }
+    c.status = nextStatus;
     c.goalVisibility = readGoalVisibilityMatrix("gce_vis");
     state.ui.goalCycleEditModal = null;
     saveState();
@@ -20255,10 +20288,10 @@ function buildGoalTreeRows(goals) {
 
 function renderGoalsList(user) {
   const isAdmin = ["admin", "goalAdmin"].includes(user.role);
-  const cycleRows = state.goalCycles.map(c => {
+  const renderCycleRow = (c) => {
     const goalCount = state.goals.filter(g => g.cycleId === c.id).length;
-    const statusColor = c.status === "active" ? "var(--success,#22c55e)" : "var(--muted)";
-    const statusLabel = c.status === "active" ? "진행중" : "종료";
+    const statusColor = GOAL_CYCLE_STATUS_COLORS[c.status] || GOAL_CYCLE_STATUS_COLORS.done;
+    const statusLabel = goalCycleStatusLabel(c.status);
     return `
       <div class="cycle-list-row" style="border-left:4px solid ${statusColor};cursor:pointer;" onclick="App.openGoalCycleDetail('${c.id}')">
         <div class="cycle-list-main">
@@ -20277,7 +20310,17 @@ function renderGoalsList(user) {
           <button class="button danger sm" onclick="App.deleteGoalCycle('${c.id}')">삭제</button>
         </div>` : ""}
       </div>`;
-  }).join("");
+  };
+
+  // 진행/중지 사이클은 한 탭에, 마감 사이클은 별도 탭으로 분리한다.
+  const openCycles = state.goalCycles.filter(c => c.status !== "done");
+  const closedCycles = state.goalCycles.filter(c => c.status === "done");
+  const activeTab = state.ui.goalsListTab === "closed" ? "closed" : "open";
+  const shownCycles = activeTab === "closed" ? closedCycles : openCycles;
+  const cycleRows = shownCycles.map(renderCycleRow).join("");
+  const tabBtn = (key, label, count) => `
+    <button onclick="App.setGoalsListTab('${key}')" style="padding:8px 16px;border:none;background:none;cursor:pointer;font-weight:600;font-size:13px;
+      color:${activeTab===key?"var(--primary)":"var(--muted)"};border-bottom:2px solid ${activeTab===key?"var(--primary)":"transparent"};">${label} <span class="muted" style="font-weight:400;">${count}</span></button>`;
 
   return `
     <div class="grid">
@@ -20289,9 +20332,13 @@ function renderGoalsList(user) {
           </div>
         </div>
         <div class="panel-body">
-          ${state.goalCycles.length
+          <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);">
+            ${tabBtn("open", "진행중", openCycles.length)}
+            ${tabBtn("closed", "마감", closedCycles.length)}
+          </div>
+          ${shownCycles.length
             ? `<div class="cycle-list">${cycleRows}</div>`
-            : `<div class="empty" style="padding:32px 0;">${isAdmin ? "목표 사이클이 없습니다. 새 사이클을 만들어 주세요." : "목표 사이클이 없습니다. 어드민이 사이클을 생성해야 합니다."}</div>`}
+            : `<div class="empty" style="padding:32px 0;">${activeTab === "closed" ? "마감된 목표 사이클이 없습니다." : (isAdmin ? "목표 사이클이 없습니다. 새 사이클을 만들어 주세요." : "목표 사이클이 없습니다. 어드민이 사이클을 생성해야 합니다.")}</div>`}
         </div>
       </section>
     </div>
@@ -20338,9 +20385,8 @@ function renderGoalCycleDetailModal(user) {
 function renderGoalCycleListForUser(user, noActiveCycle) {
   const cycleRows = state.goalCycles.map(c => {
     const goalCount = state.goals.filter(g => g.cycleId === c.id).length;
-    const isActive = c.status === "active";
-    const statusColor = isActive ? "var(--success,#22c55e)" : "var(--muted)";
-    const statusLabel = isActive ? "진행중" : "종료";
+    const statusColor = GOAL_CYCLE_STATUS_COLORS[c.status] || GOAL_CYCLE_STATUS_COLORS.done;
+    const statusLabel = goalCycleStatusLabel(c.status);
     return `
       <div class="cycle-list-row" style="border-left:4px solid ${statusColor};cursor:pointer;" onclick="App.openGoalCycleDetail('${c.id}')">
         <div class="cycle-list-main">
@@ -21490,9 +21536,11 @@ function renderGoalCycleEditModal() {
           </label></div>
           <div class="field"><label for="gce_status">상태</label>
             <select id="gce_status">
-              <option value="active" ${c.status==="active"?"selected":""}>진행중</option>
-              <option value="ended" ${c.status!=="active"?"selected":""}>종료</option>
+              <option value="active" ${c.status==="active"?"selected":""}>🟢 진행</option>
+              <option value="paused" ${c.status==="paused"?"selected":""}>⏸ 중지</option>
+              <option value="done" ${c.status==="done"?"selected":""}>🏁 마감</option>
             </select>
+            <span class="muted" style="font-size:11px;display:block;margin-top:4px;">"진행"으로 설정하면 기존에 진행 중이던 다른 사이클은 자동으로 "중지"로 바뀝니다. "진행" 상태의 사이클만 구성원 목표 관리 메뉴에 노출됩니다.</span>
           </div>
           <div class="field">
             <label>목표 조회 범위 설정</label>
