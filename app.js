@@ -282,6 +282,16 @@ const GOAL_STATUS_LABELS = { pending: "대기", onTrack: "순항", atRisk: "난�
 const GOAL_STATUS_COLORS = { pending: "#6b7280", onTrack: "#2563eb", atRisk: "#d97706", done: "#059669", stopped: "#dc2626" };
 const GOAL_LEVELS = ["company", "division", "team", "individual"];
 const GOAL_LEVEL_LABELS = { company: "회사", division: "본부", team: "팀", individual: "개인" };
+// 계정 역할별로 등록 가능한 목표 레벨은 정확히 하나로 고정한다(선택의 여지 없음).
+const GOAL_LEVEL_FOR_ROLE = {
+  chairman: "company",
+  president: "company",
+  goalAdmin: "company",
+  divisionHead: "division",
+  teamLead: "team",
+  member: "individual",
+};
+function goalLevelForUser(user) { return GOAL_LEVEL_FOR_ROLE[user?.role] || "company"; }
 
 const ADMIN_SECTION_LABELS = {
   progress:    "① 사이클 관리",
@@ -19454,19 +19464,18 @@ const App = {
     // 현재 사용자가 연결할 수 있는 상위 목표 목록 (approved만)
     const allGoals = cycle ? state.goals.filter(g => g.cycleId === cycle.id && g.approvalStatus === "approved") : [];
     const parentExamples = allGoals.slice(0, 3).map(g => g.title).join(" / ") || "예) 회사 매출 목표 달성";
-    const levelOptions = user.role === "member" ? "개인"
-      : user.role === "teamLead" ? "팀 / 개인"
-      : user.role === "divisionHead" ? "본부 / 팀 / 개인"
-      : "회사 / 본부 / 팀 / 개인";
+    // 목표 레벨은 업로드하는 계정의 역할에 따라 정확히 하나로 고정된다(회장·사장·관리자_목표관리 → 회사,
+    // 본부장 → 본부, 팀장 → 팀, 팀원 → 개인). 엑셀의 "목표 레벨" 칸에 무엇을 적어도 이 값으로 등록된다.
+    const fixedLevel = goalLevelForUser(user);
+    const fixedLevelKo = GOAL_LEVEL_LABELS[fixedLevel];
     const rows = [
       ["# 목표 일괄 등록 양식 — 아래 안내를 참고하여 작성하세요. 이 행은 삭제해도 됩니다."],
-      ["# [목표 레벨] 입력 가능 값: " + levelOptions],
+      [`# [목표 레벨] 현재 계정(${ROLE_LABELS[user.role]||user.role})은 "${fixedLevelKo}" 레벨로만 등록할 수 있습니다. 이 칸에 다른 값을 적어도 무시되고 "${fixedLevelKo}"로 등록됩니다.`],
       ["# [상위 목표 제목] 회사 레벨 목표는 비워도 됩니다. 나머지는 반드시 기존에 등록된 목표 제목과 정확히 일치해야 합니다."],
       ["# [지표명] 입력 시 시작값, 목표값도 반드시 입력해야 합니다. 비워두면 정성 목표로 등록됩니다."],
       [""],
       ["목표 제목*", "목표 레벨*", "상위 목표 제목", "시작일", "종료일", "목표 설명", "지표명", "시작값", "목표값"],
-      ["예) 신규 고객 확보", "개인", parentExamples.split(" / ")[0] || "", cycleStart, cycleEnd, "신규 고객을 30명 이상 확보한다", "신규 고객 수", "0", "30"],
-      ["예) 팀 운영 목표 달성", "팀", "", cycleStart, cycleEnd, "팀 KPI 전체 달성", "", "", ""],
+      ["예) 신규 고객 확보", fixedLevelKo, parentExamples.split(" / ")[0] || "", cycleStart, cycleEnd, "신규 고객을 30명 이상 확보한다", "신규 고객 수", "0", "30"],
     ];
     try {
       const data = buildXlsx(rows);
@@ -19514,7 +19523,9 @@ const App = {
           metricName: col("지표명"), metricStart: col("시작값"), metricTarget: col("목표값"),
         };
 
-        const LEVEL_MAP = { "회사": "company", "본부": "division", "팀": "team", "개인": "individual" };
+        // 목표 레벨은 업로드하는 계정의 역할에 따라 정확히 하나로 고정된다 — 엑셀의
+        // "목표 레벨" 칸 값은 무시하고 항상 이 값으로 등록한다.
+        const level = goalLevelForUser(user);
         const allCycleGoals = state.goals.filter(g => g.cycleId === cycle.id);
         const approver = nextApproverForUser(user);
 
@@ -19529,10 +19540,6 @@ const App = {
           const get = (c) => c >= 0 ? String(row[c] ?? "").trim() : "";
           const title = get(C.title);
           if (!title) { results.failed.push(`${rowNum}행: 목표 제목이 없습니다.`); return; }
-
-          const levelKo = get(C.level);
-          const level = LEVEL_MAP[levelKo];
-          if (!level) { results.failed.push(`${rowNum}행 "${title}": 목표 레벨이 올바르지 않습니다 (${levelKo || "빈칸"}). 회사/본부/팀/개인 중 입력하세요.`); return; }
 
           const parentTitle = get(C.parent);
           let parentGoalId = "";
@@ -20771,7 +20778,7 @@ function collectGoalVisibilityFromDom(approver) {
 function readGoalDraftFromInputs(user) {
   const title = (valueOf("goal_title") || "").trim();
   if (!title) return { error: "목표를 입력해 주세요." };
-  const level = valueOf("goal_level") || (user.role === "member" ? "individual" : user.role === "teamLead" ? "team" : user.role === "divisionHead" ? "division" : "company");
+  const level = valueOf("goal_level") || goalLevelForUser(user);
   const start = valueOf("goal_start");
   const end = valueOf("goal_end");
   const parentGoalId = valueOf("goal_parent") || "";
@@ -20853,12 +20860,9 @@ function renderGoalCreateModal(user) {
   const parentCandidates = approver
     ? state.goals.filter(g => g.cycleId === cycle.id && g.approvalStatus === "approved" && g.ownerId === approver.id)
     : [];
-  const defaultLevel = user.role === "member" ? "individual" : user.role === "teamLead" ? "team" : user.role === "divisionHead" ? "division" : "company";
-  const levelOptions = user.role === "admin" ? GOAL_LEVELS : (
-    user.role === "member" ? ["individual"] :
-    user.role === "teamLead" ? ["team","individual"] :
-    user.role === "divisionHead" ? ["division","team"] : ["company","division"]
-  );
+  // 목표 레벨은 계정 역할에 따라 정확히 하나로 고정되며 선택할 수 없다
+  // (회장·사장·관리자_목표관리 → 회사, 본부장 → 본부, 팀장 → 팀, 팀원 → 개인).
+  const fixedLevel = goalLevelForUser(user);
   return `
     <div class="component-card" style="margin-top:12px;">
       <div class="goal-modal-tabs">
@@ -20867,9 +20871,7 @@ function renderGoalCreateModal(user) {
       </div>
       <div class="goal-tab-pane" data-goalpane="info">
       <div class="field"><label>목표 레벨</label>
-        ${isExecutive
-          ? `<select id="goal_level" disabled><option value="company" selected>${GOAL_LEVEL_LABELS.company}</option></select>`
-          : `<select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===defaultLevel?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>`}
+        <select id="goal_level" disabled><option value="${fixedLevel}" selected>${GOAL_LEVEL_LABELS[fixedLevel]}</option></select>
       </div>
       <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
       ${isExecutive ? "" : `
@@ -20991,11 +20993,8 @@ function renderGoalEditModal(user, goalId) {
   const parentCandidates = approver
     ? state.goals.filter(g => g.cycleId === cycle.id && g.approvalStatus === "approved" && g.ownerId === approver.id && g.id !== goal.id)
     : [];
-  const levelOptions = user.role === "admin" ? GOAL_LEVELS : (
-    user.role === "member" ? ["individual"] :
-    user.role === "teamLead" ? ["team","individual"] :
-    user.role === "divisionHead" ? ["division","team"] : ["company","division"]
-  );
+  // 목표 레벨은 계정 역할에 따라 정확히 하나로 고정되며 수정 시에도 바꿀 수 없다.
+  const fixedLevel = goalLevelForUser(user);
   const m = goal.metric;
   return `
     <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeGoalEdit()">
@@ -21012,7 +21011,7 @@ function renderGoalEditModal(user, goalId) {
           <div class="goal-tab-pane" data-goalpane="info">
           ${cycle.approvalEnabled ? `<div class="notice warn" style="font-size:12px;">수정 후 저장하면 차상위 조직장의 <strong>재승인</strong>이 필요합니다.</div>` : ""}
           <div class="field"><label>목표 레벨</label>
-            <select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===goal.level?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>
+            <select id="goal_level" disabled><option value="${fixedLevel}" selected>${GOAL_LEVEL_LABELS[fixedLevel]}</option></select>
           </div>
           <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
           <div class="field"><label>가중치</label><input value="${esc(goal.weight ?? 0)}%" disabled /><span class="muted" style="font-size:11px;">가중치는 목표 목록의 "가중치 관리" 화면에서 조정합니다.</span></div>
