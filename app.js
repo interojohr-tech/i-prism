@@ -972,6 +972,27 @@ function normalizeState(nextState) {
     }
   }
   nextState.goals = Array.isArray(nextState.goals) ? nextState.goals : [];
+  // 목표 가중치(weight) 필드 마이그레이션 — 계정+사이클 단위로, 반려된 목표를 제외한
+  // 목표들에 균등 분배한 가중치를 채워 넣는다(신규 필드라 최초 1회만 대상이 생김).
+  {
+    const groups = new Map();
+    nextState.goals.forEach((g) => {
+      if (typeof g.weight !== "number") {
+        const key = `${g.ownerId}|${g.cycleId}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(g);
+      }
+    });
+    groups.forEach((goalsNeedingWeight) => {
+      const active = goalsNeedingWeight.filter((g) => g.approvalStatus !== "rejected");
+      const n = active.length;
+      if (n > 0) {
+        const base = Math.floor(100 / n);
+        active.forEach((g, i) => { g.weight = i === n - 1 ? 100 - base * (n - 1) : base; });
+      }
+      goalsNeedingWeight.forEach((g) => { if (typeof g.weight !== "number") g.weight = 0; });
+    });
+  }
   nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
   nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
   nextState.refResources = normalizeRefResources(nextState.refResources);
@@ -19577,7 +19598,14 @@ const App = {
     };
     reader.readAsArrayBuffer(file);
   },
-  openGoalCreate() { state.ui.goalCreateModal = true; state.ui.goalDetailId = ""; saveState(); render(); },
+  openGoalCreate() {
+    state.ui.goalCreateModal = true;
+    state.ui.goalDetailId = "";
+    state.ui.goalDraftCart = [];
+    state.ui.goalWeightFormOpen = false;
+    saveState();
+    render();
+  },
   openGoalEdit(goalId) {
     const goal = state.goals.find(g => g.id === goalId);
     if (!goal) return;
@@ -19674,7 +19702,18 @@ const App = {
     state.ui.flash = cycle.approvalEnabled ? "목표를 수정하고 재승인 요청했습니다." : "목표를 수정했습니다.";
     render();
   },
-  closeGoalCreate() { state.ui.goalCreateModal = false; saveState(); render(); },
+  closeGoalCreate() {
+    state.ui.goalCreateModal = false;
+    state.ui.goalDraftCart = [];
+    state.ui.goalWeightFormOpen = false;
+    saveState();
+    render();
+  },
+  toggleGoalWeightForm() {
+    state.ui.goalWeightFormOpen = !state.ui.goalWeightFormOpen;
+    saveState();
+    render();
+  },
   switchGoalModalTab(tab) {
     document.querySelectorAll(".goal-modal-tab").forEach(b => b.classList.toggle("active", b.dataset.goaltab === tab));
     document.querySelectorAll(".goal-tab-pane").forEach(p => { p.style.display = p.dataset.goalpane === tab ? "" : "none"; });
@@ -19696,76 +19735,104 @@ const App = {
     chips.insertAdjacentHTML("beforeend", goalVisibleChipHtml(target, false));
     input.value = "";
   },
-  saveGoal(submitForApproval) {
+  // "담기" — 새 목표 서브폼을 검증해 카트(state.ui.goalDraftCart)에 추가하고 서브폼을 리셋한다.
+  // 실제 저장(state.goals에 반영)은 App.saveGoalWeights에서 카트 전체를 한 번에 처리한다.
+  addGoalToCart() {
+    const user = currentUser();
+    const result = readGoalDraftFromInputs(user);
+    if (result.error) return window.alert(result.error);
+    state.ui.goalDraftCart = state.ui.goalDraftCart || [];
+    state.ui.goalDraftCart.push(result.draft);
+    state.ui.goalWeightFormOpen = true;
+    saveState();
+    render();
+  },
+  removeGoalFromCart(index) {
+    if (!Array.isArray(state.ui.goalDraftCart)) return;
+    state.ui.goalDraftCart.splice(index, 1);
+    saveState();
+    render();
+  },
+  // 기존 목표(반려 제외) + 카트에 담긴 신규 목표의 가중치 입력을 실시간으로 합산 표시
+  updateGoalWeightNotice() {
+    let total = 0;
+    document.querySelectorAll("#goal_weight_rows input[data-weight-input]").forEach(el => {
+      total += Number(el.value) || 0;
+    });
+    const notice = document.getElementById("goal_weight_notice");
+    const totalEl = document.getElementById("goal_weight_total");
+    if (totalEl) totalEl.textContent = total;
+    if (notice) notice.className = `notice ${total === 100 ? "ok" : "warn"}`;
+  },
+  // 최종 저장 — 기존 목표들의 weight를 갱신하고, 카트에 담긴 신규 목표들을 한 번에 등록한다.
+  // 계정+사이클 기준으로 (반려 제외) 목표 가중치 합이 정확히 100이어야 저장할 수 있다.
+  saveGoalWeights(submitForApproval) {
     const user = currentUser();
     const cycle = activeGoalCycle();
     if (!cycle) return window.alert("활성 목표 사이클이 없습니다.");
     if (cycle.readOnly) return window.alert("읽기 전용 사이클에는 목표를 추가할 수 없습니다.");
-    const title = (valueOf("goal_title") || "").trim();
-    if (!title) return window.alert("목표를 입력해 주세요.");
-    const level = valueOf("goal_level") || (user.role === "member" ? "individual" : user.role === "teamLead" ? "team" : user.role === "divisionHead" ? "division" : "company");
-    const start = valueOf("goal_start");
-    const end = valueOf("goal_end");
-    const parentGoalId = valueOf("goal_parent") || "";
-    // 개인·팀·본부 레벨은 상위 목표 필수 (회사 레벨만 상위 없이 허용)
-    if (level !== "company" && !parentGoalId) {
-      return window.alert("개인·팀·본부 목표는 차상위 조직장의 상위 목표를 반드시 선택해야 합니다.");
+    const cart = state.ui.goalDraftCart || [];
+    const existingGoals = state.goals.filter(g => g.ownerId === user.id && g.cycleId === cycle.id && g.approvalStatus !== "rejected");
+    if (!existingGoals.length && !cart.length) return window.alert("등록할 목표를 1개 이상 추가해 주세요.");
+
+    const existingWeights = [];
+    for (const g of existingGoals) {
+      const w = parseFloat(valueOf(`goal_w_existing_${g.id}`));
+      if (!Number.isFinite(w) || w <= 0) return window.alert(`"${g.title}"의 가중치를 1 이상으로 입력해 주세요.`);
+      existingWeights.push({ goal: g, weight: w });
     }
-    const hasMetric = checked("goal_has_metric");
-    const metricName = (valueOf("goal_metric_name") || "").trim();
-    const metricUnit = (valueOf("goal_metric_unit") || "").trim();
-    const lastYearValueRaw = parseFloat(valueOf("goal_metric_lastyear"));
-    const startValue = parseFloat(valueOf("goal_metric_start"));
-    const targetValue = parseFloat(valueOf("goal_metric_target"));
-    const description = (valueOf("goal_desc") || "").trim();
-    // 정량 지표 사용 시 KPI명·시작값·목표값 필수(단위·전년 실적은 선택)
-    if (hasMetric) {
-      if (!metricName) return window.alert("정량 지표 사용 시 KPI를 입력해 주세요.");
-      if (!Number.isFinite(startValue)) return window.alert("정량 지표의 시작 값을 입력해 주세요.");
-      if (!Number.isFinite(targetValue)) return window.alert("정량 지표의 목표 값을 입력해 주세요.");
-      if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
+    const cartWeights = [];
+    for (let i = 0; i < cart.length; i++) {
+      const w = parseFloat(valueOf(`goal_w_cart_${i}`));
+      if (!Number.isFinite(w) || w <= 0) return window.alert(`"${cart[i].title}"의 가중치를 1 이상으로 입력해 주세요.`);
+      cartWeights.push(w);
     }
+    const total = existingWeights.reduce((sum, x) => sum + x.weight, 0) + cartWeights.reduce((sum, w) => sum + w, 0);
+    if (total !== 100) return window.alert(`가중치 합계는 100이어야 합니다. 현재 합계: ${total}`);
+
     // 사장/회장은 회사 최상위 목표를 만들며 승인권자가 없거나(회장) 있어도(사장→회장)
     // 승인 절차 없이 즉시 등록한다. 관리자_목표관리도 목표 관리 메뉴의 관리자이므로
     // 자신이 등록하는 목표는 승인 요청 없이 바로 등록되어야 한다.
     const isExecutiveOwner = ["president", "chairman", "goalAdmin"].includes(user.role);
-    const goal = {
-      id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      cycleId: cycle.id,
-      ownerId: user.id,
-      level,
-      parentGoalId,
-      title,
-      description,
-      start: start || cycle.start,
-      end: end || cycle.end,
-      division: user.division || "",
-      team: user.team || "",
-      status: "pending",
-      metric: hasMetric && metricName ? {
-        name: metricName,
-        unit: metricUnit,
-        lastYearValue: Number.isFinite(lastYearValueRaw) ? lastYearValueRaw : null,
-        startValue: Number.isFinite(startValue) ? startValue : 0,
-        targetValue: Number.isFinite(targetValue) ? targetValue : 100,
-        currentValue: Number.isFinite(startValue) ? startValue : 0,
-      } : null,
-      progress: 0,
-      checkins: [],
-      feedbacks: [],
-      approvalStatus: isExecutiveOwner ? "approved" : (cycle.approvalEnabled ? (submitForApproval ? "requested" : "draft") : "approved"),
-      approverId: isExecutiveOwner ? "" : (cycle.approvalEnabled && submitForApproval ? (nextApproverForUser(user)?.id || "") : ""),
-      ...collectGoalVisibilityFromDom(nextApproverForUser(user)),
-      createdAt: new Date().toISOString(),
-    };
-    state.goals.push(goal);
+
+    existingWeights.forEach(({ goal, weight }) => { goal.weight = weight; });
+    cart.forEach((draft, i) => {
+      state.goals.push({
+        id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
+        cycleId: cycle.id,
+        ownerId: user.id,
+        level: draft.level,
+        parentGoalId: draft.parentGoalId,
+        title: draft.title,
+        description: draft.description,
+        start: draft.start || cycle.start,
+        end: draft.end || cycle.end,
+        division: user.division || "",
+        team: user.team || "",
+        status: "pending",
+        weight: cartWeights[i],
+        metric: draft.metric,
+        progress: 0,
+        checkins: [],
+        feedbacks: [],
+        approvalStatus: isExecutiveOwner ? "approved" : (cycle.approvalEnabled ? (submitForApproval ? "requested" : "draft") : "approved"),
+        approverId: isExecutiveOwner ? "" : (cycle.approvalEnabled && submitForApproval ? (nextApproverForUser(user)?.id || "") : ""),
+        visibility: draft.visibility,
+        visibleUserIds: draft.visibleUserIds,
+        createdAt: new Date().toISOString(),
+      });
+    });
     state.ui.goalCreateModal = false;
+    state.ui.goalDraftCart = [];
+    state.ui.goalWeightFormOpen = false;
     saveState();
-    state.ui.flash = isExecutiveOwner
-      ? "목표를 등록했습니다."
-      : (cycle.approvalEnabled
-        ? (submitForApproval ? "목표를 승인 요청했습니다." : "목표를 임시 저장했습니다.")
-        : "목표를 등록했습니다.");
+    state.ui.flash = !cart.length
+      ? "목표 가중치를 저장했습니다."
+      : (isExecutiveOwner
+        ? "목표를 등록했습니다."
+        : (cycle.approvalEnabled
+          ? (submitForApproval ? "목표를 승인 요청했습니다." : "목표를 임시 저장했습니다.")
+          : "목표를 등록했습니다."));
     render();
   },
   requestGoalApproval(goalId) {
@@ -20552,7 +20619,7 @@ function renderGoalCycleContent(user, inModal = false) {
         </div>
       </div>
     </section>
-    ${state.ui.goalCreateModal ? renderGoalCreateModal(user) : ""}
+    ${state.ui.goalCreateModal ? renderGoalWeightManagerModal(user) : ""}
     ${state.ui.goalEditId ? renderGoalEditModal(user, state.ui.goalEditId) : ""}
     ${detail}
     ${state.ui.checkinFeedbackKey ? renderCheckinFeedbackModal(user) : ""}
@@ -20600,6 +20667,7 @@ function goalRowsHtml(list, allForProgress, user) {
         ${hasChildren ? `<span class="muted" style="font-size:11px;margin-left:6px;">(${childCount[goal.id]})</span>` : ""}
         ${pending ? `<span class="pill amber" style="margin-left:6px;font-size:10px;">${goal.approvalStatus==="requested"?"승인대기":goal.approvalStatus==="rejected"?"반려":"임시저장"}</span>` : ""}
         <span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">${GOAL_LEVEL_LABELS[goal.level]||""}</span>
+        ${goal.weight != null ? `<span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">가중치 ${esc(goal.weight)}%</span>` : ""}
       </td>
       <td>${goalStatusBadge(goal.status)}</td>
       <td style="text-align:right;font-weight:700;">${prog}%</td>
@@ -20698,6 +20766,51 @@ function collectGoalVisibilityFromDom(approver) {
   return { visibility: "partial", visibleUserIds: [...ids] };
 }
 
+// "새 목표 추가" 서브폼의 DOM 입력값을 검증해 목표 초안(draft)으로 만든다.
+// 담기 버튼(App.addGoalToCart)에서 호출 — 실패 시 { error }, 성공 시 { draft }를 반환한다.
+function readGoalDraftFromInputs(user) {
+  const title = (valueOf("goal_title") || "").trim();
+  if (!title) return { error: "목표를 입력해 주세요." };
+  const level = valueOf("goal_level") || (user.role === "member" ? "individual" : user.role === "teamLead" ? "team" : user.role === "divisionHead" ? "division" : "company");
+  const start = valueOf("goal_start");
+  const end = valueOf("goal_end");
+  const parentGoalId = valueOf("goal_parent") || "";
+  // 개인·팀·본부 레벨은 상위 목표 필수 (회사 레벨만 상위 없이 허용)
+  if (level !== "company" && !parentGoalId) {
+    return { error: "개인·팀·본부 목표는 차상위 조직장의 상위 목표를 반드시 선택해야 합니다." };
+  }
+  const hasMetric = checked("goal_has_metric");
+  const metricName = (valueOf("goal_metric_name") || "").trim();
+  const metricUnit = (valueOf("goal_metric_unit") || "").trim();
+  const lastYearValueRaw = parseFloat(valueOf("goal_metric_lastyear"));
+  const startValue = parseFloat(valueOf("goal_metric_start"));
+  const targetValue = parseFloat(valueOf("goal_metric_target"));
+  const description = (valueOf("goal_desc") || "").trim();
+  // 정량 지표 사용 시 KPI명·시작값·목표값 필수(단위·전년 실적은 선택)
+  if (hasMetric) {
+    if (!metricName) return { error: "정량 지표 사용 시 KPI를 입력해 주세요." };
+    if (!Number.isFinite(startValue)) return { error: "정량 지표의 시작 값을 입력해 주세요." };
+    if (!Number.isFinite(targetValue)) return { error: "정량 지표의 목표 값을 입력해 주세요." };
+    if (startValue === targetValue) return { error: "시작 값과 목표 값이 같을 수 없습니다." };
+  }
+  const weight = parseFloat(valueOf("goal_weight"));
+  if (!Number.isFinite(weight) || weight <= 0) return { error: "가중치를 1 이상으로 입력해 주세요." };
+  return {
+    draft: {
+      title, level, start, end, parentGoalId, description, weight,
+      metric: hasMetric && metricName ? {
+        name: metricName,
+        unit: metricUnit,
+        lastYearValue: Number.isFinite(lastYearValueRaw) ? lastYearValueRaw : null,
+        startValue: Number.isFinite(startValue) ? startValue : 0,
+        targetValue: Number.isFinite(targetValue) ? targetValue : 100,
+        currentValue: Number.isFinite(startValue) ? startValue : 0,
+      } : null,
+      ...collectGoalVisibilityFromDom(nextApproverForUser(user)),
+    },
+  };
+}
+
 // 일부 공개 목표의 대상자 이름 목록
 function goalVisibleNames(goal) {
   if (goal.visibility !== "partial") return "";
@@ -20726,6 +20839,8 @@ function goalVisibleChipHtml(u, fixed) {
   </span>`;
 }
 
+// "+ 새 목표 추가" 서브폼 — 목표 가중치 관리 화면(renderGoalWeightManagerModal) 안에
+// 인라인으로 펼쳐지는 카드. 별도 모달 오버레이가 아니라 부모 모달 본문 안에 이어 붙는다.
 function renderGoalCreateModal(user) {
   const cycle = activeGoalCycle();
   // 사장/회장은 회사 최상위 목표만 만들며, 승인권자가 없어(회장) 또는 있어도(사장→회장)
@@ -20745,66 +20860,124 @@ function renderGoalCreateModal(user) {
     user.role === "divisionHead" ? ["division","team"] : ["company","division"]
   );
   return `
+    <div class="component-card" style="margin-top:12px;">
+      <div class="goal-modal-tabs">
+        <button type="button" class="goal-modal-tab active" data-goaltab="info" onclick="App.switchGoalModalTab('info')">목표 정보</button>
+        <button type="button" class="goal-modal-tab" data-goaltab="visibility" onclick="App.switchGoalModalTab('visibility')">공개 설정</button>
+      </div>
+      <div class="goal-tab-pane" data-goalpane="info">
+      <div class="field"><label>목표 레벨</label>
+        ${isExecutive
+          ? `<select id="goal_level" disabled><option value="company" selected>${GOAL_LEVEL_LABELS.company}</option></select>`
+          : `<select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===defaultLevel?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>`}
+      </div>
+      <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
+      ${isExecutive ? "" : `
+      <div class="field"><label>상위 목표 <span style="color:var(--red)">*</span></label>
+        <select id="goal_parent">
+          <option value="">${approver ? `상위 목표를 선택하세요 (${esc(approver.name)})` : "선택 가능한 상위 목표 없음"}</option>
+          ${parentCandidates.map(g => `<option value="${g.id}">${esc(goalOwnerLabel(g))} · ${esc(g.title)}</option>`).join("")}
+        </select>
+        <span class="muted" style="font-size:11px;">${approver ? `차상위 조직장(${esc(approver.name)})의 목표 중 선택합니다.` : "회사 최상위 목표는 상위 목표 없이 등록됩니다."}</span>
+      </div>`}
+      <div class="field"><label>목표 <span style="color:var(--red)">*</span></label><textarea id="goal_title" rows="2" placeholder="예) 고객 만족도 평균 5점 달성"></textarea></div>
+      <div class="field"><label>가중치 (%) <span style="color:var(--red)">*</span></label><input type="number" id="goal_weight" min="1" max="100" placeholder="예) 30" /></div>
+      <div class="form-grid">
+        <div class="field"><label>시작일</label><input type="date" id="goal_start" value="${esc(cycle.start||"")}" /></div>
+        <div class="field"><label>종료일</label><input type="date" id="goal_end" value="${esc(cycle.end||"")}" /></div>
+      </div>
+      <label class="goal-metric-toggle on">
+        <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다.</small></span>
+        <input type="checkbox" id="goal_has_metric" checked onchange="document.getElementById('goal_metric_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
+        <span class="goal-metric-switch"></span>
+      </label>
+      <div id="goal_metric_box" class="component-card" style="margin-top:10px;">
+        <div class="field"><label>KPI</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수" /></div>
+        <div class="form-grid">
+          <div class="field"><label>단위</label><input id="goal_metric_unit" placeholder="예) 억원, %, 점" /></div>
+          <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" /></div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="0" /></div>
+          <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="100" /></div>
+        </div>
+      </div>
+      <div class="field"><label>(선택) 상세 설명</label><textarea id="goal_desc" rows="3" placeholder="내용을 입력해 주세요."></textarea></div>
+      </div>
+      <div class="goal-tab-pane" data-goalpane="visibility" style="display:none;">
+        ${renderGoalVisibilitySettings(user, approver, [])}
+      </div>
+      <div class="toolbar" style="margin-top:12px;">
+        <button class="button secondary" onclick="App.toggleGoalWeightForm()">취소</button>
+        <button class="button" onclick="App.addGoalToCart()">목록에 담기</button>
+      </div>
+    </div>`;
+}
+
+// 목표 가중치 관리 화면 — 기존 목표(반려 제외)의 가중치를 조정하고, "+ 새 목표 추가"로
+// 담아둔 신규 목표들과 합쳐 가중치 합계가 100이 되도록 한 번에 저장한다.
+function renderGoalWeightManagerModal(user) {
+  const cycle = activeGoalCycle();
+  const allOwned = state.goals.filter(g => g.ownerId === user.id && g.cycleId === cycle.id);
+  const existingGoals = allOwned.filter(g => g.approvalStatus !== "rejected");
+  const rejectedGoals = allOwned.filter(g => g.approvalStatus === "rejected");
+  const cart = state.ui.goalDraftCart || [];
+  const statusLabel = (g) => g.approvalStatus === "approved" ? "승인완료" : g.approvalStatus === "requested" ? "승인대기" : g.approvalStatus === "rejected" ? "반려" : "임시저장";
+  const statusColor = (g) => g.approvalStatus === "approved" ? "green" : g.approvalStatus === "rejected" ? "red" : "amber";
+  const existingRow = (g) => `
+    <div class="component-card" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+      <div style="flex:1;min-width:0;">
+        <strong style="display:block;">${esc(g.title)}</strong>
+        <span class="muted" style="font-size:12px;">${GOAL_LEVEL_LABELS[g.level]}</span>
+        <span class="pill ${statusColor(g)}" style="margin-left:6px;font-size:10px;">${statusLabel(g)}</span>
+      </div>
+      <input data-weight-input type="number" id="goal_w_existing_${g.id}" min="1" max="100" value="${esc(g.weight ?? "")}" style="width:80px;" oninput="App.updateGoalWeightNotice()" />
+      <span class="muted">%</span>
+      <button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="App.deleteGoal('${g.id}')">삭제</button>
+    </div>`;
+  const cartRow = (draft, i) => `
+    <div class="component-card" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;background:var(--surface-2);">
+      <div style="flex:1;min-width:0;">
+        <strong style="display:block;">${esc(draft.title)} <span class="pill" style="font-size:10px;">신규</span></strong>
+        <span class="muted" style="font-size:12px;">${GOAL_LEVEL_LABELS[draft.level]}</span>
+      </div>
+      <input data-weight-input type="number" id="goal_w_cart_${i}" min="1" max="100" value="${esc(draft.weight)}" style="width:80px;" oninput="App.updateGoalWeightNotice()" />
+      <span class="muted">%</span>
+      <button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="App.removeGoalFromCart(${i})">제거</button>
+    </div>`;
+  const rejectedRow = (g) => `
+    <div class="component-card" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;opacity:0.6;">
+      <div style="flex:1;min-width:0;">
+        <strong style="display:block;">${esc(g.title)}</strong>
+        <span class="pill red" style="font-size:10px;">반려됨 · 가중치 합계 제외</span>
+      </div>
+      <button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="App.deleteGoal('${g.id}')">삭제</button>
+    </div>`;
+  const total = existingGoals.reduce((s, g) => s + (Number(g.weight) || 0), 0) + cart.reduce((s, d) => s + (Number(d.weight) || 0), 0);
+  return `
     <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeGoalCreate()">
       <div class="goal-modal">
         <div class="goal-modal-head">
-          <h2>목표 만들기</h2>
+          <h2>목표 가중치 관리</h2>
           <button onclick="App.closeGoalCreate()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
         </div>
-        <div class="goal-modal-tabs">
-          <button type="button" class="goal-modal-tab active" data-goaltab="info" onclick="App.switchGoalModalTab('info')">목표 정보</button>
-          <button type="button" class="goal-modal-tab" data-goaltab="visibility" onclick="App.switchGoalModalTab('visibility')">공개 설정</button>
-        </div>
         <div class="goal-modal-body">
-          <div class="goal-tab-pane" data-goalpane="info">
-          <div class="field"><label>목표 레벨</label>
-            ${isExecutive
-              ? `<select id="goal_level" disabled><option value="company" selected>${GOAL_LEVEL_LABELS.company}</option></select>`
-              : `<select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===defaultLevel?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>`}
+          <p class="muted" style="font-size:12px;margin-bottom:10px;">이 사이클에서 등록한 목표들의 가중치 합이 100%가 되도록 맞춰 주세요(반려된 목표는 제외).</p>
+          <div id="goal_weight_rows">
+            ${existingGoals.map(existingRow).join("") || `<p class="muted" style="font-size:13px;">등록된 목표가 없습니다. 아래에서 새 목표를 추가해 주세요.</p>`}
+            ${cart.map(cartRow).join("")}
           </div>
-          <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
-          ${isExecutive ? "" : `
-          <div class="field"><label>상위 목표 <span style="color:var(--red)">*</span></label>
-            <select id="goal_parent">
-              <option value="">${approver ? `상위 목표를 선택하세요 (${esc(approver.name)})` : "선택 가능한 상위 목표 없음"}</option>
-              ${parentCandidates.map(g => `<option value="${g.id}">${esc(goalOwnerLabel(g))} · ${esc(g.title)}</option>`).join("")}
-            </select>
-            <span class="muted" style="font-size:11px;">${approver ? `차상위 조직장(${esc(approver.name)})의 목표 중 선택합니다.` : "회사 최상위 목표는 상위 목표 없이 등록됩니다."}</span>
-          </div>`}
-          <div class="field"><label>목표 <span style="color:var(--red)">*</span></label><textarea id="goal_title" rows="2" placeholder="예) 고객 만족도 평균 5점 달성"></textarea></div>
-          <div class="form-grid">
-            <div class="field"><label>시작일</label><input type="date" id="goal_start" value="${esc(cycle.start||"")}" /></div>
-            <div class="field"><label>종료일</label><input type="date" id="goal_end" value="${esc(cycle.end||"")}" /></div>
-          </div>
-          <label class="goal-metric-toggle on">
-            <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다.</small></span>
-            <input type="checkbox" id="goal_has_metric" checked onchange="document.getElementById('goal_metric_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
-            <span class="goal-metric-switch"></span>
-          </label>
-          <div id="goal_metric_box" class="component-card" style="margin-top:10px;">
-            <div class="field"><label>KPI</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수" /></div>
-            <div class="form-grid">
-              <div class="field"><label>단위</label><input id="goal_metric_unit" placeholder="예) 억원, %, 점" /></div>
-              <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" /></div>
-            </div>
-            <div class="form-grid">
-              <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="0" /></div>
-              <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="100" /></div>
-            </div>
-          </div>
-          <div class="field"><label>(선택) 상세 설명</label><textarea id="goal_desc" rows="3" placeholder="내용을 입력해 주세요."></textarea></div>
-          </div>
-          <div class="goal-tab-pane" data-goalpane="visibility" style="display:none;">
-            ${renderGoalVisibilitySettings(user, approver, [])}
-          </div>
+          ${rejectedGoals.length ? `<div style="margin-top:12px;">${rejectedGoals.map(rejectedRow).join("")}</div>` : ""}
+          <div id="goal_weight_notice" class="notice ${total === 100 ? "ok" : "warn"}" style="margin-top:10px;">가중치 합계는 100이어야 합니다. 현재 합계: <strong id="goal_weight_total">${esc(total)}</strong>%</div>
+          ${state.ui.goalWeightFormOpen ? renderGoalCreateModal(user) : `<button class="button secondary" style="margin-top:12px;" onclick="App.toggleGoalWeightForm()">+ 새 목표 추가</button>`}
         </div>
         <div class="goal-modal-foot">
-          <button class="button secondary" onclick="App.closeGoalCreate()">취소</button>
-          ${isExecutive
-            ? `<button class="button" onclick="App.saveGoal(false)">목표 등록</button>`
+          <button class="button secondary" onclick="App.closeGoalCreate()">닫기</button>
+          ${["president", "chairman", "goalAdmin"].includes(user.role)
+            ? `<button class="button" onclick="App.saveGoalWeights(false)">저장</button>`
             : cycle.approvalEnabled
-              ? `<button class="button ghost" onclick="App.saveGoal(false)">임시 등록</button><button class="button" onclick="App.saveGoal(true)">승인 요청 및 등록</button>`
-              : `<button class="button" onclick="App.saveGoal(false)">등록</button>`}
+              ? `<button class="button ghost" onclick="App.saveGoalWeights(false)">임시 저장</button><button class="button" onclick="App.saveGoalWeights(true)">승인 요청 및 저장</button>`
+              : `<button class="button" onclick="App.saveGoalWeights(false)">저장</button>`}
         </div>
       </div>
     </div>`;
@@ -20842,6 +21015,7 @@ function renderGoalEditModal(user, goalId) {
             <select id="goal_level">${levelOptions.map(l => `<option value="${l}" ${l===goal.level?"selected":""}>${GOAL_LEVEL_LABELS[l]}</option>`).join("")}</select>
           </div>
           <div class="field"><label>목표 사이클</label><input value="${esc(cycle.name)}" disabled /></div>
+          <div class="field"><label>가중치</label><input value="${esc(goal.weight ?? 0)}%" disabled /><span class="muted" style="font-size:11px;">가중치는 목표 목록의 "가중치 관리" 화면에서 조정합니다.</span></div>
           <div class="field"><label>상위 목표 <span style="color:var(--red)">*</span></label>
             <select id="goal_parent">
               <option value="">${approver ? `상위 목표를 선택하세요 (${esc(approver.name)})` : "선택 가능한 상위 목표 없음"}</option>
@@ -20905,7 +21079,7 @@ function renderGoalDetailPanel(goalId, user) {
       <div class="goal-side-body">
         <div class="component-card">
           <strong>${esc(goal.title)}</strong>
-          <p class="muted" style="font-size:12px;margin-top:4px;">${GOAL_LEVEL_LABELS[goal.level]} · ${esc(owner?.name||"")}</p>
+          <p class="muted" style="font-size:12px;margin-top:4px;">${GOAL_LEVEL_LABELS[goal.level]} · ${esc(owner?.name||"")}${goal.weight != null ? ` · 가중치 ${esc(goal.weight)}%` : ""}</p>
         </div>
         <div class="field"><label>상태 *</label>
           <select id="checkin_status">${GOAL_STATUSES.map(s => `<option value="${s}" ${goal.status===s?"selected":""}>${GOAL_STATUS_LABELS[s]}</option>`).join("")}</select>
@@ -20955,6 +21129,7 @@ function renderGoalDetailPanel(goalId, user) {
           </div>
           <div class="goal-info-rows">
             <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+            <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
             <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
             <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
             <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
