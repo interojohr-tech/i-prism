@@ -19715,8 +19715,9 @@ const App = {
       if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
     }
     // 사장/회장은 회사 최상위 목표를 만들며 승인권자가 없거나(회장) 있어도(사장→회장)
-    // 승인 절차 없이 즉시 등록한다.
-    const isExecutiveOwner = user.role === "president" || user.role === "chairman";
+    // 승인 절차 없이 즉시 등록한다. 관리자_목표관리도 목표 관리 메뉴의 관리자이므로
+    // 자신이 등록하는 목표는 승인 요청 없이 바로 등록되어야 한다.
+    const isExecutiveOwner = ["president", "chairman", "goalAdmin"].includes(user.role);
     const goal = {
       id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       cycleId: cycle.id,
@@ -20706,8 +20707,10 @@ function goalVisibleChipHtml(u, fixed) {
 function renderGoalCreateModal(user) {
   const cycle = activeGoalCycle();
   // 사장/회장은 회사 최상위 목표만 만들며, 승인권자가 없어(회장) 또는 있어도(사장→회장)
-  // 승인 절차 없이 즉시 등록되므로 상위 목표 선택 자체가 불필요하다.
-  const isExecutive = user.role === "president" || user.role === "chairman";
+  // 승인 절차 없이 즉시 등록되므로 상위 목표 선택 자체가 불필요하다. 관리자_목표관리도
+  // 승인 절차 없이 바로 등록되므로 동일하게 취급한다("승인 요청" 버튼 문구가 실제
+  // 동작과 어긋나지 않도록).
+  const isExecutive = ["president", "chairman", "goalAdmin"].includes(user.role);
   // 상위 목표 후보: 차상위 조직장(승인자)이 소유한 같은 사이클의 승인된 목표만
   const approver = nextApproverForUser(user);
   const parentCandidates = approver
