@@ -19398,7 +19398,7 @@ const App = {
             <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
             <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
-            ${goal.metric ? `<div><span>지표</span><b>${esc(goal.metric.name)}</b></div><div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
             <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
             <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?"반려":"임시 저장"}</b></div>
           </div>
@@ -19410,7 +19410,7 @@ const App = {
           <strong>${esc(goal.metric.name)}</strong>
           <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong></div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
         </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
         ${hideCheckins ? "" : `
         <div style="font-weight:700;margin:16px 0 6px;">체크인 기록</div>
@@ -19602,11 +19602,13 @@ const App = {
     const end = valueOf("goal_end");
     const hasMetric = checked("goal_has_metric");
     const metricName = (valueOf("goal_metric_name") || "").trim();
+    const metricUnit = (valueOf("goal_metric_unit") || "").trim();
+    const lastYearValueRaw = parseFloat(valueOf("goal_metric_lastyear"));
     const startValue = parseFloat(valueOf("goal_metric_start"));
     const targetValue = parseFloat(valueOf("goal_metric_target"));
     const description = (valueOf("goal_desc") || "").trim();
     if (hasMetric) {
-      if (!metricName) return window.alert("정량 지표 사용 시 지표명을 입력해 주세요.");
+      if (!metricName) return window.alert("정량 지표 사용 시 KPI를 입력해 주세요.");
       if (!Number.isFinite(startValue)) return window.alert("정량 지표의 시작 값을 입력해 주세요.");
       if (!Number.isFinite(targetValue)) return window.alert("정량 지표의 목표 값을 입력해 주세요.");
       if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
@@ -19624,7 +19626,14 @@ const App = {
     if ((goal.start||"") !== (start||"")) changes.push(`시작일: ${goal.start||"-"} → ${start||"-"}`);
     if ((goal.end||"") !== (end||"")) changes.push(`종료일: ${goal.end||"-"} → ${end||"-"}`);
     if ((goal.description||"") !== description) changes.push("상세 설명 변경");
-    const newMetric = hasMetric && metricName ? { name: metricName, startValue: Number.isFinite(startValue)?startValue:0, targetValue: Number.isFinite(targetValue)?targetValue:100, currentValue: goal.metric ? goal.metric.currentValue : (Number.isFinite(startValue)?startValue:0) } : null;
+    const newMetric = hasMetric && metricName ? {
+      name: metricName,
+      unit: metricUnit,
+      lastYearValue: Number.isFinite(lastYearValueRaw) ? lastYearValueRaw : null,
+      startValue: Number.isFinite(startValue)?startValue:0,
+      targetValue: Number.isFinite(targetValue)?targetValue:100,
+      currentValue: goal.metric ? goal.metric.currentValue : (Number.isFinite(startValue)?startValue:0),
+    } : null;
     if (JSON.stringify(goal.metric||null) !== JSON.stringify(newMetric)) changes.push("정량 지표 변경");
     const vis = collectGoalVisibilityFromDom(nextApproverForUser(user));
     const sortedOld = (goal.visibleUserIds || []).slice().sort();
@@ -19704,12 +19713,14 @@ const App = {
     }
     const hasMetric = checked("goal_has_metric");
     const metricName = (valueOf("goal_metric_name") || "").trim();
+    const metricUnit = (valueOf("goal_metric_unit") || "").trim();
+    const lastYearValueRaw = parseFloat(valueOf("goal_metric_lastyear"));
     const startValue = parseFloat(valueOf("goal_metric_start"));
     const targetValue = parseFloat(valueOf("goal_metric_target"));
     const description = (valueOf("goal_desc") || "").trim();
-    // 정량 지표 사용 시 지표명·시작값·목표값 필수
+    // 정량 지표 사용 시 KPI명·시작값·목표값 필수(단위·전년 실적은 선택)
     if (hasMetric) {
-      if (!metricName) return window.alert("정량 지표 사용 시 지표명을 입력해 주세요.");
+      if (!metricName) return window.alert("정량 지표 사용 시 KPI를 입력해 주세요.");
       if (!Number.isFinite(startValue)) return window.alert("정량 지표의 시작 값을 입력해 주세요.");
       if (!Number.isFinite(targetValue)) return window.alert("정량 지표의 목표 값을 입력해 주세요.");
       if (startValue === targetValue) return window.alert("시작 값과 목표 값이 같을 수 없습니다.");
@@ -19733,6 +19744,8 @@ const App = {
       status: "pending",
       metric: hasMetric && metricName ? {
         name: metricName,
+        unit: metricUnit,
+        lastYearValue: Number.isFinite(lastYearValueRaw) ? lastYearValueRaw : null,
         startValue: Number.isFinite(startValue) ? startValue : 0,
         targetValue: Number.isFinite(targetValue) ? targetValue : 100,
         currentValue: Number.isFinite(startValue) ? startValue : 0,
@@ -20768,7 +20781,11 @@ function renderGoalCreateModal(user) {
             <span class="goal-metric-switch"></span>
           </label>
           <div id="goal_metric_box" class="component-card" style="margin-top:10px;">
-            <div class="field"><label>지표명</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수" /></div>
+            <div class="field"><label>KPI</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수" /></div>
+            <div class="form-grid">
+              <div class="field"><label>단위</label><input id="goal_metric_unit" placeholder="예) 억원, %, 점" /></div>
+              <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" /></div>
+            </div>
             <div class="form-grid">
               <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="0" /></div>
               <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="100" /></div>
@@ -20841,7 +20858,11 @@ function renderGoalEditModal(user, goalId) {
             <span class="goal-metric-switch"></span>
           </label>
           <div id="goal_metric_box" class="component-card" style="margin-top:10px;${m?"":"display:none;"}">
-            <div class="field"><label>지표명</label><input id="goal_metric_name" value="${esc(m?.name||"")}" placeholder="예) 매출액(억), 만족도 점수" /></div>
+            <div class="field"><label>KPI</label><input id="goal_metric_name" value="${esc(m?.name||"")}" placeholder="예) 매출액(억), 만족도 점수" /></div>
+            <div class="form-grid">
+              <div class="field"><label>단위</label><input id="goal_metric_unit" value="${esc(m?.unit||"")}" placeholder="예) 억원, %, 점" /></div>
+              <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" value="${esc(m?.lastYearValue ?? "")}" /></div>
+            </div>
             <div class="form-grid">
               <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="${esc(m?.startValue ?? 0)}" /></div>
               <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="${esc(m?.targetValue ?? 100)}" /></div>
@@ -20889,9 +20910,9 @@ function renderGoalDetailPanel(goalId, user) {
           <select id="checkin_status">${GOAL_STATUSES.map(s => `<option value="${s}" ${goal.status===s?"selected":""}>${GOAL_STATUS_LABELS[s]}</option>`).join("")}</select>
         </div>
         ${goal.metric ? `
-          <div class="field"><label>${esc(goal.metric.name)} (현재 값)</label>
+          <div class="field"><label>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""} (현재 값)</label>
             <input type="number" id="checkin_value" value="${esc(goal.metric.currentValue)}" />
-            <span class="muted" style="font-size:11px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</span>
+            <span class="muted" style="font-size:11px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span>
           </div>` : `
           <div class="field"><label>진행률 (%)</label>
             <input type="number" id="checkin_progress" min="0" max="100" value="${esc(goal.progress || 0)}" />
@@ -20938,7 +20959,7 @@ function renderGoalDetailPanel(goalId, user) {
             <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
             <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
-            ${goal.metric ? `<div><span>지표</span><b>${esc(goal.metric.name)}</b></div><div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
             <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
             <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?("반려"+(goal.rejectReason?` (${esc(goal.rejectReason)})`:"")):"임시 저장"}</b></div>
             <div><span>공개 범위</span><b>${goal.visibility==="partial"?`일부 공개${goalVisibleNames(goal)?` · ${esc(goalVisibleNames(goal))}`:""}`:"전체 공개"}</b></div>
@@ -20954,7 +20975,7 @@ function renderGoalDetailPanel(goalId, user) {
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);">
             <span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
         </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
 
         <div class="toolbar" style="margin:12px 0;">
@@ -21222,7 +21243,7 @@ function renderDashboardGoalModal(user) {
               <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
               <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
               <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
-              ${goal.metric ? `<div><span>지표</span><b>${esc(goal.metric.name)}</b></div><div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+              ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
               <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
               <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?("반려"+(goal.rejectReason?` (${esc(goal.rejectReason)})`:"")):"임시 저장"}</b></div>
               <div><span>공개 범위</span><b>${goal.visibility==="partial"?`일부 공개${goalVisibleNames(goal)?` · ${esc(goalVisibleNames(goal))}`:""}`:"전체 공개"}</b></div>
@@ -21238,7 +21259,7 @@ function renderDashboardGoalModal(user) {
             <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);">
               <span>성과 결과: ${goal.metric.currentValue}</span><strong style="color:var(--primary);">${prog}%</strong>
             </div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px;">시작 ${goal.metric.startValue} | 목표 ${goal.metric.targetValue}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
           </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
 
           <div class="goal-detail-tabs" style="margin-top:16px;">
