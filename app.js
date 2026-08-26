@@ -277,9 +277,6 @@ function getSiteMapTabs(role) {
 }
 
 // 목표 상태
-const GOAL_STATUSES = ["pending", "onTrack", "atRisk", "done", "stopped"];
-const GOAL_STATUS_LABELS = { pending: "대기", onTrack: "순항", atRisk: "난항", done: "완료", stopped: "중단" };
-const GOAL_STATUS_COLORS = { pending: "#6b7280", onTrack: "#2563eb", atRisk: "#d97706", done: "#059669", stopped: "#dc2626" };
 const GOAL_LEVELS = ["company", "division", "team", "individual"];
 const GOAL_LEVEL_LABELS = { company: "회사", division: "본부", team: "팀", individual: "개인" };
 // 계정 역할별로 등록 가능한 목표 레벨은 정확히 하나로 고정한다(선택의 여지 없음).
@@ -3205,7 +3202,7 @@ function renderGoalLinkPickerModal(user) {
     <button class="goal-link-row" onclick="App.linkGoalToAchievement('${prefix}', ${index}, '${g.id}', '${pickerType}')">
       <div style="text-align:left;">
         <strong style="color:var(--primary);">${esc(g.title)}</strong>
-        <div class="muted" style="font-size:11px;margin-top:2px;">${GOAL_LEVEL_LABELS[g.level]||""} · ${esc(g.team||g.division||"")} · ${goalStatusBadge(g.status)}</div>
+        <div class="muted" style="font-size:11px;margin-top:2px;">${GOAL_LEVEL_LABELS[g.level]||""} · ${esc(g.team||g.division||"")}</div>
       </div>
       <span style="color:var(--primary);">연결 →</span>
     </button>`;
@@ -10404,11 +10401,11 @@ function downloadMemberDashboardXlsx(target, requirePublished) {
     [target.orgRoot, target.division, target.team].filter(v => v && v !== "미지정").join(" / ") || "조직 없음", target.email || ""]);
   out.push([""]);
   out.push(["[목표]"]);
-  out.push(["목표", "레벨", "진행률(%)", "상태", "체크인 수", "기간"]);
+  out.push(["목표", "레벨", "진행률(%)", "체크인 수", "기간"]);
   const goals = state.goals.filter(g => g.ownerId === target.id);
   if (goals.length) {
     goals.forEach(g => out.push([g.title, GOAL_LEVEL_LABELS[g.level] || g.level, goalDisplayProgress(g, state.goals),
-      GOAL_STATUS_LABELS[g.status] || g.status, (g.checkins || []).length, `${g.start || ""}~${g.end || ""}`]));
+      (g.checkins || []).length, `${g.start || ""}~${g.end || ""}`]));
   } else {
     out.push(["담당 목표가 없습니다."]);
   }
@@ -11147,9 +11144,6 @@ async function callAIPerformanceEval(employeeId, silent = false, cycleId = null)
           lines.push(`      ${datePart}${progPart}${notePart}`);
         });
       }
-      // 목표 상태
-      const statusMap = { onTrack: "순조로움", offTrack: "지연", done: "완료", notStarted: "미시작" };
-      if (goal.status) lines.push(`    목표 상태: ${statusMap[goal.status] || goal.status}`);
       return lines.join("\n");
     };
 
@@ -12972,20 +12966,16 @@ function buildMemberDetailWindowHTML(employeeId, options = {}) {
 .gc-tab-body{padding:12px 0;}
 .gc-ci{border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:8px;}
 .gc-ci-head{display:flex;justify-content:space-between;margin-bottom:4px;}
-.gc-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-bottom:6px;}
 </style>
 <script>
 var _goalsData = JSON.parse('${JSON.stringify(linkedGoalsMap).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,' ')}');
 var _gcActiveTab = 'checkin';
 var _gcCurrentGoalId = null;
 
-var _statusMap  = { onTrack:'순조로움', offTrack:'지연', done:'완료', notStarted:'미시작' };
 var _levelMap   = { personal:'개인', team:'팀', company:'회사' };
 var _approvalMap= { approved:'승인 완료', requested:'승인 대기', rejected:'반려', draft:'임시저장' };
-var _statusColor= { onTrack:'#16a34a', offTrack:'#ef4444', done:'#2563eb', notStarted:'#94a3b8' };
 
 function _gcProgress(g) {
-  if (g.status === 'done') return 100;
   if (g.metric && g.metric.targetValue !== g.metric.startValue) {
     var p = (g.metric.currentValue - g.metric.startValue) / (g.metric.targetValue - g.metric.startValue) * 100;
     return Math.max(0, Math.min(100, Math.round(p * 100) / 100));
@@ -12995,12 +12985,6 @@ function _gcProgress(g) {
 
 function _gcEsc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function _gcBadge(status) {
-  var label = _statusMap[status] || status || '';
-  var color = _statusColor[status] || '#94a3b8';
-  return '<span class="gc-badge" style="background:' + color + '22;color:' + color + ';">' + label + '</span>';
 }
 
 function _gcFmtDate(s) {
@@ -13025,7 +13009,6 @@ function _gcRenderTab(tab) {
     html = checkins.length ? checkins.map(function(c){
       return '<div class="gc-ci"><div class="gc-ci-head"><strong style="font-size:12px;color:#374151;">' + _gcEsc(c.writerName||c.by||'') + '</strong>'
         + '<span style="font-size:11px;color:#94a3b8;">' + _gcEsc(_gcFmtDate(c.at||c.date)) + '</span></div>'
-        + (c.status ? _gcBadge(c.status) : '')
         + (c.valueText ? '<div style="font-size:12px;color:#4b5563;margin-bottom:3px;">지표: ' + _gcEsc(c.valueText) + '</div>' : '')
         + (c.comment||c.note ? '<div style="font-size:12px;color:#4b5563;line-height:1.5;">' + _gcEsc(c.comment||c.note) + '</div>' : '')
         + ((c.attachments&&c.attachments.length) ? '<div style="margin-top:6px;">' + c.attachments.map(function(a){ return '<a href="'+a.data+'" download="'+_gcEsc(a.name)+'" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:#f1f5f9;border-radius:99px;font-size:11px;color:#374151;text-decoration:none;margin:2px 4px 2px 0;">📎 '+_gcEsc(a.name)+'</a>'; }).join('') + '</div>' : '')
@@ -13095,8 +13078,6 @@ function showGoalCard(goalId) {
     + '<div style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 14px;margin-bottom:16px;">'
     + infoRows.map(function(r){ return '<div class="gc-info-row"><span>' + r[0] + '</span><b>' + _gcEsc(r[1]) + '</b></div>'; }).join('')
     + '</div>'
-    + '<div style="font-weight:700;margin-bottom:8px;">현재 진행 상태</div>'
-    + (g.status ? _gcBadge(g.status) : '')
     + metricHtml
     + '<div class="gc-tab-bar">'
     + '<button class="gc-tab active" data-tab="checkin" onclick="_gcRenderTab(\\'checkin\\')">체크인 <span style="font-size:11px;background:#e2e8f0;border-radius:99px;padding:1px 7px;margin-left:3px;">' + checkins.length + '</span></button>'
@@ -19434,8 +19415,6 @@ const App = {
             <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?"반려":"임시 저장"}</b></div>
           </div>
         </div>
-        <div style="margin:14px 0 8px;font-weight:700;">현재 진행 상태</div>
-        <div>${goalStatusBadge(goal.status)}</div>
         ${goal.metric ? `
         <div class="component-card" style="margin-top:10px;">
           <strong>${esc(goal.metric.name)}</strong>
@@ -19447,7 +19426,6 @@ const App = {
         <div style="font-weight:700;margin:16px 0 6px;">체크인 기록</div>
         ${checkins.length ? checkins.map(ci => { const by=userById(ci.by); return `<div class="goal-checkin-item">
           <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
-          <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
           ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
           ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
           ${(ci.attachments||[]).length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${ci.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
@@ -19575,7 +19553,6 @@ const App = {
             end: get(C.end) || cycle.end,
             division: user.division || "",
             team: user.team || "",
-            status: "pending",
             metric,
             progress: 0,
             checkins: [],
@@ -19816,7 +19793,6 @@ const App = {
         end: draft.end || cycle.end,
         division: user.division || "",
         team: user.team || "",
-        status: "pending",
         weight: cartWeights[i],
         metric: draft.metric,
         progress: 0,
@@ -19921,7 +19897,6 @@ const App = {
   saveGoalCheckin(goalId) {
     const goal = state.goals.find(g => g.id === goalId);
     if (!goal) return;
-    const status = valueOf("checkin_status") || goal.status;
     const comment = (valueOf("checkin_comment") || "").trim();
     let valueText = "";
     if (goal.metric) {
@@ -19940,13 +19915,11 @@ const App = {
         goal.progress = clamped;
       }
     }
-    goal.status = status;
     goal.progress = computeGoalProgress(goal);
     goal.checkins.unshift({
       id: `ci-${Date.now()}`,
       by: currentUser().id,
       at: new Date().toISOString(),
-      status,
       valueText,
       comment,
       attachments: window._pendingCheckinAttachments || [],
@@ -20235,17 +20208,14 @@ function nextApproverForUser(user) {
   return null; // chairman: 승인 불필요
 }
 
-// 진행률 계산: 지표 있으면 (현재-시작)/(목표-시작), 없으면 상태 기반
+// 진행률 계산: 지표 있으면 (현재-시작)/(목표-시작), 없으면 체크인에서 직접 입력한 진행률
 function computeGoalProgress(goal) {
-  if (goal.status === "done") return 100;
   if (goal.metric && goal.metric.targetValue !== goal.metric.startValue) {
     const { startValue, targetValue, currentValue } = goal.metric;
     const pct = ((currentValue - startValue) / (targetValue - startValue)) * 100;
     return Math.max(0, Math.min(100, Math.round(pct * 100) / 100));
   }
-  // 지표 없으면 마지막 체크인의 수동 진행률 또는 상태 기반 추정
-  if (typeof goal.progress === "number" && goal.progress > 0) return goal.progress;
-  return goal.status === "onTrack" ? 0 : 0;
+  return typeof goal.progress === "number" ? goal.progress : 0;
 }
 
 // 부모 목표는 자식 평균 진행률
@@ -20318,12 +20288,6 @@ function goalScopeUserIds(user) {
   state.users.filter(u => u.division === user.division && u.team === user.team).forEach(u => ids.add(u.id));
   if (!teamLeads.length) state.users.filter(u => u.role === "divisionHead" && u.division === user.division).forEach(u => ids.add(u.id));
   return ids;
-}
-
-function goalStatusBadge(status) {
-  const label = GOAL_STATUS_LABELS[status] || status;
-  const color = GOAL_STATUS_COLORS[status] || "#6b7280";
-  return `<span class="pill" style="background:${color}1a;color:${color};border:1px solid ${color}55;">${label}</span>`;
 }
 
 function goalOwnerLabel(goal) {
@@ -20676,7 +20640,8 @@ function goalRowsHtml(list, allForProgress, user) {
         <span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">${GOAL_LEVEL_LABELS[goal.level]||""}</span>
         ${goal.weight != null ? `<span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">가중치 ${esc(goal.weight)}%</span>` : ""}
       </td>
-      <td>${goalStatusBadge(goal.status)}</td>
+      <td>${goal.metric ? `${esc(goal.metric.startValue)}${goal.metric.unit ? esc(goal.metric.unit) : ""}` : "-"}</td>
+      <td>${goal.metric ? `${esc(goal.metric.targetValue)}${goal.metric.unit ? esc(goal.metric.unit) : ""}` : "-"}</td>
       <td style="text-align:right;font-weight:700;">${prog}%</td>
       <td>${esc(goal.team || goal.division || (owner?.division) || "-")}</td>
       <td>${esc(owner?.name || "-")}</td>
@@ -20688,7 +20653,7 @@ function goalRowsHtml(list, allForProgress, user) {
 
 function goalTableShell(bodyHtml) {
   return `<div class="table-wrap" style="margin:6px 0 4px;"><table>
-    <thead><tr><th>목표</th><th>상태</th><th style="text-align:right;">진행률</th><th>담당 조직</th><th>담당자</th><th>기간</th><th></th></tr></thead>
+    <thead><tr><th>목표</th><th>현재 실적</th><th>목표 실적</th><th style="text-align:right;">진행률</th><th>담당 조직</th><th>담당자</th><th>기간</th><th></th></tr></thead>
     <tbody>${bodyHtml}</tbody></table></div>`;
 }
 
@@ -21080,9 +21045,6 @@ function renderGoalDetailPanel(goalId, user) {
           <strong>${esc(goal.title)}</strong>
           <p class="muted" style="font-size:12px;margin-top:4px;">${GOAL_LEVEL_LABELS[goal.level]} · ${esc(owner?.name||"")}${goal.weight != null ? ` · 가중치 ${esc(goal.weight)}%` : ""}</p>
         </div>
-        <div class="field"><label>상태 *</label>
-          <select id="checkin_status">${GOAL_STATUSES.map(s => `<option value="${s}" ${goal.status===s?"selected":""}>${GOAL_STATUS_LABELS[s]}</option>`).join("")}</select>
-        </div>
         ${goal.metric ? `
           <div class="field"><label>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""} (현재 값)</label>
             <input type="number" id="checkin_value" value="${esc(goal.metric.currentValue)}" />
@@ -21141,8 +21103,6 @@ function renderGoalDetailPanel(goalId, user) {
           </div>
         </div>
 
-        <div style="margin:14px 0 8px;font-weight:700;">현재 진행 상태</div>
-        <div>${goalStatusBadge(goal.status)}</div>
         ${goal.metric ? `
         <div class="component-card" style="margin-top:10px;">
           <strong>${esc(goal.metric.name)}</strong>
@@ -21172,7 +21132,6 @@ function renderGoalDetailPanel(goalId, user) {
               const ciFeedbacks = feedbacks.filter(fb => fb.checkinId === ci.id);
               return `<div class="goal-checkin-item" style="cursor:pointer;" onclick="App.openCheckinFeedback('${goal.id}','${ci.id}')">
                 <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
-                <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
                 ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
                 ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
                 ${(ci.attachments||[]).length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${ci.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" onclick="event.stopPropagation();" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
@@ -21241,7 +21200,6 @@ function renderCheckinFeedbackModal(user) {
           <p class="muted" style="font-size:12px;margin:0 0 10px;">${esc(goal.title)}</p>
           <div class="component-card">
             <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(checkin.at))}</span></div>
-            <div style="font-size:12px;margin-top:6px;"><span class="muted">상태</span> ${goalStatusBadge(checkin.status)}</div>
             ${checkin.valueText?`<div style="font-size:12px;margin-top:4px;"><span class="muted">지표</span> ${esc(checkin.valueText)}</div>`:""}
             ${checkin.comment?`<div style="font-size:13px;margin-top:8px;line-height:1.6;">${esc(checkin.comment)}</div>`:""}
             ${(checkin.attachments||[]).length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${checkin.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
@@ -21330,31 +21288,6 @@ function dashboardAvatar(u) {
   return `<div class="dash-avatar" style="background:${ROLE_COLORS[u.role] || "#374151"}">${esc((u.name || "?").slice(0, 2))}</div>`;
 }
 
-// 목표 상태 도넛
-function goalStatusDonut(goals) {
-  const total = goals.length;
-  const counts = Object.fromEntries(GOAL_STATUSES.map((s) => [s, 0]));
-  goals.forEach((g) => { counts[g.status] = (counts[g.status] || 0) + 1; });
-  let acc = 0;
-  const stops = [];
-  GOAL_STATUSES.forEach((s) => {
-    const c = counts[s];
-    if (!c) return;
-    const start = (acc / total) * 100;
-    acc += c;
-    const end = (acc / total) * 100;
-    stops.push(`${GOAL_STATUS_COLORS[s]} ${start}% ${end}%`);
-  });
-  const grad = stops.length ? `conic-gradient(${stops.join(",")})` : "var(--line)";
-  const legend = GOAL_STATUSES.filter((s) => counts[s]).map((s) =>
-    `<span class="dash-legend"><i style="background:${GOAL_STATUS_COLORS[s]}"></i>${GOAL_STATUS_LABELS[s]} ${counts[s]}</span>`).join("");
-  return `
-    <div class="dash-donut-wrap">
-      <div class="dash-donut" style="background:${grad}"><div class="dash-donut-hole"><span>총 ${total}개</span></div></div>
-      <div class="dash-legend-row">${legend || `<span class="muted">데이터 없음</span>`}</div>
-    </div>`;
-}
-
 // 대시보드 - 목표 섹션
 function renderDashboardGoalModal(user) {
   const goalId = state.ui.dashboardGoalDetailId;
@@ -21376,7 +21309,6 @@ function renderDashboardGoalModal(user) {
       const by = userById(ci.by);
       return `<div class="goal-checkin-item">
         <div style="display:flex;justify-content:space-between;"><strong>${esc(by?.name||"")}</strong><span class="muted" style="font-size:11px;">${esc(formatDateTime(ci.at))}</span></div>
-        <div style="font-size:12px;margin-top:4px;"><span class="muted">상태</span> ${goalStatusBadge(ci.status)}</div>
         ${ci.valueText?`<div style="font-size:12px;margin-top:2px;"><span class="muted">지표</span> ${esc(ci.valueText)}</div>`:""}
         ${ci.comment?`<div style="font-size:12px;margin-top:4px;line-height:1.5;">${esc(ci.comment)}</div>`:""}
         ${(ci.attachments||[]).length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${ci.attachments.map(a => `<a href="${a.data}" download="${esc(a.name)}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--surface-2);border-radius:99px;font-size:11px;color:var(--text);text-decoration:none;">📎 ${esc(a.name)}</a>`).join("")}</div>` : ""}
@@ -21425,8 +21357,6 @@ function renderDashboardGoalModal(user) {
             </div>
           </div>
 
-          <div style="margin:14px 0 8px;font-weight:700;">현재 진행 상태</div>
-          <div>${goalStatusBadge(goal.status)}</div>
           ${goal.metric ? `
           <div class="component-card" style="margin-top:10px;">
             <strong>${esc(goal.metric.name)}</strong>
@@ -21456,10 +21386,9 @@ function renderDashboardGoalsSection(target) {
       <div class="panel-head"><div><h2>🎯 목표</h2></div></div>
       <div class="panel-body">
         ${!goals.length ? `<div class="empty" style="padding:24px;">담당 목표가 없습니다.</div>` : `
-          ${goalStatusDonut(goals)}
           <div class="table-wrap" style="margin-top:14px;">
             <table>
-              <thead><tr><th>목표</th><th>진행률</th><th>상태</th><th>체크인</th><th>레벨</th><th>사이클</th></tr></thead>
+              <thead><tr><th>목표</th><th>진행률</th><th>체크인</th><th>레벨</th><th>사이클</th></tr></thead>
               <tbody>
                 ${goals.map((g) => {
                   const prog = goalDisplayProgress(g, allForProgress);
@@ -21470,7 +21399,6 @@ function renderDashboardGoalsSection(target) {
                   return `<tr style="cursor:pointer;" onclick="App.openDashboardGoalDetail('${g.id}')" title="클릭하여 목표 상세 보기">
                     <td><strong style="color:var(--primary);">${esc(g.title)}</strong></td>
                     <td><div class="bar" style="min-width:90px;"><span style="width:${prog}%;"></span></div><span class="muted" style="font-size:11px;">${prog}%</span></td>
-                    <td>${goalStatusBadge(g.status)}</td>
                     <td>${(g.checkins || []).length}개</td>
                     <td>${GOAL_LEVEL_LABELS[g.level] || "-"}</td>
                     <td>${cycleInfo}</td>
