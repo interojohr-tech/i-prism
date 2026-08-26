@@ -19275,14 +19275,34 @@ const App = {
       return goal;
     };
 
+    // 상위 목표 후보 배열을 순환(round-robin)하며 하나씩 골라주는 함수를 만든다.
+    // 무작위 선택 대신 순환 방식을 쓰는 이유: 상위 목표 개수가 적을 때(예: 사장 3~4개)
+    // 무작위로는 특정 상위 목표에 하위 목표가 하나도 안 달릴 수 있는데, 이 순환 방식은
+    // 여러 하위 조직(예: 같은 본부의 팀장들)이 같은 상위 목표 세트를 나눠 물려받으므로
+    // 하나의 카운터를 공유해야 상위 목표들에 하위 목표가 고르게 분산된다.
+    const makeParentPicker = (pool) => {
+      const list = pool || [];
+      let i = 0;
+      return () => {
+        if (!list.length) return null;
+        const p = list[i % list.length];
+        i++;
+        return p;
+      };
+    };
+
     // 한 사람 몫의 목표 3~4개를 한 번에 생성 — 가중치 합은 항상 100이 되도록 배분하고,
-    // 반환값의 첫 번째 목표를 하위 조직이 연결할 "대표 목표"로 사용한다.
-    const makeGoalSet = (owner, level, parentId, titlePool, metricChance = 1) => {
+    // 목표 하나하나가 parentPicker()로 상위 목표 세트 중 하나씩을 골라 연결된다(전부 한
+    // 상위 목표로 몰리지 않도록).
+    const makeGoalSet = (owner, level, parentPicker, titlePool, metricChance = 1) => {
       const count = rnd(3, 4);
       const weights = randomWeights(count);
       const pool = titlePool.length >= count ? titlePool : Array.from({ length: count }, (_, i) => titlePool[i % titlePool.length]);
       const titles = shuffle(pool).slice(0, count);
-      return titles.map((title, i) => makeGoal(owner, level, parentId, title, weights[i], Math.random() < metricChance));
+      return titles.map((title, i) => {
+        const parent = parentPicker ? parentPicker() : null;
+        return makeGoal(owner, level, parent?.id || "", title, weights[i], Math.random() < metricChance);
+      });
     };
 
     const users = state.users.filter(u => u.role !== "admin" && u.active !== false);
@@ -19292,31 +19312,45 @@ const App = {
     const teamLeads = users.filter(u => u.role === "teamLead");
     const members = users.filter(u => u.role === "member");
 
-    // 회장 → 사장 → 본부장 → 팀장 → 팀원 계층 목표 (각자 3~4개씩, 대표 목표로 하위 조직과 연결)
-    let chairPrimary = null, presPrimary = null;
-    if (chairman) chairPrimary = makeGoalSet(chairman, "company", "", companyGoalTitles)[0];
-    if (president) presPrimary = makeGoalSet(president, "company", chairPrimary?.id || "", companyGoalTitles)[0];
+    // 회장 → 사장 → 본부장 → 팀장 → 팀원 계층 목표 (각자 3~4개씩, 상위 목표 세트 전체에
+    // 고르게 분산 연결)
+    const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles) : [];
+    const presGoals = president ? makeGoalSet(president, "company", makeParentPicker(chairGoals), companyGoalTitles) : [];
+    const topGoals = presGoals.length ? presGoals : chairGoals;
 
-    const divPrimaryByDivision = {};
+    const divParentPicker = makeParentPicker(topGoals);
+    const divGoalsByDivision = {};
     divisionHeads.forEach(head => {
       const divName = head.division || "본부";
       const pool = [`${divName} 운영 효율화`, `${divName} 핵심 과제 추진`, `${divName} 인력 운영 최적화`, `${divName} 예산 효율화`];
-      divPrimaryByDivision[head.division] = makeGoalSet(head, "division", presPrimary?.id || chairPrimary?.id || "", pool)[0];
+      divGoalsByDivision[head.division] = makeGoalSet(head, "division", divParentPicker, pool);
     });
 
-    const teamPrimaryByLeader = {};
+    // 같은 본부의 팀장들은 그 본부장의 목표 세트를 나눠 물려받도록 본부별로 순환 피커를 하나씩 공유
+    const teamParentPickerByDivision = {};
+    divisionHeads.forEach(head => {
+      const divGoals = divGoalsByDivision[head.division] || [];
+      teamParentPickerByDivision[head.division] = makeParentPicker(divGoals.length ? divGoals : topGoals);
+    });
+    const teamGoalsByLeader = {};
     teamLeads.forEach(lead => {
-      const parent = divPrimaryByDivision[lead.division];
+      const picker = teamParentPickerByDivision[lead.division] || divParentPicker;
       const teamName = lead.team || lead.division || "팀";
       const pool = [`${teamName} 운영 목표 달성`, `${teamName} 핵심 지표 개선`, `${teamName} 협업 프로세스 개선`, `${teamName} 역량 강화`];
-      teamPrimaryByLeader[lead.id] = makeGoalSet(lead, "team", parent?.id || presPrimary?.id || "", pool)[0];
+      teamGoalsByLeader[lead.id] = makeGoalSet(lead, "team", picker, pool);
     });
 
-    // 팀원: 본인 팀의 팀장 대표 목표를 상위로
+    // 같은 팀의 팀원들은 그 팀장의 목표 세트를 나눠 물려받도록 팀장별로 순환 피커를 하나씩 공유
+    const memberParentPickerByLeader = {};
+    teamLeads.forEach(lead => {
+      const teamGoals = teamGoalsByLeader[lead.id] || [];
+      const fallback = divGoalsByDivision[lead.division] || topGoals;
+      memberParentPickerByLeader[lead.id] = makeParentPicker(teamGoals.length ? teamGoals : fallback);
+    });
     members.forEach(m => {
       const lead = teamLeads.find(l => l.division === m.division && l.team === m.team);
-      const parent = lead ? teamPrimaryByLeader[lead.id] : (divPrimaryByDivision[m.division] || presPrimary);
-      makeGoalSet(m, "individual", parent?.id || "", memberGoalTitles, 0.8);
+      const picker = lead ? memberParentPickerByLeader[lead.id] : (teamParentPickerByDivision[m.division] || divParentPicker);
+      makeGoalSet(m, "individual", picker, memberGoalTitles, 0.8);
     });
 
     invalidateCycleCache();
