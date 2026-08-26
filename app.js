@@ -19291,11 +19291,10 @@ const App = {
       };
     };
 
-    // 한 사람 몫의 목표 3~4개를 한 번에 생성 — 가중치 합은 항상 100이 되도록 배분하고,
+    // 한 사람 몫의 목표를 count개 한 번에 생성 — 가중치 합은 항상 100이 되도록 배분하고,
     // 목표 하나하나가 parentPicker()로 상위 목표 세트 중 하나씩을 골라 연결된다(전부 한
     // 상위 목표로 몰리지 않도록).
-    const makeGoalSet = (owner, level, parentPicker, titlePool, metricChance = 1) => {
-      const count = rnd(3, 4);
+    const makeGoalSet = (owner, level, parentPicker, titlePool, count, metricChance = 1) => {
       const weights = randomWeights(count);
       const pool = titlePool.length >= count ? titlePool : Array.from({ length: count }, (_, i) => titlePool[i % titlePool.length]);
       const titles = shuffle(pool).slice(0, count);
@@ -19312,10 +19311,41 @@ const App = {
     const teamLeads = users.filter(u => u.role === "teamLead");
     const members = users.filter(u => u.role === "member");
 
-    // 회장 → 사장 → 본부장 → 팀장 → 팀원 계층 목표 (각자 3~4개씩, 상위 목표 세트 전체에
-    // 고르게 분산 연결)
-    const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles) : [];
-    const presGoals = president ? makeGoalSet(president, "company", makeParentPicker(chairGoals), companyGoalTitles) : [];
+    // ── 1단계: 목표 개수를 하위 조직부터 거슬러 올라가며 미리 정한다. 회사/본부/팀
+    // 레벨 목표는 반드시 하위 목표가 있어야 하므로, 실제로 물려받을 하위 목표 총량
+    // (available)보다 많은 개수를 만들면 안 된다(그래야 순환 배분 시 빈 목표가 안 생김).
+    // 하위 조직 인원이 있으면 그 인원의 목표 개수가 최소 3개씩이라 available은 항상
+    // 0 또는 3 이상이 되고, 3~4개라는 기본 규칙도 그대로 지켜진다. 하위 조직이 아예
+    // 없는 사람(예: 소속원이 하나도 없는 팀장)은 채울 방법이 없어 그냥 3~4개로 둔다.
+    const cap = (available) => (available > 0 ? Math.min(rnd(3, 4), available) : rnd(3, 4));
+
+    const memberCount = new Map(members.map(m => [m.id, rnd(3, 4)]));
+
+    const teamLeadCount = new Map();
+    teamLeads.forEach(lead => {
+      const matched = members.filter(m => m.division === lead.division && m.team === lead.team);
+      const available = matched.reduce((s, m) => s + memberCount.get(m.id), 0);
+      teamLeadCount.set(lead.id, cap(available));
+    });
+
+    const divisionHeadCount = new Map();
+    divisionHeads.forEach(head => {
+      const leadsInDiv = teamLeads.filter(l => l.division === head.division);
+      const strayMembers = members.filter(m => m.division === head.division && !leadsInDiv.some(l => l.team === m.team));
+      const available = leadsInDiv.reduce((s, l) => s + teamLeadCount.get(l.id), 0)
+        + strayMembers.reduce((s, m) => s + memberCount.get(m.id), 0);
+      divisionHeadCount.set(head.division, cap(available));
+    });
+
+    const presidentAvailable = divisionHeads.reduce((s, h) => s + divisionHeadCount.get(h.division), 0);
+    const presidentGoalCount = president ? cap(presidentAvailable) : 0;
+    const chairmanAvailable = president ? presidentGoalCount : presidentAvailable;
+    const chairmanGoalCount = chairman ? cap(chairmanAvailable) : 0;
+
+    // ── 2단계: 위에서 정한 개수대로 회장 → 사장 → 본부장 → 팀장 → 팀원 순서로 실제
+    // 목표를 생성하고, 상위 목표 세트 전체에 고르게 분산 연결한다.
+    const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles, chairmanGoalCount) : [];
+    const presGoals = president ? makeGoalSet(president, "company", makeParentPicker(chairGoals), companyGoalTitles, presidentGoalCount) : [];
     const topGoals = presGoals.length ? presGoals : chairGoals;
 
     const divParentPicker = makeParentPicker(topGoals);
@@ -19323,7 +19353,7 @@ const App = {
     divisionHeads.forEach(head => {
       const divName = head.division || "본부";
       const pool = [`${divName} 운영 효율화`, `${divName} 핵심 과제 추진`, `${divName} 인력 운영 최적화`, `${divName} 예산 효율화`];
-      divGoalsByDivision[head.division] = makeGoalSet(head, "division", divParentPicker, pool);
+      divGoalsByDivision[head.division] = makeGoalSet(head, "division", divParentPicker, pool, divisionHeadCount.get(head.division));
     });
 
     // 같은 본부의 팀장들은 그 본부장의 목표 세트를 나눠 물려받도록 본부별로 순환 피커를 하나씩 공유
@@ -19337,7 +19367,7 @@ const App = {
       const picker = teamParentPickerByDivision[lead.division] || divParentPicker;
       const teamName = lead.team || lead.division || "팀";
       const pool = [`${teamName} 운영 목표 달성`, `${teamName} 핵심 지표 개선`, `${teamName} 협업 프로세스 개선`, `${teamName} 역량 강화`];
-      teamGoalsByLeader[lead.id] = makeGoalSet(lead, "team", picker, pool);
+      teamGoalsByLeader[lead.id] = makeGoalSet(lead, "team", picker, pool, teamLeadCount.get(lead.id));
     });
 
     // 같은 팀의 팀원들은 그 팀장의 목표 세트를 나눠 물려받도록 팀장별로 순환 피커를 하나씩 공유
@@ -19350,8 +19380,24 @@ const App = {
     members.forEach(m => {
       const lead = teamLeads.find(l => l.division === m.division && l.team === m.team);
       const picker = lead ? memberParentPickerByLeader[lead.id] : (teamParentPickerByDivision[m.division] || divParentPicker);
-      makeGoalSet(m, "individual", picker, memberGoalTitles, 0.8);
+      makeGoalSet(m, "individual", picker, memberGoalTitles, memberCount.get(m.id), 0.8);
     });
+
+    // 안전망: 그래도 빈 목표가 남으면(계산이 실제 배분과 어긋난 경우 대비) 같은 사람의
+    // 다른 목표 중 하위 목표가 2개 이상인 곳에서 하나 옮겨와 채운다. 하위 조직 자체가
+    // 없는 사람은 채울 대상이 없어 예외로 남는다.
+    const childrenOf = (goalId) => state.goals.filter(g => g.cycleId === cycle.id && g.parentGoalId === goalId);
+    const fillEmptyGoalsFromSiblings = (ownerId) => {
+      const ownerGoals = state.goals.filter(g => g.cycleId === cycle.id && g.ownerId === ownerId);
+      if (ownerGoals.length < 2) return;
+      ownerGoals.filter(g => childrenOf(g.id).length === 0).forEach(emptyGoal => {
+        const donor = ownerGoals.find(g => childrenOf(g.id).length > 1);
+        if (!donor) return;
+        const donorChildren = childrenOf(donor.id);
+        donorChildren[donorChildren.length - 1].parentGoalId = emptyGoal.id;
+      });
+    };
+    [chairman, president, ...divisionHeads, ...teamLeads].filter(Boolean).forEach(owner => fillEmptyGoalsFromSiblings(owner.id));
 
     invalidateCycleCache();
     saveState();
