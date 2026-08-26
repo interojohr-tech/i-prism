@@ -19198,13 +19198,28 @@ const App = {
 
     const rnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-    const STATUSES = ["onTrack", "onTrack", "onTrack", "atRisk", "done", "pending"];
+    const shuffle = arr => arr.map(v => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+    // 한 사람의 목표들이 항상 가중치 합 100이 되도록 무작위 배분(마지막 항목이 반올림 오차를 흡수)
+    const randomWeights = (n) => {
+      const raw = Array.from({ length: n }, () => rnd(10, 40));
+      const total = raw.reduce((a, b) => a + b, 0);
+      const scaled = raw.map(v => Math.round((v / total) * 100));
+      scaled[scaled.length - 1] += 100 - scaled.reduce((a, b) => a + b, 0);
+      return scaled;
+    };
+
     const memberGoalTitles = [
       "담당 업무 프로세스 개선", "고객 응대 만족도 향상", "데이터 정확도 제고",
       "월간 처리 건수 향상", "업무 자동화 도입", "품질 불량률 감소",
       "보고서 작성 리드타임 단축", "재고 정확도 향상", "교육 이수 완료",
     ];
-    const metricNames = ["만족도 점수", "처리 건수", "정확도(%)", "리드타임(일)", "불량률(%)", "달성률(%)"];
+    const companyGoalTitles = ["전사 비전 달성 및 지속 성장", "매출 성장 및 수익성 확보", "신사업 발굴 추진", "조직 문화 혁신"];
+    const metricDefs = [
+      { name: "만족도 점수", unit: "점" }, { name: "처리 건수", unit: "건" },
+      { name: "정확도", unit: "%" }, { name: "리드타임", unit: "일" },
+      { name: "불량률", unit: "%" }, { name: "달성률", unit: "%" },
+      { name: "매출액", unit: "억원" },
+    ];
     const checkinComments = [
       "계획대로 순조롭게 진행 중입니다.", "일부 지연이 있으나 만회 가능합니다.",
       "유관 부서 협조가 필요합니다.", "목표 대비 초과 달성했습니다.",
@@ -19216,10 +19231,11 @@ const App = {
     ];
 
     const today = new Date().toISOString();
-    const makeGoal = (owner, level, parentId, title, withMetric) => {
-      const status = pick(STATUSES);
+    const makeGoal = (owner, level, parentId, title, weight, withMetric) => {
       const startV = rnd(0, 30), targetV = rnd(70, 100);
-      let curV = status === "done" ? targetV : status === "pending" ? startV : rnd(startV, targetV);
+      const progressPct = rnd(0, 100); // 완료/진행중/시작 전 등 다양한 진척도를 흉내내는 임의 진행률
+      const def = withMetric ? pick(metricDefs) : null;
+      const curV = withMetric ? Math.round(startV + (targetV - startV) * (progressPct / 100)) : null;
       const goal = {
         id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         cycleId: cycle.id,
@@ -19230,23 +19246,23 @@ const App = {
         description: `${title} 관련 ${cycle.name} 목표입니다.`,
         start: cycle.start, end: cycle.end,
         division: owner.division || "", team: owner.team || "",
-        status,
-        metric: withMetric ? { name: pick(metricNames), startValue: startV, targetValue: targetV, currentValue: curV } : null,
-        progress: 0,
+        weight,
+        metric: withMetric ? { name: def.name, unit: def.unit, lastYearValue: null, startValue: startV, targetValue: targetV, currentValue: curV } : null,
+        progress: withMetric ? 0 : progressPct,
         checkins: [], feedbacks: [],
-        approvalStatus: cycle.approvalEnabled ? "approved" : "approved",
+        approvalStatus: "approved",
         approverId: nextApproverForUser(owner)?.id || "",
         approvedAt: today,
         createdAt: today,
       };
       goal.progress = computeGoalProgress(goal);
       // 체크인 1~2개
-      const ciCount = status === "pending" ? 0 : rnd(1, 2);
+      const ciCount = rnd(1, 2);
       for (let i = 0; i < ciCount; i++) {
         goal.checkins.unshift({
           id: `ci-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          by: owner.id, at: today, status,
-          valueText: withMetric ? `${startV} → ${curV}` : "",
+          by: owner.id, at: today,
+          valueText: withMetric ? `${startV}${def.unit || ""} → ${curV}${def.unit || ""}` : `진행률 ${goal.progress}%`,
           comment: pick(checkinComments),
         });
       }
@@ -19259,6 +19275,16 @@ const App = {
       return goal;
     };
 
+    // 한 사람 몫의 목표 3~4개를 한 번에 생성 — 가중치 합은 항상 100이 되도록 배분하고,
+    // 반환값의 첫 번째 목표를 하위 조직이 연결할 "대표 목표"로 사용한다.
+    const makeGoalSet = (owner, level, parentId, titlePool, metricChance = 1) => {
+      const count = rnd(3, 4);
+      const weights = randomWeights(count);
+      const pool = titlePool.length >= count ? titlePool : Array.from({ length: count }, (_, i) => titlePool[i % titlePool.length]);
+      const titles = shuffle(pool).slice(0, count);
+      return titles.map((title, i) => makeGoal(owner, level, parentId, title, weights[i], Math.random() < metricChance));
+    };
+
     const users = state.users.filter(u => u.role !== "admin" && u.active !== false);
     const president = users.find(u => u.role === "president");
     const chairman = users.find(u => u.role === "chairman");
@@ -19266,32 +19292,31 @@ const App = {
     const teamLeads = users.filter(u => u.role === "teamLead");
     const members = users.filter(u => u.role === "member");
 
-    // 회장 → 사장 → 본부장 → 팀장 → 팀원 계층 목표
-    let chairGoal = null, presGoal = null;
-    if (chairman) chairGoal = makeGoal(chairman, "company", "", "전사 비전 달성 및 지속 성장", true);
-    if (president) presGoal = makeGoal(president, "company", chairGoal?.id || "", "매출 성장 및 수익성 확보", true);
+    // 회장 → 사장 → 본부장 → 팀장 → 팀원 계층 목표 (각자 3~4개씩, 대표 목표로 하위 조직과 연결)
+    let chairPrimary = null, presPrimary = null;
+    if (chairman) chairPrimary = makeGoalSet(chairman, "company", "", companyGoalTitles)[0];
+    if (president) presPrimary = makeGoalSet(president, "company", chairPrimary?.id || "", companyGoalTitles)[0];
 
-    const divGoalByDivision = {};
+    const divPrimaryByDivision = {};
     divisionHeads.forEach(head => {
-      const g = makeGoal(head, "division", presGoal?.id || chairGoal?.id || "", `${head.division || "본부"} 운영 효율화`, true);
-      divGoalByDivision[head.division] = g;
+      const divName = head.division || "본부";
+      const pool = [`${divName} 운영 효율화`, `${divName} 핵심 과제 추진`, `${divName} 인력 운영 최적화`, `${divName} 예산 효율화`];
+      divPrimaryByDivision[head.division] = makeGoalSet(head, "division", presPrimary?.id || chairPrimary?.id || "", pool)[0];
     });
 
-    const teamGoalByLeader = {};
+    const teamPrimaryByLeader = {};
     teamLeads.forEach(lead => {
-      const parent = divGoalByDivision[lead.division];
-      const g = makeGoal(lead, "team", parent?.id || presGoal?.id || "", `${lead.team || lead.division || "팀"} 운영 목표 달성`, true);
-      teamGoalByLeader[lead.id] = g;
+      const parent = divPrimaryByDivision[lead.division];
+      const teamName = lead.team || lead.division || "팀";
+      const pool = [`${teamName} 운영 목표 달성`, `${teamName} 핵심 지표 개선`, `${teamName} 협업 프로세스 개선`, `${teamName} 역량 강화`];
+      teamPrimaryByLeader[lead.id] = makeGoalSet(lead, "team", parent?.id || presPrimary?.id || "", pool)[0];
     });
 
-    // 팀원: 본인 팀의 팀장 목표를 상위로
+    // 팀원: 본인 팀의 팀장 대표 목표를 상위로
     members.forEach(m => {
       const lead = teamLeads.find(l => l.division === m.division && l.team === m.team);
-      const parent = lead ? teamGoalByLeader[lead.id] : (divGoalByDivision[m.division] || presGoal);
-      const cnt = rnd(1, 2);
-      for (let i = 0; i < cnt; i++) {
-        makeGoal(m, "individual", parent?.id || "", pick(memberGoalTitles), Math.random() < 0.8);
-      }
+      const parent = lead ? teamPrimaryByLeader[lead.id] : (divPrimaryByDivision[m.division] || presPrimary);
+      makeGoalSet(m, "individual", parent?.id || "", memberGoalTitles, 0.8);
     });
 
     invalidateCycleCache();
