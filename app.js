@@ -19446,6 +19446,8 @@ const App = {
           }
         }
       }
+      // 목표 가중치를 그대로 가져와 업적 가중치 칸에 채워 넣는다(항상 덮어씀).
+      if (goal.weight != null) ach.weight = goal.weight;
     }
     state.ui.goalLinkPicker = null;
     saveState();
@@ -19510,6 +19512,7 @@ const App = {
           <strong style="font-size:15px;">${esc(goal.title)}</strong>
           <div class="goal-info-rows">
             <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+            <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
             <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
             <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
             <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
@@ -21306,6 +21309,7 @@ function renderDashboardGoalModal(user) {
             <strong style="font-size:15px;">${esc(goal.title)}</strong>
             <div class="goal-info-rows">
               <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+              <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
               <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
               <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
               <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
