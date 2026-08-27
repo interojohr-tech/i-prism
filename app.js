@@ -20594,7 +20594,7 @@ function goalRowsHtml(list, allForProgress, user) {
         <span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">${GOAL_LEVEL_LABELS[goal.level]||""}</span>
         ${goal.weight != null ? `<span class="pill" style="margin-left:6px;font-size:10px;background:var(--surface-2);color:var(--muted);">가중치 ${esc(goal.weight)}%</span>` : ""}
       </td>
-      <td>${goal.metric ? `${esc(goal.metric.startValue)}${goal.metric.unit ? esc(goal.metric.unit) : ""}` : "-"}</td>
+      <td>${goal.metric ? `${esc(goal.metric.currentValue)}${goal.metric.unit ? esc(goal.metric.unit) : ""}` : "-"}</td>
       <td>${goal.metric ? `${esc(goal.metric.targetValue)}${goal.metric.unit ? esc(goal.metric.unit) : ""}` : "-"}</td>
       <td style="text-align:right;font-weight:700;">${prog}%</td>
       <td>${esc(goal.team || goal.division || (owner?.division) || "-")}</td>
