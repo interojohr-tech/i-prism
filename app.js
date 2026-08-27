@@ -19511,16 +19511,14 @@ const App = {
         <div class="component-card">
           <strong style="font-size:15px;">${esc(goal.title)}</strong>
           <div class="goal-info-rows">
-            <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
-            <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
-            <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
-            <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
-            <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
-            <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
-            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
-            <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?"반려":"임시 저장"}</b></div>
+            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
+            <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+            <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
+            <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
           </div>
         </div>
         ${goal.metric ? `
@@ -21053,16 +21051,14 @@ function renderGoalDetailPanel(goalId, user) {
             ${isOwner && !goal.deleteRequest ? `<div class="toolbar"><button class="button sm secondary" onclick="App.openGoalEdit('${goal.id}')">수정</button><button class="button sm danger" onclick="App.deleteGoal('${goal.id}')">삭제</button></div>` : ""}
           </div>
           <div class="goal-info-rows">
-            <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
-            <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
-            <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
-            <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
-            <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
-            <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
-            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
-            <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?("반려"+(goal.rejectReason?` (${esc(goal.rejectReason)})`:"")):"임시 저장"}</b></div>
+            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
+            <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+            <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
+            <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
             <div><span>공개 범위</span><b>${goal.visibility==="partial"?`일부 공개${goalVisibleNames(goal)?` · ${esc(goalVisibleNames(goal))}`:""}`:"전체 공개"}</b></div>
           </div>
         </div>
@@ -21308,16 +21304,14 @@ function renderDashboardGoalModal(user) {
           <div class="component-card">
             <strong style="font-size:15px;">${esc(goal.title)}</strong>
             <div class="goal-info-rows">
-              <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
-              <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
-              <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
-              <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
-              <div><span>기간</span><b>${esc(goal.start||"-")} ~ ${esc(goal.end||"-")}</b></div>
-              <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
               <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
-              ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+              <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
               <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
-              <div><span>승인 상태</span><b>${goal.approvalStatus==="approved"?"승인 완료":goal.approvalStatus==="requested"?"승인 대기":goal.approvalStatus==="rejected"?("반려"+(goal.rejectReason?` (${esc(goal.rejectReason)})`:"")):"임시 저장"}</b></div>
+              ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+              <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
+              <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
+              <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
+              <div><span>목표 사이클</span><b>${esc(cycle?.name||"-")}</b></div>
               <div><span>공개 범위</span><b>${goal.visibility==="partial"?`일부 공개${goalVisibleNames(goal)?` · ${esc(goalVisibleNames(goal))}`:""}`:"전체 공개"}</b></div>
             </div>
           </div>
