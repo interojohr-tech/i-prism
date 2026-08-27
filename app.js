@@ -20177,10 +20177,17 @@ function computeGoalProgress(goal) {
 
 // 부모 목표는 자식 평균 진행률
 function goalDisplayProgress(goal, allGoals) {
-  const children = allGoals.filter(g => g.parentGoalId === goal.id);
-  if (children.length) {
-    const avg = children.reduce((s, c) => s + goalDisplayProgress(c, allGoals), 0) / children.length;
-    return Math.round(avg * 100) / 100;
+  // 목표 자체에 정량 지표가 있거나 체크인 이력이 있으면(=자체적으로 실적을 추적 중이면)
+  // 그 값을 그대로 쓴다. 하위 목표 평균으로 덮어써 버리면 화면에 보이는 "시작/목표/현재값"과
+  // 진행률이 서로 안 맞아 보이는 문제가 생기기 때문. 하위 목표 평균은 자체 추적 데이터가
+  // 전혀 없는 순수 컨테이너성 목표(회사/본부/팀 레벨에서 지표 없이 하위만 집계하는 경우)에만 쓴다.
+  const hasOwnData = Boolean(goal.metric) || (goal.checkins && goal.checkins.length > 0);
+  if (!hasOwnData) {
+    const children = allGoals.filter(g => g.parentGoalId === goal.id);
+    if (children.length) {
+      const avg = children.reduce((s, c) => s + goalDisplayProgress(c, allGoals), 0) / children.length;
+      return Math.round(avg * 100) / 100;
+    }
   }
   return computeGoalProgress(goal);
 }
