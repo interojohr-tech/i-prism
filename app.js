@@ -2717,7 +2717,9 @@ const JOB_DESC_FIELDS = [
   ["requiredKnowledge", "필요지식, 기술"], ["qualifications", "자격요건(업무경력, 전공 등)"],
 ];
 const JOB_DESC_LONG_FIELDS = ["purpose", "coreTasks", "keyOutputs", "requiredKnowledge", "qualifications"];
-const JOB_POSITION_LEVEL_LABELS = { division: "본부", team: "팀", member: "팀원" };
+const JOB_POSITION_LEVEL_LABELS = { company: "회사", division: "본부", team: "팀", member: "팀원" };
+// 회장/사장 같은 회사 레벨 포지션은 직무기술서 작성 의무가 없다(공석·미작성이어도 정상).
+const JOB_DESC_OPTIONAL_LEVELS = ["company"];
 
 function jobPositionForUser(user) {
   return state.jobPositions.find(p => p.occupantUserId === user.id) || null;
@@ -2818,10 +2820,12 @@ function renderJobPositionAddModal() {
           <div class="field"><label>포지션명 <span style="color:var(--red)">*</span></label><input id="jobpos_name" placeholder="예) 인사총무팀원3" /></div>
           <div class="field"><label>레벨</label>
             <select id="jobpos_level">
+              <option value="company">회사</option>
               <option value="division">본부</option>
               <option value="team">팀</option>
               <option value="member" selected>팀원</option>
             </select>
+            <span class="muted" style="font-size:11px;">"회사" 레벨(회장·사장 등)은 직무기술서 작성이 필수가 아닙니다.</span>
           </div>
         </div>
         <div class="goal-modal-foot">
@@ -2899,7 +2903,7 @@ function renderJobDescModal(user) {
           </div>
           ${mode === "review" && pos.pendingEdit ? `<div class="notice info" style="font-size:12px;margin-bottom:10px;">${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}님이 ${esc(formatDateTime(pos.pendingEdit.editedAt))}에 제출한 변경 제안입니다.</div>` : ""}
           ${source ? JOB_DESC_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="white-space:pre-wrap;margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")
-            : `<div class="empty">아직 작성된 직무기술서가 없습니다.</div>`}
+            : `<div class="empty">${JOB_DESC_OPTIONAL_LEVELS.includes(pos.level) ? "이 포지션은 직무기술서 작성이 필요하지 않습니다." : "아직 작성된 직무기술서가 없습니다."}</div>`}
         </div>
         <div class="goal-modal-foot">
           ${mode === "review"
