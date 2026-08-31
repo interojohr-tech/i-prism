@@ -203,6 +203,7 @@ const TAB_LABELS = {
   myDashboard: "나의 성장 기록",
   memberDashboard: "구성원 성장 기록",
   evalDashboard: "평가 운영 현황",
+  goalDashboard: "목표 운영 현황",
   notices: "공지사항 관리",
   resourceLibrary: "참고자료 관리",
   auditLog: "감사 로그",
@@ -216,6 +217,7 @@ const TAB_ICONS = {
   goals: "🎯", goalApproval: "🗂️", goalCycles: "🔄",
   myDashboard: "📒", memberDashboard: "📊",
   evalDashboard: "📊",
+  goalDashboard: "📊",
   notices: "📢",
   resourceLibrary: "📚",
   auditLog: "🛡️",
@@ -241,6 +243,7 @@ const SITEMAP_TAB_DESC = {
   admin:           "평가 사이클을 생성·설정하고 진행 전반을 관리하는 어드민 전용 화면입니다.",
   organization:    "조직도·계정·발령 등 조직 정보를 관리하는 어드민 전용 화면입니다.",
   evalDashboard:   "전체 평가 진행 현황과 통계를 모아보는 어드민 전용 화면입니다.",
+  goalDashboard:   "회사 레벨 목표별 하위 목표 현황과 달성률 저조 목표를 모아보는 관리자_목표관리 전용 화면입니다.",
   notices:         "전 직원 대상 공지사항을 작성·관리하는 어드민 전용 화면입니다.",
   resourceLibrary: "AI 피드백에 추천할 자기개발 참고자료(교육·도서·아티클 등)를 등록·관리하는 어드민 전용 화면입니다.",
 };
@@ -259,7 +262,7 @@ const SITEMAP_SECTIONS = [
 function getSiteMapTabs(role) {
   // 관리자_목표관리는 목표 관리·공지사항 관리만 쓰는 별도 계정이라 다른 역할과
   // 공통되는 아래 누적 로직(home/myDashboard 등)을 전부 건너뛴다.
-  if (role === "goalAdmin") return ["goals", "notices"];
+  if (role === "goalAdmin") return ["goals", "goalDashboard", "notices"];
   const tabs = role === "admin" ? [] : ["home"];
   if (EVALUATEE_ROLES.includes(role)) tabs.push("self");
   if (["president", "chairman", "divisionHead", "teamLead", "member"].includes(role)) tabs.push("tasks");
@@ -1725,7 +1728,7 @@ function buildNavSections(tabs, user) {
   const sections = [];
   // ── 관리자_목표관리 전용: 목표 관리 · 시스템 관리(공지사항) 두 섹션만 ──
   if (user.role === "goalAdmin") {
-    const goalTabs = tabs.filter((t) => ["goals", "goalCycles"].includes(t));
+    const goalTabs = tabs.filter((t) => ["goals", "goalCycles", "goalDashboard"].includes(t));
     const sysTabs  = tabs.filter((t) => ["notices"].includes(t));
     if (goalTabs.length) sections.push({ label: "목표 관리", items: goalTabs });
     if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
@@ -2085,7 +2088,7 @@ function render(loginError = "") {
 function getVisibleTabs(user) {
   // 관리자_목표관리는 목표 관리·공지사항 관리만 쓰는 별도 계정이라 다른 역할과
   // 공통되는 아래 누적 로직(home/myDashboard 등)을 전부 건너뛴다.
-  if (user.role === "goalAdmin") return ["goals", "notices"];
+  if (user.role === "goalAdmin") return ["goals", "goalDashboard", "notices"];
   // 어드민은 대시보드(home) 없음
   const tabs = user.role === "admin" ? [] : ["home"];
   if (isEvaluatee(user)) tabs.push("self");
@@ -2125,6 +2128,7 @@ function getPageDescription(tab, user) {
     admin:          "",
     organization:   "",
     evalDashboard:  "",
+    goalDashboard:  "회사 레벨 목표별로 하위 목표 현황과 달성률 저조 목표를 조회합니다.",
     goals:          "",
     goalApproval:   "",
     goalCycles:     "목표 사이클을 생성하고 승인 기능 등 운영 옵션을 설정합니다.",
@@ -2153,6 +2157,7 @@ function renderRoute(user) {
   if (state.ui.tab === "resourceLibrary") return user.role === "admin" ? renderResourceLibrary() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "auditLog") return user.role === "admin" ? renderAuditLog() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "evalDashboard") return user.role === "admin" ? renderEvalDashboard() : `<div class="empty">어드민 권한이 필요합니다.</div>`;
+  if (state.ui.tab === "goalDashboard") return user.role === "goalAdmin" ? renderGoalDashboard(user) : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "goals") return ["admin", "goalAdmin"].includes(user.role) ? renderGoalsList(user) : renderGoalCycleContent(user);
   if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
   if (state.ui.tab === "myDashboard") return renderMyDashboard(user);
@@ -2512,6 +2517,138 @@ function renderEvalDashboard() {
         </div>
       </div>
     </div>
+  `;
+}
+
+// ── 목표 운영 현황 (관리자_목표관리 전용) ──────────────────────────────
+// 회사 레벨 목표별로 그 아래 본부/팀/개인 목표의 개수·평균 달성률을 보여주고,
+// 달성률이 저조한(하위 20%) 목표 목록을 함께 띄운다. 평가 운영 현황(evd-*)과
+// 동일한 배너/카드/막대 스타일을 그대로 재사용한다.
+function renderGoalDashboard(user) {
+  const cycle = activeGoalCycle();
+  if (!cycle) return `<section class="panel"><div class="panel-body"><div class="empty">목표 사이클이 없습니다.</div></div></section>`;
+
+  const allGoals = state.goals.filter(g => g.cycleId === cycle.id);
+  // 반려된 목표는 더 이상 유효한 목표가 아니므로 통계에서 제외
+  const goals = allGoals.filter(g => g.approvalStatus !== "rejected");
+
+  const achColor = (p) => p >= 70 ? "#16a34a" : p >= 40 ? "#2563eb" : p >= 20 ? "#d97706" : "#dc2626";
+  const achDot = (p) => p >= 70 ? "green" : p >= 40 ? "blue" : p >= 20 ? "orange" : "red";
+  const avgProgress = (list) => list.length
+    ? Math.round(list.reduce((s, g) => s + goalDisplayProgress(g, allGoals), 0) / list.length * 100) / 100
+    : 0;
+  // 하위 목표(자식·손자…) 전체를 재귀적으로 모은다
+  const descendants = (goalId) => {
+    const direct = goals.filter(g => g.parentGoalId === goalId);
+    return direct.concat(...direct.map(d => descendants(d.id)));
+  };
+
+  const levelStats = GOAL_LEVELS.map(level => {
+    const list = goals.filter(g => g.level === level);
+    return { level, count: list.length, avg: avgProgress(list) };
+  });
+  const overallAvg = avgProgress(goals);
+  const companyGoals = goals.filter(g => g.level === "company");
+
+  const levelStatRow = (label, count, avg) => `
+    <div class="evd-stage-row">
+      <div class="evd-stage-label">${label}</div>
+      <div class="evd-stage-bar-wrap">
+        <div class="evd-stage-bar"><span style="width:${avg}%;background:${achColor(avg)};"></span></div>
+      </div>
+      <div class="evd-stage-stat" style="color:${achColor(avg)};">${count}<span class="evd-stage-total">개</span></div>
+      <div class="evd-stage-pct" style="color:${achColor(avg)};">${avg}%</div>
+    </div>`;
+
+  const underperformerTable = (list) => {
+    if (!list.length) return `<div class="empty" style="padding:16px;">하위 목표가 없습니다.</div>`;
+    const n = Math.max(1, Math.round(list.length * 0.2));
+    const worst = list.slice()
+      .sort((a, b) => goalDisplayProgress(a, allGoals) - goalDisplayProgress(b, allGoals))
+      .slice(0, n);
+    return `
+      <div class="table-wrap" style="margin-top:10px;">
+        <table>
+          <thead><tr><th>목표</th><th>레벨</th><th>담당 조직</th><th>담당자</th><th style="text-align:right;">달성률</th></tr></thead>
+          <tbody>
+            ${worst.map(g => {
+              const owner = userById(g.ownerId);
+              const prog = goalDisplayProgress(g, allGoals);
+              return `<tr>
+                <td><button onclick="App.openGoalDetail('${g.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);">${esc(g.title)}</strong></button></td>
+                <td>${GOAL_LEVEL_LABELS[g.level]||"-"}</td>
+                <td>${esc(g.team||g.division||"-")}</td>
+                <td>${esc(owner?.name||"-")}</td>
+                <td style="text-align:right;font-weight:700;color:${achColor(prog)};">${prog}%</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>`;
+  };
+
+  const companySection = (goal) => {
+    const owner = userById(goal.ownerId);
+    const subtree = descendants(goal.id);
+    const subLevels = ["division", "team", "individual"].map(level => {
+      const list = subtree.filter(g => g.level === level);
+      return { level, count: list.length, avg: avgProgress(list) };
+    });
+    const ownProg = goalDisplayProgress(goal, allGoals);
+    return `
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head">
+          <div>
+            <h2>${esc(goal.title)}</h2>
+            <p class="muted">담당: ${esc(owner?.name||"-")} · 가중치 ${goal.weight != null ? esc(goal.weight)+"%" : "-"}</p>
+          </div>
+          <span class="pill" style="font-size:13px;font-weight:700;color:${achColor(ownProg)};background:${achColor(ownProg)}1a;">달성률 ${ownProg}%</span>
+        </div>
+        <div class="panel-body">
+          <div class="evd-stages">
+            ${subLevels.map(s => levelStatRow(GOAL_LEVEL_LABELS[s.level], s.count, s.avg)).join("")}
+          </div>
+          <div style="margin-top:18px;font-weight:700;font-size:13px;">⚠ 달성률 저조 목표 (하위 20%)</div>
+          ${underperformerTable(subtree)}
+        </div>
+      </div>`;
+  };
+
+  return `
+    <div class="evd-banner">
+      <div class="evd-banner-left">
+        <div class="evd-banner-label">DASHBOARD</div>
+        <div class="evd-banner-title">${esc(cycle.name)}</div>
+        <div class="evd-banner-sub">${esc(cycle.start||"?")} ~ ${esc(cycle.end||"?")} · ${goalCycleStatusLabel(cycle.status)}</div>
+      </div>
+      <div class="evd-banner-right">
+        <div class="evd-summary-card">
+          <div class="evd-summary-label">전체 목표 수</div>
+          <div class="evd-summary-value">${goals.length}개</div>
+          <span class="evd-summary-badge" style="background:rgba(255,255,255,.18);color:#fff;">회사 목표 ${companyGoals.length}개</span>
+        </div>
+        <div class="evd-summary-card">
+          <div class="evd-summary-label">전체 평균 달성률</div>
+          <div class="evd-summary-value">${overallAvg}%</div>
+          <span class="evd-summary-badge" style="background:rgba(255,255,255,.18);color:#fff;">전체 평균</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="evd-metrics-grid">
+      ${levelStats.map(s => `
+        <div class="evd-card">
+          <span class="evd-dot ${achDot(s.avg)}"></span>
+          <div class="evd-label">${GOAL_LEVEL_LABELS[s.level]} 목표</div>
+          <div class="evd-value">${s.count}<span style="font-size:16px;font-weight:500;">개</span></div>
+          <div class="evd-note">평균 달성률 ${s.avg}%</div>
+        </div>`).join("")}
+    </div>
+
+    ${companyGoals.length
+      ? companyGoals.map(companySection).join("")
+      : `<div class="panel" style="margin-top:16px;"><div class="panel-body"><div class="empty">등록된 회사 레벨 목표가 없습니다.</div></div></div>`}
+    ${state.ui.goalDetailId ? renderGoalDetailPanel(state.ui.goalDetailId, user) : ""}
   `;
 }
 
