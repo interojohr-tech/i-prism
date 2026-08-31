@@ -2916,11 +2916,19 @@ function jobPositionOccupantLabel(pos) {
 // 포지션 행의 관리자 액션 버튼 — 팀원 레벨은 그 아래에 아무것도 둘 수 없으므로
 // "+ 하위"를 주지 않는다. 리프(팀원)/브랜치(본부·팀 등) 행 공통으로 쓰고, hover 시에만
 // 보이는 것도 CSS(.org-tree-summary:hover, .org-tree-member:hover) 쪽에서 공통 처리한다.
+// 맨 앞의 ▲▼는 같은 부모를 둔 형제 포지션 사이의 순서를 바꾼다(맨 위/맨 아래인 경우 생략).
 function jobPositionActionButtons(pos, isAdminEditor) {
   if (!isAdminEditor) return "";
+  const siblings = state.jobPositions.filter(p => p.parentId === pos.parentId).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const idx = siblings.findIndex(p => p.id === pos.id);
+  const upBtn = idx > 0 ? `
+    <button type="button" class="org-tree-action" title="위로" onclick="event.stopPropagation();event.preventDefault();App.moveJobPosition('${pos.id}',-1)">▲</button>` : "";
+  const downBtn = idx < siblings.length - 1 ? `
+    <button type="button" class="org-tree-action" title="아래로" onclick="event.stopPropagation();event.preventDefault();App.moveJobPosition('${pos.id}',1)">▼</button>` : "";
   const addChildBtn = pos.level === "member" ? "" : `
     <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>`;
   return `
+    ${upBtn}${downBtn}
     <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
     ${addChildBtn}
     <button type="button" class="org-tree-delete" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>`;
@@ -2931,7 +2939,9 @@ function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
   const jobLabel = pos.level === "member" && pos.jobDescription?.jobRole
     ? `<span class="pill" style="font-size:10px;margin:0 4px;">${esc(pos.jobDescription.jobRole)}</span>` : "";
   const canOpen = openableIds.has(pos.id);
-  const nameAttrs = canOpen ? `style="cursor:pointer;" onclick="event.stopPropagation();event.preventDefault();App.openJobDescDetail('${pos.id}')"` : "";
+  // 공석인 포지션은 채용이 필요한 자리임을 한눈에 알 수 있도록 이름을 볼드로 표시한다.
+  const nameStyle = `${canOpen ? "cursor:pointer;" : ""}${pos.occupantUserId ? "" : "font-weight:700;"}`;
+  const nameAttrs = `${nameStyle ? `style="${nameStyle}"` : ""}${canOpen ? ` onclick="event.stopPropagation();event.preventDefault();App.openJobDescDetail('${pos.id}')"` : ""}`;
   const adminBtns = jobPositionActionButtons(pos, isAdminEditor);
   if (!children.length) {
     return `
@@ -20517,6 +20527,20 @@ const App = {
     saveState(); render();
   },
   closeJobPositionAddModal() { state.ui.jobPosAddModal = false; saveState(); render(); },
+  // 같은 부모를 둔 형제 포지션 사이에서 순서를 한 칸 옮긴다(direction: -1 위로, 1 아래로).
+  // 맨 위/맨 아래에서는 버튼 자체가 없으므로 범위를 벗어나면 조용히 무시한다.
+  moveJobPosition(id, direction) {
+    const pos = state.jobPositions.find(p => p.id === id);
+    if (!pos) return;
+    const siblings = state.jobPositions.filter(p => p.parentId === pos.parentId).sort((a, b) => (a.order || 0) - (b.order || 0));
+    const idx = siblings.findIndex(p => p.id === id);
+    const swapIdx = idx + direction;
+    if (idx === -1 || swapIdx < 0 || swapIdx >= siblings.length) return;
+    [siblings[idx], siblings[swapIdx]] = [siblings[swapIdx], siblings[idx]];
+    siblings.forEach((p, i) => { p.order = i; });
+    saveState();
+    render();
+  },
   saveJobPositionAdd() {
     const name = (valueOf("jobpos_name") || "").trim();
     if (!name) return window.alert("포지션명을 입력해 주세요.");
