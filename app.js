@@ -204,6 +204,9 @@ const TAB_LABELS = {
   memberDashboard: "구성원 성장 기록",
   evalDashboard: "평가 운영 현황",
   goalDashboard: "목표 운영 현황",
+  jobDescMgmt: "직무기술서 관리",
+  jobDescWrite: "직무기술서 작성",
+  jobDescApproval: "직무기술서 승인",
   notices: "공지사항 관리",
   resourceLibrary: "참고자료 관리",
   auditLog: "감사 로그",
@@ -218,6 +221,9 @@ const TAB_ICONS = {
   myDashboard: "📒", memberDashboard: "📊",
   evalDashboard: "📊",
   goalDashboard: "📊",
+  jobDescMgmt: "📇",
+  jobDescWrite: "📝",
+  jobDescApproval: "🗒️",
   notices: "📢",
   resourceLibrary: "📚",
   auditLog: "🛡️",
@@ -244,6 +250,9 @@ const SITEMAP_TAB_DESC = {
   organization:    "조직도·계정·발령 등 조직 정보를 관리하는 어드민 전용 화면입니다.",
   evalDashboard:   "전체 평가 진행 현황과 통계를 모아보는 어드민 전용 화면입니다.",
   goalDashboard:   "회사 레벨 목표별 하위 목표 현황과 달성률 저조 목표를 모아보는 관리자_목표관리 전용 화면입니다.",
+  jobDescMgmt:     "전사 OT 조직도(포지션)와 각 포지션의 직무기술서를 조회합니다. 어드민만 포지션 편집·직무기술서 수정이 가능합니다.",
+  jobDescWrite:    "본인이 배치된 포지션의 직무기술서를 작성·수정하는 화면입니다. 수정 내용은 상위 조직장의 승인을 받아야 반영됩니다.",
+  jobDescApproval: "하위 구성원이 제출한 직무기술서 수정 요청을 검토·승인하는 화면입니다.",
   notices:         "전 직원 대상 공지사항을 작성·관리하는 어드민 전용 화면입니다.",
   resourceLibrary: "AI 피드백에 추천할 자기개발 참고자료(교육·도서·아티클 등)를 등록·관리하는 어드민 전용 화면입니다.",
 };
@@ -253,6 +262,7 @@ const SITEMAP_SECTIONS = [
   { label: "나의 평가",      tabs: ["home", "self", "report"] },
   { label: "평가 관리",      tabs: ["tasks", "resultSubmit", "approval", "results", "admin", "evalDashboard"] },
   { label: "목표 관리",      tabs: ["goals", "goalApproval"] },
+  { label: "직무기술서",    tabs: ["jobDescMgmt", "jobDescWrite", "jobDescApproval"] },
   { label: "성장 기록 조회", tabs: ["myDashboard", "memberDashboard"] },
   { label: "시스템 관리",    tabs: ["organization", "notices", "resourceLibrary", "auditLog"] },
 ];
@@ -262,7 +272,7 @@ const SITEMAP_SECTIONS = [
 function getSiteMapTabs(role) {
   // 관리자_목표관리는 목표 관리·공지사항 관리만 쓰는 별도 계정이라 다른 역할과
   // 공통되는 아래 누적 로직(home/myDashboard 등)을 전부 건너뛴다.
-  if (role === "goalAdmin") return ["goals", "goalDashboard", "notices"];
+  if (role === "goalAdmin") return ["goals", "goalDashboard", "jobDescMgmt", "notices"];
   const tabs = role === "admin" ? [] : ["home"];
   if (EVALUATEE_ROLES.includes(role)) tabs.push("self");
   if (["president", "chairman", "divisionHead", "teamLead", "member"].includes(role)) tabs.push("tasks");
@@ -273,6 +283,10 @@ function getSiteMapTabs(role) {
   // 목표 관리: 관리자_인사(admin)는 제외 — 관리자_목표관리 전용 메뉴로 분리됨
   if (role !== "admin") tabs.push("goals");
   if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("goalApproval");
+  // 직무기술서 관리는 전 역할이 조회 가능(어드민만 편집) — 작성/승인은 해당 역할에게만
+  tabs.push("jobDescMgmt");
+  if (["member", "teamLead", "divisionHead"].includes(role)) tabs.push("jobDescWrite");
+  if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("jobDescApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
   if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary", "auditLog");
@@ -1014,6 +1028,8 @@ function normalizeState(nextState) {
     });
   }
   nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
+  // 직무기술서 포지션 트리 — 실제 인사 배치(division/team)와는 별개의 인사기획용 OT 조직도.
+  nextState.jobPositions = Array.isArray(nextState.jobPositions) ? nextState.jobPositions : [];
   nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
   nextState.refResources = normalizeRefResources(nextState.refResources);
   nextState.auditLog = Array.isArray(nextState.auditLog) ? nextState.auditLog : [];
@@ -1739,22 +1755,26 @@ function buildNavSections(tabs, user) {
   // ── 관리자_목표관리 전용: 목표 관리 · 시스템 관리(공지사항) 두 섹션만 ──
   if (user.role === "goalAdmin") {
     const goalTabs = tabs.filter((t) => ["goals", "goalCycles", "goalDashboard"].includes(t));
+    const jobTabs  = tabs.filter((t) => ["jobDescMgmt"].includes(t));
     const sysTabs  = tabs.filter((t) => ["notices"].includes(t));
     if (goalTabs.length) sections.push({ label: "목표 관리", items: goalTabs });
+    if (jobTabs.length)  sections.push({ label: "직무기술서", items: jobTabs });
     if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
     return sections;
   }
-  // ── 어드민 전용 메뉴 순서: 나의 평가 → 평가 관리 → 목표 관리 → 성장 기록 조회 → 시스템 관리 ──
+  // ── 어드민 전용 메뉴 순서: 나의 평가 → 평가 관리 → 목표 관리 → 직무기술서 → 성장 기록 조회 → 시스템 관리 ──
   if (user.role === "admin") {
     const myTabs   = tabs.filter((t) => ["home"].includes(t));
     const sysTabs  = tabs.filter((t) => ["organization", "notices", "resourceLibrary", "auditLog"].includes(t));
     const setOrder = ["admin", "evalDashboard"];
     const setTabs  = setOrder.filter((t) => tabs.includes(t));
     const goalTabs = tabs.filter((t) => ["goals","goalCycles"].includes(t));
+    const jobTabs  = tabs.filter((t) => ["jobDescMgmt"].includes(t));
     const dashTabs = tabs.filter((t) => ["myDashboard","memberDashboard"].includes(t));
     if (myTabs.length)   sections.push({ label: "나의 평가", items: myTabs });
     if (setTabs.length)  sections.push({ label: "평가 관리", items: setTabs });
     if (goalTabs.length) sections.push({ label: "목표 관리", items: goalTabs });
+    if (jobTabs.length)  sections.push({ label: "직무기술서", items: jobTabs });
     if (dashTabs.length) sections.push({ label: "성장 기록 조회", items: dashTabs });
     if (sysTabs.length)  sections.push({ label: "시스템 관리", items: sysTabs });
     return sections;
@@ -1763,12 +1783,14 @@ function buildNavSections(tabs, user) {
   const order = ["tasks","resultSubmit","approval","results"]; // 평가하기 → 종합평가 → 최종 승인 → 최종 평가 결과 확인
   const myTabs     = tabs.filter((t) => ["home","self","report"].includes(t));
   const goalTabs   = tabs.filter((t) => ["goals","goalApproval","goalCycles"].includes(t));
+  const jobTabs    = tabs.filter((t) => ["jobDescMgmt","jobDescWrite","jobDescApproval"].includes(t));
   const evalTabs   = order.filter((t) => tabs.includes(t));
   const dashTabs   = tabs.filter((t) => ["myDashboard","memberDashboard"].includes(t));
   const adminTabs  = tabs.filter((t) => ["admin","organization"].includes(t));
   if (myTabs.length)      sections.push({ label: "나의 평가", items: myTabs });
   if (evalTabs.length)    sections.push({ label: "평가 관리", items: evalTabs });
   if (goalTabs.length)    sections.push({ label: "목표 관리", items: goalTabs });
+  if (jobTabs.length)     sections.push({ label: "직무기술서", items: jobTabs });
   if (dashTabs.length)    sections.push({ label: "성장 기록 조회", items: dashTabs });
   if (adminTabs.length)   sections.push({ label: "시스템 관리", items: adminTabs });
   return sections;
@@ -2098,7 +2120,7 @@ function render(loginError = "") {
 function getVisibleTabs(user) {
   // 관리자_목표관리는 목표 관리·공지사항 관리만 쓰는 별도 계정이라 다른 역할과
   // 공통되는 아래 누적 로직(home/myDashboard 등)을 전부 건너뛴다.
-  if (user.role === "goalAdmin") return ["goals", "goalDashboard", "notices"];
+  if (user.role === "goalAdmin") return ["goals", "goalDashboard", "jobDescMgmt", "notices"];
   // 어드민은 대시보드(home) 없음
   const tabs = user.role === "admin" ? [] : ["home"];
   if (isEvaluatee(user)) tabs.push("self");
@@ -2112,6 +2134,10 @@ function getVisibleTabs(user) {
   // 목표 승인: 조직장(승인자 가능 역할)
   if (["teamLead", "divisionHead", "president", "chairman"].includes(user.role)) tabs.push("goalApproval");
   // goalCycles 탭은 goals 탭에 통합됨
+  // 직무기술서 관리는 전 역할이 조회 가능(어드민만 편집) — 작성/승인은 해당 역할에게만
+  tabs.push("jobDescMgmt");
+  if (["member", "teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescWrite");
+  if (["teamLead", "divisionHead", "president", "chairman"].includes(user.role)) tabs.push("jobDescApproval");
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
@@ -2141,6 +2167,9 @@ function getPageDescription(tab, user) {
     goalDashboard:  "회사 레벨 목표별로 하위 목표 현황과 달성률 저조 목표를 조회합니다.",
     goals:          "",
     goalApproval:   "",
+    jobDescMgmt:    "전사 OT 조직도(포지션)와 각 포지션의 직무기술서를 조회합니다.",
+    jobDescWrite:   "본인이 배치된 포지션의 직무기술서를 작성·수정합니다. 수정 내용은 상위 조직장의 승인 후 반영됩니다.",
+    jobDescApproval:"하위 구성원이 제출한 직무기술서 수정 요청을 승인·반려합니다.",
     goalCycles:     "목표 사이클을 생성하고 승인 기능 등 운영 옵션을 설정합니다.",
     myDashboard:    "",
     memberDashboard:"",
@@ -2170,6 +2199,9 @@ function renderRoute(user) {
   if (state.ui.tab === "goalDashboard") return user.role === "goalAdmin" ? renderGoalDashboard(user) : `<div class="empty">어드민 권한이 필요합니다.</div>`;
   if (state.ui.tab === "goals") return ["admin", "goalAdmin"].includes(user.role) ? renderGoalsList(user) : renderGoalCycleContent(user);
   if (state.ui.tab === "goalApproval") return renderGoalApproval(user);
+  if (state.ui.tab === "jobDescMgmt") return renderJobDescMgmt(user);
+  if (state.ui.tab === "jobDescWrite") return renderJobDescWrite(user);
+  if (state.ui.tab === "jobDescApproval") return renderJobDescApproval(user);
   if (state.ui.tab === "myDashboard") return renderMyDashboard(user);
   if (state.ui.tab === "memberDashboard") return renderMemberDashboard(user);
   return renderHome(user);
@@ -2672,6 +2704,296 @@ function renderGoalDashboard(user) {
       ? companyGoals.map(companySection).join("")
       : `<div class="panel" style="margin-top:16px;"><div class="panel-body"><div class="empty">등록된 회사 레벨 목표가 없습니다.</div></div></div>`}
     ${state.ui.goalDetailId ? renderGoalDetailPanel(state.ui.goalDetailId, user) : ""}
+  `;
+}
+
+// ═══════════════════════ 직무기술서(Job Description) 관리 ═══════════════════════
+// 전사 OT 조직도(포지션 트리, state.jobPositions)는 실제 인사 배치(조직 관리 메뉴의
+// state.organizationNodes / user.division·team)와는 별개의 인사기획용 데이터다.
+// 포지션은 공석일 수 있고, 관리자가 자유롭게 추가·삭제·재배치·구성원 배치를 할 수 있다.
+const JOB_DESC_FIELDS = [
+  ["jobGroup", "직군"], ["jobSeries", "직렬"], ["jobRole", "직무"],
+  ["purpose", "직무목적"], ["coreTasks", "핵심업무"], ["keyOutputs", "주요산출물"],
+  ["requiredKnowledge", "필요지식, 기술"], ["qualifications", "자격요건(업무경력, 전공 등)"],
+];
+const JOB_DESC_LONG_FIELDS = ["purpose", "coreTasks", "keyOutputs", "requiredKnowledge", "qualifications"];
+const JOB_POSITION_LEVEL_LABELS = { division: "본부", team: "팀", member: "팀원" };
+
+function jobPositionForUser(user) {
+  return state.jobPositions.find(p => p.occupantUserId === user.id) || null;
+}
+
+// 자기 자신 포함 하위 포지션 전체(재귀)
+function jobPositionDescendants(id, includeSelf = true) {
+  const self = state.jobPositions.find(p => p.id === id);
+  const result = includeSelf && self ? [self] : [];
+  state.jobPositions.filter(p => p.parentId === id).forEach(child => {
+    result.push(...jobPositionDescendants(child.id, true));
+  });
+  return result;
+}
+
+// 트리 화면에 보여줄 최상위 포지션들(구조 파악용 — 팀원은 팀장 노드까지는 보이되
+// 클릭해서 열람은 못 하도록 jobPositionOpenableIds에서 별도로 막는다)
+function jobPositionTreeRootsForUser(user) {
+  if (["admin", "goalAdmin", "president", "chairman"].includes(user.role)) {
+    return state.jobPositions.filter(p => !p.parentId);
+  }
+  const myPos = jobPositionForUser(user);
+  if (!myPos) return [];
+  if (user.role === "member") {
+    const parent = state.jobPositions.find(p => p.id === myPos.parentId);
+    return parent ? [parent] : [myPos];
+  }
+  return [myPos]; // teamLead·divisionHead: 자기 자신 이하 전체
+}
+
+// 직무기술서 팝업을 열람할 수 있는 포지션 id 집합(트리에 이름은 보여도 열람은 못 할 수 있음)
+function jobPositionOpenableIds(user) {
+  if (["admin", "goalAdmin", "president", "chairman"].includes(user.role)) {
+    return new Set(state.jobPositions.map(p => p.id));
+  }
+  const myPos = jobPositionForUser(user);
+  if (!myPos) return new Set();
+  if (user.role === "member") {
+    return new Set(state.jobPositions.filter(p => p.parentId === myPos.parentId).map(p => p.id));
+  }
+  return new Set(jobPositionDescendants(myPos.id).map(p => p.id));
+}
+
+function jobPositionOccupantLabel(pos) {
+  const occupant = pos.occupantUserId ? userById(pos.occupantUserId) : null;
+  if (!occupant) return `<span class="muted">공석</span>`;
+  return `${esc(occupant.name)}${occupant.title ? ` ${esc(occupant.title)}` : ""}`;
+}
+
+function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
+  const children = state.jobPositions.filter(p => p.parentId === pos.id).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const jobLabel = pos.level === "member" && pos.jobDescription?.jobRole
+    ? `<span class="pill" style="font-size:10px;margin:0 4px;">${esc(pos.jobDescription.jobRole)}</span>` : "";
+  const canOpen = openableIds.has(pos.id);
+  const nameAttrs = canOpen ? `style="cursor:pointer;" onclick="event.stopPropagation();event.preventDefault();App.openJobDescDetail('${pos.id}')"` : "";
+  const adminBtns = isAdminEditor ? `
+    <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
+    <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>
+    <button type="button" class="org-tree-delete" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>` : "";
+  if (!children.length) {
+    return `
+      <div class="org-tree-member">
+        <span class="folder-icon" style="visibility:hidden;"></span>
+        <strong ${nameAttrs}>${esc(pos.name)}</strong>${jobLabel}
+        <span>${jobPositionOccupantLabel(pos)}</span>
+        ${adminBtns}
+      </div>`;
+  }
+  return `
+    <details class="org-tree-node" open>
+      <summary class="org-tree-summary">
+        <span class="tree-expander"></span>
+        <span class="folder-icon"></span>
+        <span class="org-tree-name" ${nameAttrs}>${esc(pos.name)}</span>
+        <span class="org-tree-count">${jobPositionOccupantLabel(pos)}</span>
+        ${adminBtns}
+      </summary>
+      <div class="org-tree-branch">
+        ${children.map(c => renderJobPositionNode(c, user, isAdminEditor, openableIds)).join("")}
+      </div>
+    </details>`;
+}
+
+function renderJobPositionAddModal() {
+  const parentId = state.ui.jobPosAddParentId || "";
+  const positionOptions = state.jobPositions.slice().sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobPositionAddModal()">
+      <div class="goal-modal" style="max-width:420px;">
+        <div class="goal-modal-head"><h2>포지션 추가</h2><button class="modal-x" onclick="App.closeJobPositionAddModal()">×</button></div>
+        <div class="goal-modal-body">
+          <div class="field"><label>상위 포지션</label>
+            <select id="jobpos_parent">
+              <option value="">(최상위)</option>
+              ${positionOptions.map(p => `<option value="${p.id}" ${p.id === parentId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><label>포지션명 <span style="color:var(--red)">*</span></label><input id="jobpos_name" placeholder="예) 인사총무팀원3" /></div>
+          <div class="field"><label>레벨</label>
+            <select id="jobpos_level">
+              <option value="division">본부</option>
+              <option value="team">팀</option>
+              <option value="member" selected>팀원</option>
+            </select>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeJobPositionAddModal()">취소</button>
+          <button class="button" onclick="App.saveJobPositionAdd()">추가</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderJobPositionAssignModal() {
+  const pos = state.jobPositions.find(p => p.id === state.ui.jobPosAssignId);
+  if (!pos) return "";
+  const candidates = state.users.filter(u => !isAdminAccount(u) && u.active !== false).sort(compareEmployeesForDisplay);
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobPositionAssignModal()">
+      <div class="goal-modal" style="max-width:420px;">
+        <div class="goal-modal-head"><h2>구성원 배치 — ${esc(pos.name)}</h2><button class="modal-x" onclick="App.closeJobPositionAssignModal()">×</button></div>
+        <div class="goal-modal-body">
+          <div class="field"><label>구성원</label>
+            <select id="jobpos_assign_user">
+              <option value="">공석(배치 해제)</option>
+              ${candidates.map(u => `<option value="${u.id}" ${u.id === pos.occupantUserId ? "selected" : ""}>${esc(userOptionLabel(u))}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeJobPositionAssignModal()">취소</button>
+          <button class="button" onclick="App.saveJobPositionAssign()">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderJobDescModal(user) {
+  const pos = state.jobPositions.find(p => p.id === state.ui.jobDescDetailId);
+  if (!pos) return "";
+  const mode = state.ui.jobDescDetailMode || "view";
+  const isAdminEditor = user.role === "admin";
+
+  if (mode === "edit") {
+    const jd = pos.jobDescription || {};
+    return `
+      <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobDescDetail()">
+        <div class="goal-modal" style="max-width:560px;max-height:88vh;overflow-y:auto;">
+          <div class="goal-modal-head"><h2>직무기술서 수정 — ${esc(pos.name)}</h2><button class="modal-x" onclick="App.closeJobDescDetail()">×</button></div>
+          <div class="goal-modal-body">
+            ${JOB_DESC_FIELDS.map(([key, label]) => `
+              <div class="field"><label>${label}</label>
+                ${JOB_DESC_LONG_FIELDS.includes(key)
+                  ? `<textarea id="jd_field_${key}" rows="3">${esc(jd[key] || "")}</textarea>`
+                  : `<input id="jd_field_${key}" value="${esc(jd[key] || "")}" />`}
+              </div>`).join("")}
+          </div>
+          <div class="goal-modal-foot">
+            <button class="button secondary" onclick="App.openJobDescDetail('${pos.id}')">취소</button>
+            <button class="button" onclick="App.saveJobDescriptionAdmin('${pos.id}')">저장</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  const source = mode === "review" ? pos.pendingEdit : pos.jobDescription;
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobDescDetail()">
+      <div class="goal-modal" style="max-width:560px;max-height:88vh;overflow-y:auto;">
+        <div class="goal-modal-head">
+          <h2>${mode === "review" ? "직무기술서 변경 검토 — " : "직무기술서 — "}${esc(pos.name)}</h2>
+          <button class="modal-x" onclick="App.closeJobDescDetail()">×</button>
+        </div>
+        <div class="goal-modal-body">
+          <div class="goal-info-rows" style="margin-bottom:12px;">
+            <div><span>레벨</span><b>${JOB_POSITION_LEVEL_LABELS[pos.level] || "-"}</b></div>
+            <div><span>담당자</span><b>${pos.occupantUserId ? esc(userById(pos.occupantUserId)?.name || "-") : "공석"}</b></div>
+          </div>
+          ${mode === "review" && pos.pendingEdit ? `<div class="notice info" style="font-size:12px;margin-bottom:10px;">${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}님이 ${esc(formatDateTime(pos.pendingEdit.editedAt))}에 제출한 변경 제안입니다.</div>` : ""}
+          ${source ? JOB_DESC_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="white-space:pre-wrap;margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")
+            : `<div class="empty">아직 작성된 직무기술서가 없습니다.</div>`}
+        </div>
+        <div class="goal-modal-foot">
+          ${mode === "review"
+            ? `<button class="button secondary" onclick="App.rejectJobDescriptionEdit('${pos.id}')">반려</button><button class="button" onclick="App.approveJobDescriptionEdit('${pos.id}')">승인</button>`
+            : (isAdminEditor ? `<button class="button" onclick="App.openJobDescDetail('${pos.id}','edit')">수정</button>` : "")}
+        </div>
+      </div>
+    </div>`;
+}
+
+// 탭 1: 직무기술서 관리 — 전 역할 조회(범위 제한), 어드민만 편집
+function renderJobDescMgmt(user) {
+  const isAdminEditor = user.role === "admin";
+  const roots = jobPositionTreeRootsForUser(user);
+  const openableIds = jobPositionOpenableIds(user);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>전사 OT 조직도</h2><p class="muted">포지션을 클릭하면 직무기술서를 확인할 수 있습니다.</p></div>
+        ${isAdminEditor ? `<button class="button" onclick="App.openJobPositionAddModal('')">+ 포지션 추가</button>` : ""}
+      </div>
+      <div class="panel-body">
+        <div class="org-tree-box">
+          ${roots.length ? roots.map(r => renderJobPositionNode(r, user, isAdminEditor, openableIds)).join("") : `<div class="empty">등록된 포지션이 없습니다.</div>`}
+        </div>
+      </div>
+    </section>
+    ${state.ui.jobPosAddModal ? renderJobPositionAddModal() : ""}
+    ${state.ui.jobPosAssignId ? renderJobPositionAssignModal() : ""}
+    ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
+  `;
+}
+
+// 탭 2: 직무기술서 작성 — 본인이 배치된 포지션만, 저장 시 승인 요청
+function renderJobDescWrite(user) {
+  const pos = jobPositionForUser(user);
+  if (!pos) {
+    return `<section class="panel"><div class="panel-body"><div class="empty">아직 배치된 포지션이 없습니다. 관리자에게 문의해 주세요.</div></div></section>`;
+  }
+  const pending = pos.pendingEdit;
+  const source = pending || pos.jobDescription || {};
+  const statusBadge = pending
+    ? (pending.status === "requested" ? `<span class="pill amber">승인 대기 중</span>` : `<span class="pill red">반려됨 — ${esc(pending.rejectReason || "")}</span>`)
+    : (pos.jobDescription ? `<span class="pill green">승인 완료</span>` : `<span class="pill">미작성</span>`);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>${esc(pos.name)} 직무기술서 작성</h2><p class="muted">수정 후 저장하면 상위 조직장의 승인을 받아야 반영됩니다.</p></div>
+        ${statusBadge}
+      </div>
+      <div class="panel-body">
+        ${JOB_DESC_FIELDS.map(([key, label]) => `
+          <div class="field"><label>${label}</label>
+            ${JOB_DESC_LONG_FIELDS.includes(key)
+              ? `<textarea id="jdw_field_${key}" rows="3">${esc(source[key] || "")}</textarea>`
+              : `<input id="jdw_field_${key}" value="${esc(source[key] || "")}" />`}
+          </div>`).join("")}
+        <div class="toolbar" style="margin-top:12px;">
+          <button class="button" onclick="App.submitJobDescriptionEdit('${pos.id}')">저장 및 승인 요청</button>
+        </div>
+      </div>
+    </section>
+    ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
+  `;
+}
+
+// 탭 3: 직무기술서 승인 — 내가 approverId인 요청 큐
+function renderJobDescApproval(user) {
+  const pending = state.jobPositions.filter(p => p.pendingEdit?.status === "requested" && p.pendingEdit.approverId === user.id);
+  const rejectedByMe = state.jobPositions.filter(p => p.pendingEdit?.status === "rejected" && p.pendingEdit.approverId === user.id);
+  const row = (pos) => {
+    const submitter = userById(pos.pendingEdit.editedBy);
+    return `<tr>
+      <td><button onclick="App.openJobDescDetail('${pos.id}','review')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);">${esc(pos.name)}</strong></button></td>
+      <td>${esc(submitter?.name || "-")}</td>
+      <td><span class="muted" style="font-size:12px;">${esc(formatDateTime(pos.pendingEdit.editedAt))}</span></td>
+      <td><div class="toolbar"><button class="button sm" onclick="App.approveJobDescriptionEdit('${pos.id}')">승인</button><button class="button sm danger" onclick="App.rejectJobDescriptionEdit('${pos.id}')">반려</button></div></td>
+    </tr>`;
+  };
+  return `
+    <section class="panel">
+      <div class="panel-head"><div><h2>직무기술서 승인 대기</h2></div><span class="pill ${pending.length ? "amber" : "green"}">${pending.length}건 대기</span></div>
+      <div class="panel-body">
+        <div class="table-wrap"><table>
+          <thead><tr><th>포지션</th><th>신청자</th><th>신청일</th><th>처리</th></tr></thead>
+          <tbody>${pending.length ? pending.map(row).join("") : `<tr><td colspan="4"><div class="empty" style="padding:24px;">승인 대기 중인 요청이 없습니다.</div></td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </section>
+    ${rejectedByMe.length ? `<section class="panel" style="margin-top:16px;"><div class="panel-head"><h2>반려한 요청</h2></div><div class="panel-body"><div class="table-wrap"><table>
+      <thead><tr><th>포지션</th><th>신청자</th><th>반려 사유</th></tr></thead>
+      <tbody>${rejectedByMe.map(pos => `<tr><td>${esc(pos.name)}</td><td>${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}</td><td>${esc(pos.pendingEdit.rejectReason || "-")}</td></tr>`).join("")}</tbody>
+    </table></div></div></section>` : ""}
+    ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
   `;
 }
 
@@ -19996,6 +20318,127 @@ const App = {
     goal.rejectReason = reason.trim();
     saveState();
     state.ui.flash = "목표를 반려했습니다.";
+    render();
+  },
+  // ── 직무기술서(포지션) 관리 ──
+  openJobPositionAddModal(parentId) {
+    state.ui.jobPosAddParentId = parentId || "";
+    state.ui.jobPosAddModal = true;
+    saveState(); render();
+  },
+  closeJobPositionAddModal() { state.ui.jobPosAddModal = false; saveState(); render(); },
+  saveJobPositionAdd() {
+    const name = (valueOf("jobpos_name") || "").trim();
+    if (!name) return window.alert("포지션명을 입력해 주세요.");
+    const parentId = valueOf("jobpos_parent") || "";
+    const level = valueOf("jobpos_level") || "member";
+    const siblings = state.jobPositions.filter(p => p.parentId === parentId);
+    state.jobPositions.push({
+      id: `jobpos-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      parentId, name, level, occupantUserId: "", order: siblings.length,
+      jobDescription: null, pendingEdit: null, history: [],
+    });
+    state.ui.jobPosAddModal = false;
+    saveState();
+    state.ui.flash = "포지션을 추가했습니다.";
+    render();
+  },
+  deleteJobPosition(id) {
+    const pos = state.jobPositions.find(p => p.id === id);
+    if (!pos) return;
+    if (!window.confirm(`'${pos.name}' 포지션을 삭제할까요? 하위 포지션은 상위 포지션으로 승계됩니다.`)) return;
+    const grandParentId = pos.parentId;
+    state.jobPositions.forEach(p => { if (p.parentId === id) p.parentId = grandParentId; });
+    state.jobPositions = state.jobPositions.filter(p => p.id !== id);
+    if (state.ui.jobDescDetailId === id) { state.ui.jobDescDetailId = ""; state.ui.jobDescDetailMode = ""; }
+    saveState();
+    state.ui.flash = "포지션을 삭제했습니다.";
+    render();
+  },
+  openJobPositionAssignModal(id) { state.ui.jobPosAssignId = id; saveState(); render(); },
+  closeJobPositionAssignModal() { state.ui.jobPosAssignId = ""; saveState(); render(); },
+  saveJobPositionAssign() {
+    const pos = state.jobPositions.find(p => p.id === state.ui.jobPosAssignId);
+    if (!pos) return;
+    pos.occupantUserId = valueOf("jobpos_assign_user") || "";
+    state.ui.jobPosAssignId = "";
+    saveState();
+    state.ui.flash = "구성원 배치를 저장했습니다.";
+    render();
+  },
+  openJobDescDetail(positionId, mode = "view") {
+    state.ui.jobDescDetailId = positionId;
+    state.ui.jobDescDetailMode = mode;
+    saveState(); render();
+  },
+  closeJobDescDetail() {
+    state.ui.jobDescDetailId = "";
+    state.ui.jobDescDetailMode = "";
+    saveState(); render();
+  },
+  // 어드민이 직무기술서를 직접 수정 — 승인 절차 없이 즉시 반영
+  saveJobDescriptionAdmin(positionId) {
+    const pos = state.jobPositions.find(p => p.id === positionId);
+    if (!pos) return;
+    const fields = {};
+    JOB_DESC_FIELDS.forEach(([key]) => { fields[key] = (valueOf(`jd_field_${key}`) || "").trim(); });
+    pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: currentUser().id };
+    pos.history = pos.history || [];
+    pos.history.push({ at: new Date().toISOString(), by: currentUser().id, summary: "관리자가 직무기술서를 직접 수정" });
+    state.ui.jobDescDetailMode = "view";
+    saveState();
+    state.ui.flash = "직무기술서를 저장했습니다.";
+    render();
+  },
+  // 팀원/팀장/본부장 본인 포지션 작성 — jobDescription은 그대로 두고 pendingEdit에 담아 승인 요청
+  submitJobDescriptionEdit(positionId) {
+    const pos = state.jobPositions.find(p => p.id === positionId);
+    if (!pos) return;
+    const user = currentUser();
+    if (pos.occupantUserId !== user.id) return window.alert("본인에게 배치된 포지션만 작성할 수 있습니다.");
+    const fields = {};
+    JOB_DESC_FIELDS.forEach(([key]) => { fields[key] = (valueOf(`jdw_field_${key}`) || "").trim(); });
+    const approver = nextApproverForUser(user);
+    if (!approver) {
+      pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: user.id };
+      pos.pendingEdit = null;
+      pos.history = pos.history || [];
+      pos.history.push({ at: new Date().toISOString(), by: user.id, summary: "승인권자가 없어 즉시 반영" });
+      saveState();
+      state.ui.flash = "직무기술서를 저장했습니다.";
+      return render();
+    }
+    pos.pendingEdit = { ...fields, editedBy: user.id, editedAt: new Date().toISOString(), approverId: approver.id, status: "requested", rejectReason: "" };
+    saveState();
+    state.ui.flash = `${approver.name}님에게 승인을 요청했습니다.`;
+    render();
+  },
+  approveJobDescriptionEdit(positionId) {
+    const pos = state.jobPositions.find(p => p.id === positionId);
+    if (!pos || !pos.pendingEdit) return;
+    const fields = {};
+    JOB_DESC_FIELDS.forEach(([key]) => { fields[key] = pos.pendingEdit[key] || ""; });
+    pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: pos.pendingEdit.editedBy };
+    pos.history = pos.history || [];
+    pos.history.push({ at: new Date().toISOString(), by: currentUser().id, summary: "직무기술서 변경 승인" });
+    pos.pendingEdit = null;
+    if (state.ui.jobDescDetailId === positionId) { state.ui.jobDescDetailId = ""; state.ui.jobDescDetailMode = ""; }
+    saveState();
+    state.ui.flash = "직무기술서 변경을 승인했습니다.";
+    render();
+  },
+  rejectJobDescriptionEdit(positionId) {
+    const pos = state.jobPositions.find(p => p.id === positionId);
+    if (!pos || !pos.pendingEdit) return;
+    const reason = window.prompt("반려 사유를 입력해 주세요.", "");
+    if (reason === null) return;
+    pos.pendingEdit.status = "rejected";
+    pos.pendingEdit.rejectReason = reason.trim();
+    pos.history = pos.history || [];
+    pos.history.push({ at: new Date().toISOString(), by: currentUser().id, summary: "직무기술서 변경 반려", changes: reason.trim() ? [reason.trim()] : [] });
+    if (state.ui.jobDescDetailId === positionId) { state.ui.jobDescDetailId = ""; state.ui.jobDescDetailMode = ""; }
+    saveState();
+    state.ui.flash = "직무기술서 변경을 반려했습니다.";
     render();
   },
   openGoalDetail(goalId) { state.ui.goalDetailId = goalId; state.ui.goalCheckinMode = false; saveState(); render(); },
