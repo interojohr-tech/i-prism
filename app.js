@@ -2171,7 +2171,7 @@ function getPageDescription(tab, user) {
     goalDashboard:  "회사 레벨 목표별로 하위 목표 현황과 달성률 저조 목표를 조회합니다.",
     goals:          "",
     goalApproval:   "",
-    jobDescMgmt:    "전사 OT 조직도(포지션)와 각 포지션의 직무기술서를 조회합니다.",
+    jobDescMgmt:    "",
     jobDescWrite:   "본인이 배치된 포지션의 직무기술서를 작성·수정합니다. 수정 내용은 상위 조직장의 승인 후 반영됩니다.",
     jobDescApproval:"하위 구성원이 제출한 직무기술서 수정 요청을 승인·반려합니다.",
     goalCycles:     "목표 사이클을 생성하고 승인 기능 등 운영 옵션을 설정합니다.",
@@ -3065,7 +3065,7 @@ function renderJobDescMgmt(user) {
   return `
     <section class="panel">
       <div class="panel-head">
-        <div><h2>전사 OT 조직도</h2><p class="muted">포지션을 클릭하면 직무기술서를 확인할 수 있습니다.</p></div>
+        <div><h2>전사 TO 조직도</h2></div>
         ${isAdminEditor ? `<button class="button" onclick="App.openJobPositionAddModal('')">+ 포지션 추가</button>` : ""}
       </div>
       <div class="panel-body">
@@ -3087,23 +3087,52 @@ function renderJobDescWrite(user) {
     return `<section class="panel"><div class="panel-body"><div class="empty">아직 배치된 포지션이 없습니다. 관리자에게 문의해 주세요.</div></div></section>`;
   }
   const pending = pos.pendingEdit;
-  const draft = ensureJobDescWriteDraft(pos);
   const statusBadge = pending
     ? (pending.status === "requested" ? `<span class="pill amber">승인 대기 중</span>` : `<span class="pill red">반려됨 — ${esc(pending.rejectReason || "")}</span>`)
     : (pos.jobDescription ? `<span class="pill green">승인 완료</span>` : `<span class="pill">미작성</span>`);
+
+  // 승인이 끝난(또는 검토 중인) 내용이 있으면 실수로 바로 수정하지 못하도록 읽기 전용으로
+  // 먼저 보여주고, "수정하기"를 눌러야 편집 폼으로 전환된다. 아직 아무것도 없는 신규
+  // 포지션은 바로 편집 폼을 보여준다. 포지션이 바뀌면 다시 읽기 전용으로 초기화한다.
+  if (state.ui.jobDescWriteEditModeFor !== pos.id) {
+    state.ui.jobDescWriteEditModeFor = pos.id;
+    state.ui.jobDescWriteEditMode = !(pos.jobDescription || pending);
+  }
+
+  if (!state.ui.jobDescWriteEditMode) {
+    const source = pending || pos.jobDescription || {};
+    return `
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>${esc(pos.name)} 직무기술서 작성</h2><p class="muted">수정 후 저장하면 상위 조직장의 승인을 받아야 반영됩니다.</p></div>
+          <div class="toolbar" style="align-items:center;">
+            ${statusBadge}
+            <button class="button" onclick="App.startJobDescWriteEdit('${pos.id}')">수정하기</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")}
+          ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")}
+        </div>
+      </section>
+      ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
+    `;
+  }
+
+  const draft = ensureJobDescWriteDraft(pos);
   return `
     <section class="panel">
       <div class="panel-head">
         <div><h2>${esc(pos.name)} 직무기술서 작성</h2><p class="muted">수정 후 저장하면 상위 조직장의 승인을 받아야 반영됩니다.</p></div>
-        ${statusBadge}
+        <div class="toolbar" style="align-items:center;">
+          ${statusBadge}
+          <button class="button" onclick="App.submitJobDescriptionEdit('${pos.id}')">저장 및 승인 요청</button>
+        </div>
       </div>
       <div class="panel-body">
         ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
           <div class="field"><label>${label}</label><input id="jdw_${key}" value="${esc(draft[key] || "")}" /></div>`).join("")}
         ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jdw", key, label, columns, draft[key])).join("")}
-        <div class="toolbar" style="margin-top:12px;">
-          <button class="button" onclick="App.submitJobDescriptionEdit('${pos.id}')">저장 및 승인 요청</button>
-        </div>
       </div>
     </section>
     ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
@@ -20566,6 +20595,12 @@ const App = {
   },
   // 팀원/팀장/본부장 본인 포지션 작성 — jobDescription은 그대로 두고 pendingEdit에 담아 승인 요청.
   // 본부장은 경영지원본부장에게, 그 외는 기존 결재선(nextApproverForUser)으로 라우팅된다.
+  // "직무기술서 작성" 화면에서 읽기 전용으로 보이던 상태를 편집 폼으로 전환
+  startJobDescWriteEdit(positionId) {
+    state.ui.jobDescWriteEditModeFor = positionId;
+    state.ui.jobDescWriteEditMode = true;
+    saveState(); render();
+  },
   submitJobDescriptionEdit(positionId) {
     const pos = state.jobPositions.find(p => p.id === positionId);
     if (!pos) return;
@@ -20575,6 +20610,8 @@ const App = {
     syncJobDescDraftFromDom("jdw", draft);
     const fields = finalizeJobDescFields(draft);
     const approver = jobDescApproverForUser(user);
+    // 제출 후에는 다시 읽기 전용으로 돌아가고, 이후 수정하려면 "수정하기"를 다시 눌러야 한다.
+    state.ui.jobDescWriteEditMode = false;
     if (!approver) {
       pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: user.id };
       pos.pendingEdit = null;
