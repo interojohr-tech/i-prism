@@ -292,6 +292,16 @@ const GOAL_LEVEL_FOR_ROLE = {
   member: "individual",
 };
 function goalLevelForUser(user) { return GOAL_LEVEL_FOR_ROLE[user?.role] || "company"; }
+// 회장·사장·관리자_목표관리는 전부 "회사" 레벨 목표를 등록하는 계정이라, 셋을 하나의
+// 계정처럼 취급해 가중치 합 100% 규칙을 셋이 등록한 목표 전체에 걸쳐 함께 적용한다.
+// (본부/팀/개인 레벨은 계정별로 독립된 가중치 풀을 그대로 유지한다.)
+const COMPANY_GOAL_SHARED_ROLES = ["chairman", "president", "goalAdmin"];
+function goalWeightPoolOwnerIds(user) {
+  if (COMPANY_GOAL_SHARED_ROLES.includes(user?.role)) {
+    return state.users.filter(u => COMPANY_GOAL_SHARED_ROLES.includes(u.role) && u.active !== false).map(u => u.id);
+  }
+  return [user.id];
+}
 
 const ADMIN_SECTION_LABELS = {
   progress:    "① 사이클 관리",
@@ -19859,7 +19869,8 @@ const App = {
     if (!cycle) return window.alert("활성 목표 사이클이 없습니다.");
     if (cycle.readOnly) return window.alert("읽기 전용 사이클에는 목표를 추가할 수 없습니다.");
     const cart = state.ui.goalDraftCart || [];
-    const existingGoals = state.goals.filter(g => g.ownerId === user.id && g.cycleId === cycle.id && g.approvalStatus !== "rejected");
+    const poolIds = goalWeightPoolOwnerIds(user);
+    const existingGoals = state.goals.filter(g => poolIds.includes(g.ownerId) && g.cycleId === cycle.id && g.approvalStatus !== "rejected");
     if (!existingGoals.length && !cart.length) return window.alert("등록할 목표를 1개 이상 추가해 주세요.");
 
     const existingWeights = [];
@@ -20067,7 +20078,11 @@ const App = {
     const goal = state.goals.find(g => g.id === goalId);
     if (!goal) return;
     const user = currentUser();
-    if (goal.ownerId !== user.id && user.role !== "admin") return window.alert("본인 목표만 삭제할 수 있습니다.");
+    // 회장·사장·관리자_목표관리는 회사 레벨 가중치 풀을 공유하는 계정이라, 서로의
+    // 목표도 이 화면에서 삭제(재배분)할 수 있어야 한다.
+    if (goal.ownerId !== user.id && user.role !== "admin" && !goalWeightPoolOwnerIds(user).includes(goal.ownerId)) {
+      return window.alert("본인 목표만 삭제할 수 있습니다.");
+    }
     const cycle = state.goalCycles.find(c => c.id === goal.cycleId);
     // 승인제 + 이미 승인된 목표 → 즉시 삭제 불가, 삭제 승인 요청
     if (cycle?.approvalEnabled && goal.approvalStatus === "approved" && user.role !== "admin") {
@@ -20992,7 +21007,9 @@ function renderGoalCreateModal(user) {
 // 담아둔 신규 목표들과 합쳐 가중치 합계가 100이 되도록 한 번에 저장한다.
 function renderGoalWeightManagerModal(user) {
   const cycle = activeGoalCycle();
-  const allOwned = state.goals.filter(g => g.ownerId === user.id && g.cycleId === cycle.id);
+  const poolIds = goalWeightPoolOwnerIds(user);
+  const isSharedPool = poolIds.length > 1;
+  const allOwned = state.goals.filter(g => poolIds.includes(g.ownerId) && g.cycleId === cycle.id);
   const existingGoals = allOwned.filter(g => g.approvalStatus !== "rejected");
   const rejectedGoals = allOwned.filter(g => g.approvalStatus === "rejected");
   const cart = state.ui.goalDraftCart || [];
@@ -21003,6 +21020,7 @@ function renderGoalWeightManagerModal(user) {
       <div style="flex:1;min-width:0;">
         <strong style="display:block;">${esc(g.title)}</strong>
         <span class="muted" style="font-size:12px;">${GOAL_LEVEL_LABELS[g.level]}</span>
+        ${isSharedPool ? `<span class="muted" style="font-size:12px;"> · ${esc(userById(g.ownerId)?.name || "-")}</span>` : ""}
         <span class="pill ${statusColor(g)}" style="margin-left:6px;font-size:10px;">${statusLabel(g)}</span>
       </div>
       <input data-weight-input type="number" id="goal_w_existing_${g.id}" min="1" max="100" value="${esc(g.weight ?? "")}" style="width:80px;" oninput="App.updateGoalWeightNotice()" />
@@ -21023,6 +21041,7 @@ function renderGoalWeightManagerModal(user) {
     <div class="component-card" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;opacity:0.6;">
       <div style="flex:1;min-width:0;">
         <strong style="display:block;">${esc(g.title)}</strong>
+        ${isSharedPool ? `<span class="muted" style="font-size:12px;">${esc(userById(g.ownerId)?.name || "-")} · </span>` : ""}
         <span class="pill red" style="font-size:10px;">반려됨 · 가중치 합계 제외</span>
       </div>
       <button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="App.deleteGoal('${g.id}')">삭제</button>
@@ -21036,7 +21055,7 @@ function renderGoalWeightManagerModal(user) {
           <button onclick="App.closeGoalCreate()" style="background:none;border:none;font-size:20px;cursor:pointer;">×</button>
         </div>
         <div class="goal-modal-body">
-          <p class="muted" style="font-size:12px;margin-bottom:10px;">이 사이클에서 등록한 목표들의 가중치 합이 100%가 되도록 맞춰 주세요(반려된 목표는 제외).</p>
+          <p class="muted" style="font-size:12px;margin-bottom:10px;">이 사이클에서 등록한 목표들의 가중치 합이 100%가 되도록 맞춰 주세요(반려된 목표는 제외).${isSharedPool ? " 회장·사장·관리자_목표관리 계정은 하나의 계정처럼 연동되어, 세 계정이 등록한 회사 레벨 목표를 모두 합쳐 100%를 맞춥니다." : ""}</p>
           <div id="goal_weight_rows">
             ${existingGoals.map(existingRow).join("") || `<p class="muted" style="font-size:13px;">등록된 목표가 없습니다. 아래에서 새 목표를 추가해 주세요.</p>`}
             ${cart.map(cartRow).join("")}
