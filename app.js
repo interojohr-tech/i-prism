@@ -2096,11 +2096,18 @@ function render(loginError = "") {
   `;
 
   // flash 메시지(저장 완료 등)는 화면 상단 팝업으로 잠시 떠 있다가 자동으로 사라진다.
+  // 예전에는 사라질 때 render()를 다시 불러 화면 전체를 새로 그렸는데, render()가
+  // #app.innerHTML을 통째로 교체하는 구조라 그 순간 스크롤 위치·포커스 중이던
+  // 입력창·트리 펼침 상태 등이 초기화되어 "새로고침되는 것처럼 흐름이 끊긴다"는
+  // 피드백이 있었다. 이 배너는 position:fixed라 문서 흐름에 관여하지 않으므로,
+  // 굳이 전체를 다시 그릴 필요 없이 배너 엘리먼트만 직접 지운다.
   clearTimeout(window._flashTimer);
   if (state.ui.flash) {
     window._flashTimer = setTimeout(() => {
       state.ui.flash = "";
-      render();
+      const el = document.querySelector(".flash-notice");
+      if (el) el.remove();
+      else render();
     }, 2200);
   }
 
