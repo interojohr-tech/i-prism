@@ -286,7 +286,9 @@ function getSiteMapTabs(role) {
   // 직무기술서 관리는 전 역할이 조회 가능(어드민만 편집) — 작성/승인은 해당 역할에게만
   tabs.push("jobDescMgmt");
   if (["member", "teamLead", "divisionHead"].includes(role)) tabs.push("jobDescWrite");
-  if (["teamLead", "divisionHead", "president", "chairman"].includes(role)) tabs.push("jobDescApproval");
+  // 본부장 직무기술서는 사장/회장이 아니라 경영지원본부장에게 승인 요청이 가므로
+  // 사장/회장에게는 직무기술서 승인 메뉴가 필요 없다.
+  if (["teamLead", "divisionHead"].includes(role)) tabs.push("jobDescApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
   if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary", "auditLog");
@@ -2137,7 +2139,9 @@ function getVisibleTabs(user) {
   // 직무기술서 관리는 전 역할이 조회 가능(어드민만 편집) — 작성/승인은 해당 역할에게만
   tabs.push("jobDescMgmt");
   if (["member", "teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescWrite");
-  if (["teamLead", "divisionHead", "president", "chairman"].includes(user.role)) tabs.push("jobDescApproval");
+  // 본부장 직무기술서는 사장/회장이 아니라 경영지원본부장에게 승인 요청이 가므로
+  // 사장/회장에게는 직무기술서 승인 메뉴가 필요 없다.
+  if (["teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescApproval");
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
@@ -2711,18 +2715,145 @@ function renderGoalDashboard(user) {
 // 전사 OT 조직도(포지션 트리, state.jobPositions)는 실제 인사 배치(조직 관리 메뉴의
 // state.organizationNodes / user.division·team)와는 별개의 인사기획용 데이터다.
 // 포지션은 공석일 수 있고, 관리자가 자유롭게 추가·삭제·재배치·구성원 배치를 할 수 있다.
-const JOB_DESC_FIELDS = [
-  ["jobGroup", "직군"], ["jobSeries", "직렬"], ["jobRole", "직무"],
-  ["purpose", "직무목적"], ["coreTasks", "핵심업무"], ["keyOutputs", "주요산출물"],
-  ["requiredKnowledge", "필요지식, 기술"], ["qualifications", "자격요건(업무경력, 전공 등)"],
+// 직군/직렬/직무처럼 값이 하나뿐인 단순 필드
+const JOB_DESC_SIMPLE_FIELDS = [["jobGroup", "직군"], ["jobSeries", "직렬"], ["jobRole", "직무"]];
+// 여러 항목을 표(행)로 입력하는 필드 — [필드key, 라벨, 컬럼정의[]]
+const JOB_DESC_LIST_FIELDS = [
+  ["purposes", "직무목적", [
+    { key: "text", label: "내용", type: "textarea" },
+  ]],
+  ["coreTasks", "핵심업무", [
+    { key: "task", label: "주요과업 내용", type: "textarea" },
+    { key: "output", label: "주요산출물", type: "textarea" },
+  ]],
+  ["kpis", "KPI", [
+    { key: "task", label: "주요과업 내용", type: "textarea" },
+    { key: "type", label: "정성/정량", type: "select", options: ["정성", "정량"] },
+    { key: "criteria", label: "평가기준/방법", type: "textarea" },
+  ]],
+  ["knowledgeSkills", "필요지식/기술", [
+    { key: "content", label: "내용", type: "text" },
+    { key: "importance", label: "중요도", type: "select", options: ["상", "중", "하"] },
+  ]],
+  ["qualifications", "자격요건", [
+    { key: "area", label: "구분", type: "text" },
+    { key: "years", label: "연수", type: "text" },
+  ]],
 ];
-const JOB_DESC_LONG_FIELDS = ["purpose", "coreTasks", "keyOutputs", "requiredKnowledge", "qualifications"];
+function jobDescListFieldDef(fieldKey) {
+  return JOB_DESC_LIST_FIELDS.find(([key]) => key === fieldKey);
+}
+function emptyJobDescListRow(fieldKey) {
+  const def = jobDescListFieldDef(fieldKey);
+  const row = {};
+  (def ? def[2] : []).forEach(col => { row[col.key] = ""; });
+  return row;
+}
+// 저장된(또는 비어 있는) 직무기술서로부터 편집용 초안을 만든다 — 리스트형 필드는
+// 항상 최소 1행을 유지해 편집 폼이 비어 보이지 않게 한다.
+function buildJobDescDraft(jd) {
+  const draft = {};
+  JOB_DESC_SIMPLE_FIELDS.forEach(([key]) => { draft[key] = jd?.[key] || ""; });
+  JOB_DESC_LIST_FIELDS.forEach(([key]) => {
+    const existing = Array.isArray(jd?.[key]) ? jd[key].map(r => ({ ...r })) : [];
+    draft[key] = existing.length ? existing : [emptyJobDescListRow(key)];
+  });
+  return draft;
+}
+// 현재 화면(prefix)의 입력값을 draft 객체에 그대로 반영 — 행 추가/삭제 전에 먼저
+// 호출해 입력 중이던 내용이 사라지지 않게 한다.
+function syncJobDescDraftFromDom(prefix, draft) {
+  JOB_DESC_SIMPLE_FIELDS.forEach(([key]) => { draft[key] = (valueOf(`${prefix}_${key}`) || "").trim(); });
+  JOB_DESC_LIST_FIELDS.forEach(([fieldKey, , columns]) => {
+    (draft[fieldKey] || []).forEach((row, i) => {
+      columns.forEach(col => {
+        const el = document.getElementById(`${prefix}_${fieldKey}_${i}_${col.key}`);
+        if (el) row[col.key] = (el.value || "").trim();
+      });
+    });
+  });
+}
+// 저장 시점에 draft를 최종 필드 값으로 변환 — 완전히 빈 행은 제외한다.
+function finalizeJobDescFields(draft) {
+  const fields = {};
+  JOB_DESC_SIMPLE_FIELDS.forEach(([key]) => { fields[key] = draft[key] || ""; });
+  JOB_DESC_LIST_FIELDS.forEach(([fieldKey, , columns]) => {
+    fields[fieldKey] = (draft[fieldKey] || []).filter(row => columns.some(col => (row[col.key] || "").trim()));
+  });
+  return fields;
+}
+// "직무기술서 작성" 탭은 매 render()마다 이 함수를 다시 부르므로, 이미 만들어둔
+// 초안이 있으면 그대로 유지하고(입력 중이던 내용 보존), 다른 포지션으로 바뀌었을
+// 때만 새로 만든다.
+function ensureJobDescWriteDraft(pos) {
+  if (!state.ui.jobDescWriteDraft || state.ui.jobDescWriteDraft.__positionId !== pos.id) {
+    const source = pos.pendingEdit || pos.jobDescription;
+    state.ui.jobDescWriteDraft = { ...buildJobDescDraft(source), __positionId: pos.id };
+  }
+  return state.ui.jobDescWriteDraft;
+}
+function jobDescListRowFieldInput(prefix, fieldKey, index, col, value) {
+  if (col.type === "select") {
+    return `<select id="${prefix}_${fieldKey}_${index}_${col.key}">${col.options.map(o => `<option value="${o}" ${value === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  }
+  if (col.type === "textarea") {
+    return `<textarea id="${prefix}_${fieldKey}_${index}_${col.key}" rows="2">${esc(value || "")}</textarea>`;
+  }
+  return `<input id="${prefix}_${fieldKey}_${index}_${col.key}" value="${esc(value || "")}" />`;
+}
+// 리스트형 필드 하나의 편집 UI(행마다 입력칸 + 삭제, 아래에 항목 추가 버튼)
+function renderJobDescListEditor(prefix, fieldKey, label, columns, rows) {
+  return `
+    <div class="field">
+      <label>${label}</label>
+      ${rows.map((row, i) => `
+        <div class="component-card" style="margin-bottom:8px;">
+          <div class="muted" style="font-size:11px;margin-bottom:6px;">${i + 1}번</div>
+          ${columns.map(col => `
+            <div class="field" style="margin-bottom:6px;">
+              <label style="font-size:11px;">${col.label}</label>
+              ${jobDescListRowFieldInput(prefix, fieldKey, i, col, row[col.key])}
+            </div>`).join("")}
+          ${rows.length > 1 ? `<button type="button" class="btn secondary" style="font-size:11px;" onclick="App.removeJobDescListRow('${prefix}','${fieldKey}',${i})">이 항목 삭제</button>` : ""}
+        </div>`).join("")}
+      <button type="button" class="button secondary" style="font-size:12px;" onclick="App.addJobDescListRow('${prefix}','${fieldKey}')">+ 항목 추가</button>
+    </div>`;
+}
+// 리스트형 필드 하나의 읽기 전용 표시(표)
+function renderJobDescListView(label, columns, rows) {
+  const validRows = (rows || []).filter(r => columns.some(c => (r[c.key] || "").trim()));
+  if (!validRows.length) return `<div class="field"><label>${label}</label><p class="muted" style="margin:4px 0 0;">-</p></div>`;
+  return `
+    <div class="field"><label>${label}</label>
+      <div class="table-wrap" style="margin-top:4px;">
+        <table>
+          <thead><tr><th style="width:36px;">번호</th>${columns.map(c => `<th>${c.label}</th>`).join("")}</tr></thead>
+          <tbody>${validRows.map((r, i) => `<tr><td>${i + 1}</td>${columns.map(c => `<td style="white-space:pre-wrap;">${esc(r[c.key] || "-")}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
 const JOB_POSITION_LEVEL_LABELS = { company: "회사", division: "본부", team: "팀", member: "팀원" };
 // 회장/사장 같은 회사 레벨 포지션은 직무기술서 작성 의무가 없다(공석·미작성이어도 정상).
 const JOB_DESC_OPTIONAL_LEVELS = ["company"];
 
 function jobPositionForUser(user) {
   return state.jobPositions.find(p => p.occupantUserId === user.id) || null;
+}
+
+// 본부장이 작성한 직무기술서는 일반 결재선(사장/회장)이 아니라, 포지션명이
+// "경영지원본부장"인 포지션의 점유자에게 승인을 요청한다(직무기술서 표준을
+// 관리하는 경영지원본부장에게 회사 전체 본부장 직무기술서가 모이도록 하는 규칙).
+function jobDescExecutiveApprover() {
+  const pos = state.jobPositions.find(p => (p.name || "").trim() === "경영지원본부장");
+  return pos && pos.occupantUserId ? userById(pos.occupantUserId) : null;
+}
+
+// 직무기술서 승인자 결정 — 본부장은 경영지원본부장에게, 그 외(팀원/팀장)는 기존
+// 조직 결재선(nextApproverForUser)을 그대로 따른다.
+function jobDescApproverForUser(user) {
+  if (user.role === "divisionHead") return jobDescExecutiveApprover();
+  return nextApproverForUser(user);
 }
 
 // 자기 자신 포함 하위 포지션 전체(재귀)
@@ -2779,13 +2910,19 @@ function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
     <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
     <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>
     <button type="button" class="org-tree-delete" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>` : "";
+  // 리프(팀원 레벨) 행은 .org-tree-summary로 감싸지 않으므로 hover 시에만 보이는
+  // .org-tree-action/.org-tree-delete의 opacity:0 규칙이 걸리지 않는다 — 항상 보이게 강제.
+  const adminBtnsLeaf = isAdminEditor ? `
+    <button type="button" class="org-tree-action" style="opacity:1;" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
+    <button type="button" class="org-tree-action" style="opacity:1;" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>
+    <button type="button" class="org-tree-delete" style="opacity:1;" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>` : "";
   if (!children.length) {
     return `
       <div class="org-tree-member">
         <span class="folder-icon" style="visibility:hidden;"></span>
         <strong ${nameAttrs}>${esc(pos.name)}</strong>${jobLabel}
         <span>${jobPositionOccupantLabel(pos)}</span>
-        ${adminBtns}
+        ${adminBtnsLeaf}
       </div>`;
   }
   return `
@@ -2840,16 +2977,18 @@ function renderJobPositionAssignModal() {
   const pos = state.jobPositions.find(p => p.id === state.ui.jobPosAssignId);
   if (!pos) return "";
   const candidates = state.users.filter(u => !isAdminAccount(u) && u.active !== false).sort(compareEmployeesForDisplay);
+  const current = pos.occupantUserId ? userById(pos.occupantUserId) : null;
   return `
     <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobPositionAssignModal()">
       <div class="goal-modal" style="max-width:420px;">
         <div class="goal-modal-head"><h2>구성원 배치 — ${esc(pos.name)}</h2><button class="modal-x" onclick="App.closeJobPositionAssignModal()">×</button></div>
         <div class="goal-modal-body">
           <div class="field"><label>구성원</label>
-            <select id="jobpos_assign_user">
-              <option value="">공석(배치 해제)</option>
-              ${candidates.map(u => `<option value="${u.id}" ${u.id === pos.occupantUserId ? "selected" : ""}>${esc(userOptionLabel(u))}</option>`).join("")}
-            </select>
+            <input id="jobpos_assign_search" list="jobpos_assign_options" placeholder="이름 검색 후 선택 (비워두면 공석)" value="${current ? esc(userOptionLabel(current)) : ""}" />
+            <datalist id="jobpos_assign_options">
+              ${candidates.map(u => `<option value="${esc(userOptionLabel(u))}"></option>`).join("")}
+            </datalist>
+            <span class="muted" style="font-size:11px;">목록에서 이름을 선택해 주세요. 비워두면 공석으로 배치 해제됩니다.</span>
           </div>
         </div>
         <div class="goal-modal-foot">
@@ -2867,18 +3006,15 @@ function renderJobDescModal(user) {
   const isAdminEditor = user.role === "admin";
 
   if (mode === "edit") {
-    const jd = pos.jobDescription || {};
+    const draft = state.ui.jobDescEditDraft || buildJobDescDraft(pos.jobDescription);
     return `
       <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobDescDetail()">
-        <div class="goal-modal" style="max-width:560px;max-height:88vh;overflow-y:auto;">
+        <div class="goal-modal" style="max-width:600px;max-height:88vh;overflow-y:auto;">
           <div class="goal-modal-head"><h2>직무기술서 수정 — ${esc(pos.name)}</h2><button class="modal-x" onclick="App.closeJobDescDetail()">×</button></div>
           <div class="goal-modal-body">
-            ${JOB_DESC_FIELDS.map(([key, label]) => `
-              <div class="field"><label>${label}</label>
-                ${JOB_DESC_LONG_FIELDS.includes(key)
-                  ? `<textarea id="jd_field_${key}" rows="3">${esc(jd[key] || "")}</textarea>`
-                  : `<input id="jd_field_${key}" value="${esc(jd[key] || "")}" />`}
-              </div>`).join("")}
+            ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
+              <div class="field"><label>${label}</label><input id="jd_${key}" value="${esc(draft[key] || "")}" /></div>`).join("")}
+            ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jd", key, label, columns, draft[key])).join("")}
           </div>
           <div class="goal-modal-foot">
             <button class="button secondary" onclick="App.openJobDescDetail('${pos.id}')">취소</button>
@@ -2891,7 +3027,7 @@ function renderJobDescModal(user) {
   const source = mode === "review" ? pos.pendingEdit : pos.jobDescription;
   return `
     <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobDescDetail()">
-      <div class="goal-modal" style="max-width:560px;max-height:88vh;overflow-y:auto;">
+      <div class="goal-modal" style="max-width:600px;max-height:88vh;overflow-y:auto;">
         <div class="goal-modal-head">
           <h2>${mode === "review" ? "직무기술서 변경 검토 — " : "직무기술서 — "}${esc(pos.name)}</h2>
           <button class="modal-x" onclick="App.closeJobDescDetail()">×</button>
@@ -2902,7 +3038,9 @@ function renderJobDescModal(user) {
             <div><span>담당자</span><b>${pos.occupantUserId ? esc(userById(pos.occupantUserId)?.name || "-") : "공석"}</b></div>
           </div>
           ${mode === "review" && pos.pendingEdit ? `<div class="notice info" style="font-size:12px;margin-bottom:10px;">${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}님이 ${esc(formatDateTime(pos.pendingEdit.editedAt))}에 제출한 변경 제안입니다.</div>` : ""}
-          ${source ? JOB_DESC_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="white-space:pre-wrap;margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")
+          ${source
+            ? JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="white-space:pre-wrap;margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")
+              + JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")
             : `<div class="empty">${JOB_DESC_OPTIONAL_LEVELS.includes(pos.level) ? "이 포지션은 직무기술서 작성이 필요하지 않습니다." : "아직 작성된 직무기술서가 없습니다."}</div>`}
         </div>
         <div class="goal-modal-foot">
@@ -2944,7 +3082,7 @@ function renderJobDescWrite(user) {
     return `<section class="panel"><div class="panel-body"><div class="empty">아직 배치된 포지션이 없습니다. 관리자에게 문의해 주세요.</div></div></section>`;
   }
   const pending = pos.pendingEdit;
-  const source = pending || pos.jobDescription || {};
+  const draft = ensureJobDescWriteDraft(pos);
   const statusBadge = pending
     ? (pending.status === "requested" ? `<span class="pill amber">승인 대기 중</span>` : `<span class="pill red">반려됨 — ${esc(pending.rejectReason || "")}</span>`)
     : (pos.jobDescription ? `<span class="pill green">승인 완료</span>` : `<span class="pill">미작성</span>`);
@@ -2955,12 +3093,9 @@ function renderJobDescWrite(user) {
         ${statusBadge}
       </div>
       <div class="panel-body">
-        ${JOB_DESC_FIELDS.map(([key, label]) => `
-          <div class="field"><label>${label}</label>
-            ${JOB_DESC_LONG_FIELDS.includes(key)
-              ? `<textarea id="jdw_field_${key}" rows="3">${esc(source[key] || "")}</textarea>`
-              : `<input id="jdw_field_${key}" value="${esc(source[key] || "")}" />`}
-          </div>`).join("")}
+        ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
+          <div class="field"><label>${label}</label><input id="jdw_${key}" value="${esc(draft[key] || "")}" /></div>`).join("")}
+        ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jdw", key, label, columns, draft[key])).join("")}
         <div class="toolbar" style="margin-top:12px;">
           <button class="button" onclick="App.submitJobDescriptionEdit('${pos.id}')">저장 및 승인 요청</button>
         </div>
@@ -20364,7 +20499,14 @@ const App = {
   saveJobPositionAssign() {
     const pos = state.jobPositions.find(p => p.id === state.ui.jobPosAssignId);
     if (!pos) return;
-    pos.occupantUserId = valueOf("jobpos_assign_user") || "";
+    const typed = (valueOf("jobpos_assign_search") || "").trim();
+    if (!typed) {
+      pos.occupantUserId = "";
+    } else {
+      const target = state.users.find(u => !isAdminAccount(u) && userOptionLabel(u) === typed);
+      if (!target) return window.alert("목록에서 이름을 선택해 주세요.");
+      pos.occupantUserId = target.id;
+    }
     state.ui.jobPosAssignId = "";
     saveState();
     state.ui.flash = "구성원 배치를 저장했습니다.";
@@ -20373,41 +20515,67 @@ const App = {
   openJobDescDetail(positionId, mode = "view") {
     state.ui.jobDescDetailId = positionId;
     state.ui.jobDescDetailMode = mode;
+    if (mode === "edit") {
+      const pos = state.jobPositions.find(p => p.id === positionId);
+      state.ui.jobDescEditDraft = buildJobDescDraft(pos?.jobDescription);
+    }
     saveState(); render();
   },
   closeJobDescDetail() {
     state.ui.jobDescDetailId = "";
     state.ui.jobDescDetailMode = "";
+    state.ui.jobDescEditDraft = null;
+    saveState(); render();
+  },
+  // 리스트형 필드에 행 추가/삭제 — 먼저 화면의 현재 입력값을 draft에 반영한 뒤 행을
+  // 바꾸고 다시 그려서, 입력 중이던 다른 항목의 내용이 사라지지 않게 한다.
+  addJobDescListRow(prefix, fieldKey) {
+    const draft = prefix === "jd" ? state.ui.jobDescEditDraft : state.ui.jobDescWriteDraft;
+    if (!draft) return;
+    syncJobDescDraftFromDom(prefix, draft);
+    draft[fieldKey].push(emptyJobDescListRow(fieldKey));
+    saveState(); render();
+  },
+  removeJobDescListRow(prefix, fieldKey, index) {
+    const draft = prefix === "jd" ? state.ui.jobDescEditDraft : state.ui.jobDescWriteDraft;
+    if (!draft || draft[fieldKey].length <= 1) return;
+    syncJobDescDraftFromDom(prefix, draft);
+    draft[fieldKey].splice(index, 1);
     saveState(); render();
   },
   // 어드민이 직무기술서를 직접 수정 — 승인 절차 없이 즉시 반영
   saveJobDescriptionAdmin(positionId) {
     const pos = state.jobPositions.find(p => p.id === positionId);
     if (!pos) return;
-    const fields = {};
-    JOB_DESC_FIELDS.forEach(([key]) => { fields[key] = (valueOf(`jd_field_${key}`) || "").trim(); });
+    const draft = state.ui.jobDescEditDraft || buildJobDescDraft(pos.jobDescription);
+    syncJobDescDraftFromDom("jd", draft);
+    const fields = finalizeJobDescFields(draft);
     pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: currentUser().id };
     pos.history = pos.history || [];
     pos.history.push({ at: new Date().toISOString(), by: currentUser().id, summary: "관리자가 직무기술서를 직접 수정" });
     state.ui.jobDescDetailMode = "view";
+    state.ui.jobDescEditDraft = null;
     saveState();
     state.ui.flash = "직무기술서를 저장했습니다.";
     render();
   },
-  // 팀원/팀장/본부장 본인 포지션 작성 — jobDescription은 그대로 두고 pendingEdit에 담아 승인 요청
+  // 팀원/팀장/본부장 본인 포지션 작성 — jobDescription은 그대로 두고 pendingEdit에 담아 승인 요청.
+  // 본부장은 경영지원본부장에게, 그 외는 기존 결재선(nextApproverForUser)으로 라우팅된다.
   submitJobDescriptionEdit(positionId) {
     const pos = state.jobPositions.find(p => p.id === positionId);
     if (!pos) return;
     const user = currentUser();
     if (pos.occupantUserId !== user.id) return window.alert("본인에게 배치된 포지션만 작성할 수 있습니다.");
-    const fields = {};
-    JOB_DESC_FIELDS.forEach(([key]) => { fields[key] = (valueOf(`jdw_field_${key}`) || "").trim(); });
-    const approver = nextApproverForUser(user);
+    const draft = ensureJobDescWriteDraft(pos);
+    syncJobDescDraftFromDom("jdw", draft);
+    const fields = finalizeJobDescFields(draft);
+    const approver = jobDescApproverForUser(user);
     if (!approver) {
       pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: user.id };
       pos.pendingEdit = null;
       pos.history = pos.history || [];
       pos.history.push({ at: new Date().toISOString(), by: user.id, summary: "승인권자가 없어 즉시 반영" });
+      state.ui.jobDescWriteDraft = null;
       saveState();
       state.ui.flash = "직무기술서를 저장했습니다.";
       return render();
@@ -20421,7 +20589,8 @@ const App = {
     const pos = state.jobPositions.find(p => p.id === positionId);
     if (!pos || !pos.pendingEdit) return;
     const fields = {};
-    JOB_DESC_FIELDS.forEach(([key]) => { fields[key] = pos.pendingEdit[key] || ""; });
+    JOB_DESC_SIMPLE_FIELDS.forEach(([key]) => { fields[key] = pos.pendingEdit[key] || ""; });
+    JOB_DESC_LIST_FIELDS.forEach(([key]) => { fields[key] = Array.isArray(pos.pendingEdit[key]) ? pos.pendingEdit[key] : []; });
     pos.jobDescription = { ...fields, updatedAt: new Date().toISOString(), updatedBy: pos.pendingEdit.editedBy };
     pos.history = pos.history || [];
     pos.history.push({ at: new Date().toISOString(), by: currentUser().id, summary: "직무기술서 변경 승인" });
