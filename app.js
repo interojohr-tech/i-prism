@@ -2566,17 +2566,13 @@ function renderGoalDashboard(user) {
     const worst = list.slice()
       .sort((a, b) => goalDisplayProgress(a, allGoals) - goalDisplayProgress(b, allGoals))
       .slice(0, n);
-    const levelOptions = GOAL_LEVELS.filter(l => worst.some(g => g.level === l));
-    const orgOptions = [...new Set(worst.map(g => g.team || g.division || "-"))].sort((a, b) => a.localeCompare(b, "ko"));
+    const divisionOf = (g) => g.division || userById(g.ownerId)?.division || "-";
+    const divisionOptions = [...new Set(worst.map(divisionOf))].sort((a, b) => a.localeCompare(b, "ko"));
     return `
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        <select id="updflt_level_${tableKey}" onchange="App.filterUnderperformerTable('${tableKey}')" style="font-size:12px;">
-          <option value="">레벨 전체</option>
-          ${levelOptions.map(l => `<option value="${l}">${GOAL_LEVEL_LABELS[l]}</option>`).join("")}
-        </select>
-        <select id="updflt_org_${tableKey}" onchange="App.filterUnderperformerTable('${tableKey}')" style="font-size:12px;">
-          <option value="">담당 조직 전체</option>
-          ${orgOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("")}
+        <select id="updflt_division_${tableKey}" onchange="App.filterUnderperformerTable('${tableKey}')" style="font-size:12px;">
+          <option value="">소속 본부 전체</option>
+          ${divisionOptions.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}
         </select>
       </div>
       <div class="table-wrap" style="margin-top:10px;">
@@ -2587,7 +2583,7 @@ function renderGoalDashboard(user) {
               const owner = userById(g.ownerId);
               const prog = goalDisplayProgress(g, allGoals);
               const org = g.team || g.division || "-";
-              return `<tr data-level="${g.level}" data-org="${esc(org)}">
+              return `<tr data-division="${esc(divisionOf(g))}">
                 <td><button onclick="App.openGoalDetail('${g.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);">${esc(g.title)}</strong></button></td>
                 <td>${GOAL_LEVEL_LABELS[g.level]||"-"}</td>
                 <td>${esc(org)}</td>
@@ -2600,11 +2596,13 @@ function renderGoalDashboard(user) {
       </div>`;
   };
 
+  const collapsedPanels = state.ui.goalDashboardCollapsed || {};
   const companySection = (goal) => {
     const owner = userById(goal.ownerId);
     const subtree = descendants(goal.id);
     const divisionGoals = subtree.filter(g => g.level === "division");
     const ownProg = goalDisplayProgress(goal, allGoals);
+    const isCollapsed = Boolean(collapsedPanels[goal.id]);
     const divisionCard = (dg) => {
       const dgOwner = userById(dg.ownerId);
       const dgProg = goalDisplayProgress(dg, allGoals);
@@ -2618,20 +2616,24 @@ function renderGoalDashboard(user) {
     };
     return `
       <div class="panel" style="margin-top:16px;">
-        <div class="panel-head">
-          <div>
-            <h2>${esc(goal.title)}</h2>
-            <p class="muted">담당: ${esc(owner?.name||"-")} · 가중치 ${goal.weight != null ? esc(goal.weight)+"%" : "-"}</p>
+        <div class="panel-head" style="cursor:pointer;" onclick="App.toggleGoalDashboardPanel('${goal.id}')">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:12px;padding:0;">${isCollapsed ? "▶" : "▼"}</button>
+            <div>
+              <h2>${esc(goal.title)}</h2>
+              <p class="muted">담당: ${esc(owner?.name||"-")} · 가중치 ${goal.weight != null ? esc(goal.weight)+"%" : "-"}</p>
+            </div>
           </div>
           <span class="pill" style="font-size:13px;font-weight:700;color:${achColor(ownProg)};background:${achColor(ownProg)}1a;">달성률 ${ownProg}%</span>
         </div>
+        ${isCollapsed ? "" : `
         <div class="panel-body">
           ${divisionGoals.length
             ? `<div class="evd-metrics-grid">${divisionGoals.map(divisionCard).join("")}</div>`
             : `<div class="empty" style="padding:16px;">등록된 본부 레벨 목표가 없습니다.</div>`}
           <div style="margin-top:18px;font-weight:700;font-size:13px;">⚠ 달성률 저조 목표 (하위 20%)</div>
           ${underperformerTable(subtree, goal.id)}
-        </div>
+        </div>`}
       </div>`;
   };
 
@@ -19241,12 +19243,17 @@ const App = {
   },
   // 목표 운영 현황(회사 레벨 목표별 패널)의 "달성률 저조 목표" 표 — 레벨/담당 조직으로 필터
   filterUnderperformerTable(tableKey) {
-    const level = document.getElementById(`updflt_level_${tableKey}`)?.value || "";
-    const org = document.getElementById(`updflt_org_${tableKey}`)?.value || "";
+    const division = document.getElementById(`updflt_division_${tableKey}`)?.value || "";
     document.querySelectorAll(`#uptable-${CSS.escape(tableKey)} tbody tr`).forEach(row => {
-      const ok = (!level || row.dataset.level === level) && (!org || row.dataset.org === org);
-      row.style.display = ok ? "" : "none";
+      row.style.display = (!division || row.dataset.division === division) ? "" : "none";
     });
+  },
+  // 목표 운영 현황 — 회사 레벨 목표 패널 접기/펼치기
+  toggleGoalDashboardPanel(goalId) {
+    state.ui.goalDashboardCollapsed = state.ui.goalDashboardCollapsed || {};
+    state.ui.goalDashboardCollapsed[goalId] = !state.ui.goalDashboardCollapsed[goalId];
+    saveState();
+    render();
   },
   createGoalCyclePrompt() {
     const name = (valueOf("gc_name") || "").trim();
