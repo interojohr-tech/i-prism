@@ -287,8 +287,10 @@ function getSiteMapTabs(role) {
   tabs.push("jobDescMgmt");
   if (["member", "teamLead", "divisionHead"].includes(role)) tabs.push("jobDescWrite");
   // 본부장 직무기술서는 사장/회장이 아니라 경영지원본부장에게 승인 요청이 가므로
-  // 사장/회장에게는 직무기술서 승인 메뉴가 필요 없다.
-  if (["teamLead", "divisionHead"].includes(role)) tabs.push("jobDescApproval");
+  // 사장에게는 직무기술서 승인 메뉴가 필요 없다. 다만 팀장/본부장 층이 없는 조직의
+  // 팀원이 제출하면(nextApproverForUser가 임원으로 바로 올려보내는 경우) 사장이
+  // 퇴사·공석이면 회장이 최종 승인자가 되므로, 회장에게는 메뉴를 남겨둔다.
+  if (["teamLead", "divisionHead", "chairman"].includes(role)) tabs.push("jobDescApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
   if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary", "auditLog");
@@ -2140,8 +2142,10 @@ function getVisibleTabs(user) {
   tabs.push("jobDescMgmt");
   if (["member", "teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescWrite");
   // 본부장 직무기술서는 사장/회장이 아니라 경영지원본부장에게 승인 요청이 가므로
-  // 사장/회장에게는 직무기술서 승인 메뉴가 필요 없다.
-  if (["teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescApproval");
+  // 사장에게는 직무기술서 승인 메뉴가 필요 없다. 다만 팀장/본부장 층이 없는 조직의
+  // 팀원이 제출하면(nextApproverForUser가 임원으로 바로 올려보내는 경우) 사장이
+  // 퇴사·공석이면 회장이 최종 승인자가 되므로, 회장에게는 메뉴를 남겨둔다.
+  if (["teamLead", "divisionHead", "chairman"].includes(user.role)) tabs.push("jobDescApproval");
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
@@ -3120,12 +3124,16 @@ function renderJobDescWrite(user) {
   }
 
   const draft = ensureJobDescWriteDraft(pos);
+  // 되돌아갈 읽기 전용 내용(승인된 내용 또는 반려된 이전 요청)이 있을 때만 "수정 취소"를
+  // 보여준다. 아직 아무것도 없는 신규 포지션은 편집이 곧 최초 작성이라 취소할 대상이 없다.
+  const canCancel = Boolean(pos.jobDescription || pending);
   return `
     <section class="panel">
       <div class="panel-head">
         <div><h2>${esc(pos.name)} 직무기술서 작성</h2><p class="muted">수정 후 저장하면 상위 조직장의 승인을 받아야 반영됩니다.</p></div>
         <div class="toolbar" style="align-items:center;">
           ${statusBadge}
+          ${canCancel ? `<button class="button secondary" onclick="App.cancelJobDescWriteEdit('${pos.id}')">수정 취소</button>` : ""}
           <button class="button" onclick="App.submitJobDescriptionEdit('${pos.id}')">저장 및 승인 요청</button>
         </div>
       </div>
@@ -20601,6 +20609,14 @@ const App = {
     state.ui.jobDescWriteEditMode = true;
     saveState(); render();
   },
+  // 편집 중이던 내용을 버리고 읽기 전용 화면으로 되돌아간다. 다음에 다시 "수정하기"를
+  // 누르면 지금 취소한 초안이 아니라 현재 승인본/검토중 내용으로 새로 초안을 만들어야
+  // 하므로 draft를 비워둔다(ensureJobDescWriteDraft가 다시 채워 넣는다).
+  cancelJobDescWriteEdit(positionId) {
+    state.ui.jobDescWriteEditMode = false;
+    state.ui.jobDescWriteDraft = null;
+    saveState(); render();
+  },
   submitJobDescriptionEdit(positionId) {
     const pos = state.jobPositions.find(p => p.id === positionId);
     if (!pos) return;
@@ -21010,10 +21026,15 @@ function nextApproverForUser(user) {
       || findExecutiveEvaluator(user, { tree, users });
   }
   if (user.role === "divisionHead") {
-    return users.find(u => u.role === "president") || users.find(u => u.role === "chairman") || null;
+    // 퇴사·비활성 처리된 계정은 승인권자가 될 수 없다 — 사장이 퇴사 처리되어 있으면
+    // 자동으로 회장에게 넘어가야 한다(등록만 되어 있고 실제로는 결재를 볼 수 없는
+    // 계정에 요청이 묶여버리는 것을 방지).
+    return users.find(u => u.role === "president" && u.active !== false && !isRetired(u))
+      || users.find(u => u.role === "chairman" && u.active !== false && !isRetired(u))
+      || null;
   }
   if (user.role === "president") {
-    return users.find(u => u.role === "chairman") || null;
+    return users.find(u => u.role === "chairman" && u.active !== false && !isRetired(u)) || null;
   }
   return null; // chairman: 승인 불필요
 }
