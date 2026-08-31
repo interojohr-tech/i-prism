@@ -19337,16 +19337,24 @@ const App = {
       divisionHeadCount.set(head.division, cap(available));
     });
 
-    const presidentAvailable = divisionHeads.reduce((s, h) => s + divisionHeadCount.get(h.division), 0);
-    const presidentGoalCount = president ? cap(presidentAvailable) : 0;
-    const chairmanAvailable = president ? presidentGoalCount : presidentAvailable;
-    const chairmanGoalCount = chairman ? cap(chairmanAvailable) : 0;
+    // 회장과 사장은 둘 다 "회사" 레벨로 같은 위계다 — 한쪽이 다른 쪽의 하위 목표가
+    // 되면 안 된다. 대신 본부장들의 목표 총량을 함께 나눠 받는다(먼저 배정받는 쪽이
+    // 필요한 만큼 가져가고, 남은 만큼 다음 사람이 받는 순차 배분).
+    const totalDivisionGoals = divisionHeads.reduce((s, h) => s + divisionHeadCount.get(h.division), 0);
+    let remainingCompanyBudget = totalDivisionGoals;
+    const drawCompanyGoalCount = () => {
+      const count = cap(remainingCompanyBudget);
+      remainingCompanyBudget = Math.max(0, remainingCompanyBudget - count);
+      return count;
+    };
+    const chairmanGoalCount = chairman ? drawCompanyGoalCount() : 0;
+    const presidentGoalCount = president ? drawCompanyGoalCount() : 0;
 
-    // ── 2단계: 위에서 정한 개수대로 회장 → 사장 → 본부장 → 팀장 → 팀원 순서로 실제
-    // 목표를 생성하고, 상위 목표 세트 전체에 고르게 분산 연결한다.
+    // ── 2단계: 위에서 정한 개수대로 회장·사장(동급, 위계 없음) → 본부장 → 팀장 → 팀원
+    // 순서로 실제 목표를 생성하고, 상위 목표 세트 전체에 고르게 분산 연결한다.
     const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles, chairmanGoalCount) : [];
-    const presGoals = president ? makeGoalSet(president, "company", makeParentPicker(chairGoals), companyGoalTitles, presidentGoalCount) : [];
-    const topGoals = presGoals.length ? presGoals : chairGoals;
+    const presGoals = president ? makeGoalSet(president, "company", null, companyGoalTitles, presidentGoalCount) : [];
+    const topGoals = [...chairGoals, ...presGoals];
 
     const divParentPicker = makeParentPicker(topGoals);
     const divGoalsByDivision = {};
