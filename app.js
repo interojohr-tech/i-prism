@@ -19440,9 +19440,10 @@ const App = {
 
     // 한 사람 몫의 목표를 count개 한 번에 생성 — 가중치 합은 항상 100이 되도록 배분하고,
     // 목표 하나하나가 parentPicker()로 상위 목표 세트 중 하나씩을 골라 연결된다(전부 한
-    // 상위 목표로 몰리지 않도록).
-    const makeGoalSet = (owner, level, parentPicker, titlePool, count, metricChance = 1) => {
-      const weights = randomWeights(count);
+    // 상위 목표로 몰리지 않도록). weightsOverride를 넘기면 그 값을 그대로 쓴다(회사
+    // 레벨처럼 여러 사람이 가중치 100%를 나눠 가져야 할 때 사용).
+    const makeGoalSet = (owner, level, parentPicker, titlePool, count, metricChance = 1, weightsOverride = null) => {
+      const weights = weightsOverride || randomWeights(count);
       const pool = titlePool.length >= count ? titlePool : Array.from({ length: count }, (_, i) => titlePool[i % titlePool.length]);
       const titles = shuffle(pool).slice(0, count);
       return titles.map((title, i) => {
@@ -19496,11 +19497,17 @@ const App = {
     };
     const chairmanGoalCount = chairman ? drawCompanyGoalCount() : 0;
     const presidentGoalCount = president ? drawCompanyGoalCount() : 0;
+    // 회장·사장·관리자_목표관리는 회사 레벨 가중치를 하나의 계정처럼 공유한다(실제
+    // 화면의 "목표 가중치 관리"와 동일한 규칙). 더미 데이터도 회장+사장 목표 전체의
+    // 가중치 합이 100이 되도록 한 번에 배분한 뒤 각자의 몫만큼 나눠 가진다.
+    const companySharedWeights = randomWeights(chairmanGoalCount + presidentGoalCount || 1);
+    const chairmanWeights = companySharedWeights.slice(0, chairmanGoalCount);
+    const presidentWeights = companySharedWeights.slice(chairmanGoalCount, chairmanGoalCount + presidentGoalCount);
 
     // ── 2단계: 위에서 정한 개수대로 회장·사장(동급, 위계 없음) → 본부장 → 팀장 → 팀원
     // 순서로 실제 목표를 생성하고, 상위 목표 세트 전체에 고르게 분산 연결한다.
-    const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles, chairmanGoalCount) : [];
-    const presGoals = president ? makeGoalSet(president, "company", null, companyGoalTitles, presidentGoalCount) : [];
+    const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles, chairmanGoalCount, 1, chairmanWeights) : [];
+    const presGoals = president ? makeGoalSet(president, "company", null, companyGoalTitles, presidentGoalCount, 1, presidentWeights) : [];
     const topGoals = [...chairGoals, ...presGoals];
 
     const divParentPicker = makeParentPicker(topGoals);
