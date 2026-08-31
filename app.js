@@ -2560,34 +2560,37 @@ function renderGoalDashboard(user) {
   const overallAvg = avgProgress(goals);
   const companyGoals = goals.filter(g => g.level === "company");
 
-  const levelStatRow = (label, count, avg) => `
-    <div class="evd-stage-row">
-      <div class="evd-stage-label">${label}</div>
-      <div class="evd-stage-bar-wrap">
-        <div class="evd-stage-bar"><span style="width:${avg}%;background:${achColor(avg)};"></span></div>
-      </div>
-      <div class="evd-stage-stat" style="color:${achColor(avg)};">${count}<span class="evd-stage-total">개</span></div>
-      <div class="evd-stage-pct" style="color:${achColor(avg)};">${avg}%</div>
-    </div>`;
-
-  const underperformerTable = (list) => {
+  const underperformerTable = (list, tableKey) => {
     if (!list.length) return `<div class="empty" style="padding:16px;">하위 목표가 없습니다.</div>`;
     const n = Math.max(1, Math.round(list.length * 0.2));
     const worst = list.slice()
       .sort((a, b) => goalDisplayProgress(a, allGoals) - goalDisplayProgress(b, allGoals))
       .slice(0, n);
+    const levelOptions = GOAL_LEVELS.filter(l => worst.some(g => g.level === l));
+    const orgOptions = [...new Set(worst.map(g => g.team || g.division || "-"))].sort((a, b) => a.localeCompare(b, "ko"));
     return `
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <select id="updflt_level_${tableKey}" onchange="App.filterUnderperformerTable('${tableKey}')" style="font-size:12px;">
+          <option value="">레벨 전체</option>
+          ${levelOptions.map(l => `<option value="${l}">${GOAL_LEVEL_LABELS[l]}</option>`).join("")}
+        </select>
+        <select id="updflt_org_${tableKey}" onchange="App.filterUnderperformerTable('${tableKey}')" style="font-size:12px;">
+          <option value="">담당 조직 전체</option>
+          ${orgOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("")}
+        </select>
+      </div>
       <div class="table-wrap" style="margin-top:10px;">
-        <table>
+        <table id="uptable-${tableKey}">
           <thead><tr><th>목표</th><th>레벨</th><th>담당 조직</th><th>담당자</th><th style="text-align:right;">달성률</th></tr></thead>
           <tbody>
             ${worst.map(g => {
               const owner = userById(g.ownerId);
               const prog = goalDisplayProgress(g, allGoals);
-              return `<tr>
+              const org = g.team || g.division || "-";
+              return `<tr data-level="${g.level}" data-org="${esc(org)}">
                 <td><button onclick="App.openGoalDetail('${g.id}')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);">${esc(g.title)}</strong></button></td>
                 <td>${GOAL_LEVEL_LABELS[g.level]||"-"}</td>
-                <td>${esc(g.team||g.division||"-")}</td>
+                <td>${esc(org)}</td>
                 <td>${esc(owner?.name||"-")}</td>
                 <td style="text-align:right;font-weight:700;color:${achColor(prog)};">${prog}%</td>
               </tr>`;
@@ -2600,11 +2603,19 @@ function renderGoalDashboard(user) {
   const companySection = (goal) => {
     const owner = userById(goal.ownerId);
     const subtree = descendants(goal.id);
-    const subLevels = ["division", "team", "individual"].map(level => {
-      const list = subtree.filter(g => g.level === level);
-      return { level, count: list.length, avg: avgProgress(list) };
-    });
+    const divisionGoals = subtree.filter(g => g.level === "division");
     const ownProg = goalDisplayProgress(goal, allGoals);
+    const divisionCard = (dg) => {
+      const dgOwner = userById(dg.ownerId);
+      const dgProg = goalDisplayProgress(dg, allGoals);
+      return `
+        <div class="evd-card" style="cursor:pointer;" onclick="App.openGoalDetail('${dg.id}')">
+          <span class="evd-dot ${achDot(dgProg)}"></span>
+          <div class="evd-label">${esc(dg.team || dg.division || dgOwner?.division || "-")}</div>
+          <div class="evd-value" style="color:${achColor(dgProg)};">${dgProg}<span style="font-size:16px;font-weight:500;">%</span></div>
+          <div class="evd-note">${esc(dg.title)} · ${esc(dgOwner?.name||"-")}</div>
+        </div>`;
+    };
     return `
       <div class="panel" style="margin-top:16px;">
         <div class="panel-head">
@@ -2615,11 +2626,11 @@ function renderGoalDashboard(user) {
           <span class="pill" style="font-size:13px;font-weight:700;color:${achColor(ownProg)};background:${achColor(ownProg)}1a;">달성률 ${ownProg}%</span>
         </div>
         <div class="panel-body">
-          <div class="evd-stages">
-            ${subLevels.map(s => levelStatRow(GOAL_LEVEL_LABELS[s.level], s.count, s.avg)).join("")}
-          </div>
+          ${divisionGoals.length
+            ? `<div class="evd-metrics-grid">${divisionGoals.map(divisionCard).join("")}</div>`
+            : `<div class="empty" style="padding:16px;">등록된 본부 레벨 목표가 없습니다.</div>`}
           <div style="margin-top:18px;font-weight:700;font-size:13px;">⚠ 달성률 저조 목표 (하위 20%)</div>
-          ${underperformerTable(subtree)}
+          ${underperformerTable(subtree, goal.id)}
         </div>
       </div>`;
   };
@@ -19226,6 +19237,15 @@ const App = {
       const rows = [...group.querySelectorAll(".goal-row")];
       const hasVisible = rows.some(r => r.style.display !== "none");
       group.style.display = hasVisible ? "" : "none";
+    });
+  },
+  // 목표 운영 현황(회사 레벨 목표별 패널)의 "달성률 저조 목표" 표 — 레벨/담당 조직으로 필터
+  filterUnderperformerTable(tableKey) {
+    const level = document.getElementById(`updflt_level_${tableKey}`)?.value || "";
+    const org = document.getElementById(`updflt_org_${tableKey}`)?.value || "";
+    document.querySelectorAll(`#uptable-${CSS.escape(tableKey)} tbody tr`).forEach(row => {
+      const ok = (!level || row.dataset.level === level) && (!org || row.dataset.org === org);
+      row.style.display = ok ? "" : "none";
     });
   },
   createGoalCyclePrompt() {
