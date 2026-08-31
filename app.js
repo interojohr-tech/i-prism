@@ -287,10 +287,10 @@ function getSiteMapTabs(role) {
   tabs.push("jobDescMgmt");
   if (["member", "teamLead", "divisionHead"].includes(role)) tabs.push("jobDescWrite");
   // 본부장 직무기술서는 사장/회장이 아니라 경영지원본부장에게 승인 요청이 가므로
-  // 사장에게는 직무기술서 승인 메뉴가 필요 없다. 다만 팀장/본부장 층이 없는 조직의
-  // 팀원이 제출하면(nextApproverForUser가 임원으로 바로 올려보내는 경우) 사장이
-  // 퇴사·공석이면 회장이 최종 승인자가 되므로, 회장에게는 메뉴를 남겨둔다.
-  if (["teamLead", "divisionHead", "chairman"].includes(role)) tabs.push("jobDescApproval");
+  // 사장/회장에게는 직무기술서 승인 메뉴가 필요 없다. 팀장/본부장 층이 없는 조직의
+  // 팀원이 제출해 nextApproverForUser가 임원으로 바로 올려보내는 경우도
+  // jobDescApproverForUser가 경영지원본부장에게로 다시 돌리므로 예외가 없다.
+  if (["teamLead", "divisionHead"].includes(role)) tabs.push("jobDescApproval");
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(role)) tabs.push("memberDashboard");
   if (role === "admin") tabs.push("admin", "organization", "evalDashboard", "notices", "resourceLibrary", "auditLog");
@@ -2142,10 +2142,10 @@ function getVisibleTabs(user) {
   tabs.push("jobDescMgmt");
   if (["member", "teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescWrite");
   // 본부장 직무기술서는 사장/회장이 아니라 경영지원본부장에게 승인 요청이 가므로
-  // 사장에게는 직무기술서 승인 메뉴가 필요 없다. 다만 팀장/본부장 층이 없는 조직의
-  // 팀원이 제출하면(nextApproverForUser가 임원으로 바로 올려보내는 경우) 사장이
-  // 퇴사·공석이면 회장이 최종 승인자가 되므로, 회장에게는 메뉴를 남겨둔다.
-  if (["teamLead", "divisionHead", "chairman"].includes(user.role)) tabs.push("jobDescApproval");
+  // 사장/회장에게는 직무기술서 승인 메뉴가 필요 없다. 팀장/본부장 층이 없는 조직의
+  // 팀원이 제출해 nextApproverForUser가 임원으로 바로 올려보내는 경우도
+  // jobDescApproverForUser가 경영지원본부장에게로 다시 돌리므로 예외가 없다.
+  if (["teamLead", "divisionHead"].includes(user.role)) tabs.push("jobDescApproval");
   // 성장 기록 조회: 나의 대시보드(전원) · 멤버 대시보드(조직장·임원·어드민)
   tabs.push("myDashboard");
   if (["teamLead", "divisionHead", "president", "chairman", "admin"].includes(user.role)) tabs.push("memberDashboard");
@@ -2859,10 +2859,14 @@ function jobDescExecutiveApprover() {
 }
 
 // 직무기술서 승인자 결정 — 본부장은 경영지원본부장에게, 그 외(팀원/팀장)는 기존
-// 조직 결재선(nextApproverForUser)을 그대로 따른다.
+// 조직 결재선(nextApproverForUser)을 따른다. 다만 팀장·본부장 층이 없는 조직이라
+// nextApproverForUser가 곧장 사장/회장(임원)으로 올려보내는 경우에도, 사장·회장 계정에는
+// 직무기술서 승인 메뉴 자체가 없으므로 그런 요청 역시 경영지원본부장에게 모아 처리한다.
 function jobDescApproverForUser(user) {
   if (user.role === "divisionHead") return jobDescExecutiveApprover();
-  return nextApproverForUser(user);
+  const approver = nextApproverForUser(user);
+  if (approver && ["president", "chairman"].includes(approver.role)) return jobDescExecutiveApprover();
+  return approver;
 }
 
 // 자기 자신 포함 하위 포지션 전체(재귀)
@@ -2909,29 +2913,33 @@ function jobPositionOccupantLabel(pos) {
   return `${esc(occupant.name)}${occupant.title ? ` ${esc(occupant.title)}` : ""}`;
 }
 
+// 포지션 행의 관리자 액션 버튼 — 팀원 레벨은 그 아래에 아무것도 둘 수 없으므로
+// "+ 하위"를 주지 않는다. 리프(팀원)/브랜치(본부·팀 등) 행 공통으로 쓰고, hover 시에만
+// 보이는 것도 CSS(.org-tree-summary:hover, .org-tree-member:hover) 쪽에서 공통 처리한다.
+function jobPositionActionButtons(pos, isAdminEditor) {
+  if (!isAdminEditor) return "";
+  const addChildBtn = pos.level === "member" ? "" : `
+    <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>`;
+  return `
+    <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
+    ${addChildBtn}
+    <button type="button" class="org-tree-delete" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>`;
+}
+
 function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
   const children = state.jobPositions.filter(p => p.parentId === pos.id).sort((a, b) => (a.order || 0) - (b.order || 0));
   const jobLabel = pos.level === "member" && pos.jobDescription?.jobRole
     ? `<span class="pill" style="font-size:10px;margin:0 4px;">${esc(pos.jobDescription.jobRole)}</span>` : "";
   const canOpen = openableIds.has(pos.id);
   const nameAttrs = canOpen ? `style="cursor:pointer;" onclick="event.stopPropagation();event.preventDefault();App.openJobDescDetail('${pos.id}')"` : "";
-  const adminBtns = isAdminEditor ? `
-    <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
-    <button type="button" class="org-tree-action" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>
-    <button type="button" class="org-tree-delete" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>` : "";
-  // 리프(팀원 레벨) 행은 .org-tree-summary로 감싸지 않으므로 hover 시에만 보이는
-  // .org-tree-action/.org-tree-delete의 opacity:0 규칙이 걸리지 않는다 — 항상 보이게 강제.
-  const adminBtnsLeaf = isAdminEditor ? `
-    <button type="button" class="org-tree-action" style="opacity:1;" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAssignModal('${pos.id}')">배치</button>
-    <button type="button" class="org-tree-action" style="opacity:1;" onclick="event.stopPropagation();event.preventDefault();App.openJobPositionAddModal('${pos.id}')">+ 하위</button>
-    <button type="button" class="org-tree-delete" style="opacity:1;" onclick="event.stopPropagation();event.preventDefault();App.deleteJobPosition('${pos.id}')">×</button>` : "";
+  const adminBtns = jobPositionActionButtons(pos, isAdminEditor);
   if (!children.length) {
     return `
       <div class="org-tree-member">
         <span class="folder-icon" style="visibility:hidden;"></span>
         <strong ${nameAttrs}>${esc(pos.name)}</strong>${jobLabel}
         <span>${jobPositionOccupantLabel(pos)}</span>
-        ${adminBtnsLeaf}
+        ${adminBtns}
       </div>`;
   }
   return `
@@ -2951,7 +2959,8 @@ function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
 
 function renderJobPositionAddModal() {
   const parentId = state.ui.jobPosAddParentId || "";
-  const positionOptions = state.jobPositions.slice().sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  // 팀원 레벨 아래에는 아무것도 둘 수 없으므로 상위 포지션 후보에서 제외한다.
+  const positionOptions = state.jobPositions.filter(p => p.level !== "member").slice().sort((a, b) => a.name.localeCompare(b.name, "ko"));
   return `
     <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobPositionAddModal()">
       <div class="goal-modal" style="max-width:420px;">
@@ -20513,6 +20522,8 @@ const App = {
     if (!name) return window.alert("포지션명을 입력해 주세요.");
     const parentId = valueOf("jobpos_parent") || "";
     const level = valueOf("jobpos_level") || "member";
+    const parentPos = parentId ? state.jobPositions.find(p => p.id === parentId) : null;
+    if (parentPos && parentPos.level === "member") return window.alert("팀원 레벨 포지션 아래에는 하위 포지션을 둘 수 없습니다.");
     const siblings = state.jobPositions.filter(p => p.parentId === parentId);
     state.jobPositions.push({
       id: `jobpos-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
