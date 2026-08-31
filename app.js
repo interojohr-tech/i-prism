@@ -2798,7 +2798,7 @@ function jobDescListRowFieldInput(prefix, fieldKey, index, col, value) {
     return `<select id="${prefix}_${fieldKey}_${index}_${col.key}" style="${style}">${col.options.map(o => `<option value="${o}" ${value === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
   }
   if (col.type === "textarea") {
-    return `<textarea id="${prefix}_${fieldKey}_${index}_${col.key}" rows="2" style="${style}">${esc(value || "")}</textarea>`;
+    return `<textarea id="${prefix}_${fieldKey}_${index}_${col.key}" rows="1" style="${style}min-height:34px;resize:vertical;">${esc(value || "")}</textarea>`;
   }
   return `<input id="${prefix}_${fieldKey}_${index}_${col.key}" value="${esc(value || "")}" style="${style}" />`;
 }
@@ -3014,7 +3014,7 @@ function renderJobDescModal(user) {
     const draft = state.ui.jobDescEditDraft || buildJobDescDraft(pos.jobDescription);
     return `
       <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobDescDetail()">
-        <div class="goal-modal" style="max-width:600px;max-height:88vh;overflow-y:auto;">
+        <div class="goal-modal" style="max-width:1100px;width:92vw;max-height:88vh;overflow-y:auto;">
           <div class="goal-modal-head"><h2>직무기술서 수정 — ${esc(pos.name)}</h2><button class="modal-x" onclick="App.closeJobDescDetail()">×</button></div>
           <div class="goal-modal-body">
             ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
@@ -3032,7 +3032,7 @@ function renderJobDescModal(user) {
   const source = mode === "review" ? pos.pendingEdit : pos.jobDescription;
   return `
     <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobDescDetail()">
-      <div class="goal-modal" style="max-width:600px;max-height:88vh;overflow-y:auto;">
+      <div class="goal-modal" style="max-width:1100px;width:92vw;max-height:88vh;overflow-y:auto;">
         <div class="goal-modal-head">
           <h2>${mode === "review" ? "직무기술서 변경 검토 — " : "직무기술서 — "}${esc(pos.name)}</h2>
           <button class="modal-x" onclick="App.closeJobDescDetail()">×</button>
