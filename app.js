@@ -2793,30 +2793,35 @@ function ensureJobDescWriteDraft(pos) {
   return state.ui.jobDescWriteDraft;
 }
 function jobDescListRowFieldInput(prefix, fieldKey, index, col, value) {
+  const style = "width:100%;box-sizing:border-box;";
   if (col.type === "select") {
-    return `<select id="${prefix}_${fieldKey}_${index}_${col.key}">${col.options.map(o => `<option value="${o}" ${value === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+    return `<select id="${prefix}_${fieldKey}_${index}_${col.key}" style="${style}">${col.options.map(o => `<option value="${o}" ${value === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
   }
   if (col.type === "textarea") {
-    return `<textarea id="${prefix}_${fieldKey}_${index}_${col.key}" rows="2">${esc(value || "")}</textarea>`;
+    return `<textarea id="${prefix}_${fieldKey}_${index}_${col.key}" rows="2" style="${style}">${esc(value || "")}</textarea>`;
   }
-  return `<input id="${prefix}_${fieldKey}_${index}_${col.key}" value="${esc(value || "")}" />`;
+  return `<input id="${prefix}_${fieldKey}_${index}_${col.key}" value="${esc(value || "")}" style="${style}" />`;
 }
-// 리스트형 필드 하나의 편집 UI(행마다 입력칸 + 삭제, 아래에 항목 추가 버튼)
+// 리스트형 필드 하나의 편집 UI — 표 형태로 한 화면에서 여러 행을 한눈에 보고
+// 입력할 수 있게 한다(행마다 입력칸 + 삭제 버튼, 아래에 항목 추가 버튼).
 function renderJobDescListEditor(prefix, fieldKey, label, columns, rows) {
   return `
     <div class="field">
       <label>${label}</label>
-      ${rows.map((row, i) => `
-        <div class="component-card" style="margin-bottom:8px;">
-          <div class="muted" style="font-size:11px;margin-bottom:6px;">${i + 1}번</div>
-          ${columns.map(col => `
-            <div class="field" style="margin-bottom:6px;">
-              <label style="font-size:11px;">${col.label}</label>
-              ${jobDescListRowFieldInput(prefix, fieldKey, i, col, row[col.key])}
-            </div>`).join("")}
-          ${rows.length > 1 ? `<button type="button" class="btn secondary" style="font-size:11px;" onclick="App.removeJobDescListRow('${prefix}','${fieldKey}',${i})">이 항목 삭제</button>` : ""}
-        </div>`).join("")}
-      <button type="button" class="button secondary" style="font-size:12px;" onclick="App.addJobDescListRow('${prefix}','${fieldKey}')">+ 항목 추가</button>
+      <div class="table-wrap" style="margin-top:4px;">
+        <table>
+          <thead><tr><th style="width:32px;">번호</th>${columns.map(c => `<th>${c.label}</th>`).join("")}<th style="width:1%;"></th></tr></thead>
+          <tbody>
+            ${rows.map((row, i) => `
+              <tr>
+                <td>${i + 1}</td>
+                ${columns.map(col => `<td>${jobDescListRowFieldInput(prefix, fieldKey, i, col, row[col.key])}</td>`).join("")}
+                <td>${rows.length > 1 ? `<button type="button" class="btn secondary" style="font-size:11px;padding:2px 8px;white-space:nowrap;" onclick="App.removeJobDescListRow('${prefix}','${fieldKey}',${i})">삭제</button>` : ""}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <button type="button" class="button secondary" style="font-size:12px;margin-top:6px;" onclick="App.addJobDescListRow('${prefix}','${fieldKey}')">+ 항목 추가</button>
     </div>`;
 }
 // 리스트형 필드 하나의 읽기 전용 표시(표)
