@@ -2971,9 +2971,15 @@ function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
   const nameStyle = `${canOpen ? "cursor:pointer;" : ""}${pos.occupantUserId ? "" : "font-weight:700;"}`;
   const nameAttrs = `${nameStyle ? `style="${nameStyle}"` : ""}${canOpen ? ` onclick="event.stopPropagation();event.preventDefault();App.openJobDescDetail('${pos.id}')"` : ""}`;
   const adminBtns = jobPositionActionButtons(pos, isAdminEditor);
+  // 드래그로 하위 폴더에 넣거나 상위 폴더로 꺼낼 수 있도록 한다(관리자 전용) — 실제 "조직
+  // 관리" 트리의 드래그 앤 드롭 패턴과 동일하게, draggable + dragstart는 자기 자신에,
+  // dragover/drop은 "이 포지션 위에 놓으면 그 아래로 옮긴다"는 뜻으로 자기 자신에 건다.
+  const dragAttrs = isAdminEditor
+    ? ` draggable="true" ondragstart="event.stopPropagation();App.startJobPositionDrag(event,'${pos.id}')" ondragover="App.allowJobPositionDrop(event)" ondrop="App.dropOnJobPosition(event,'${pos.id}')"`
+    : "";
   if (!children.length) {
     return `
-      <div class="org-tree-member">
+      <div class="org-tree-member"${dragAttrs}>
         <span class="folder-icon" style="visibility:hidden;"></span>
         <strong ${nameAttrs}>${esc(pos.name)}</strong>${jobLabel}
         <span>${jobPositionOccupantLabel(pos)}</span>
@@ -2987,7 +2993,7 @@ function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
   // 다음 렌더부터는 그 값을 그대로 반영해 접어둔 상태가 유지되게 한다.
   const collapsed = Boolean(state.ui.jobPosCollapsed?.[pos.id]);
   return `
-    <details class="org-tree-node" ${collapsed ? "" : "open"} ontoggle="App.setJobPositionCollapsed('${pos.id}', !this.open)">
+    <details class="org-tree-node" ${collapsed ? "" : "open"} ontoggle="App.setJobPositionCollapsed('${pos.id}', !this.open)"${dragAttrs}>
       <summary class="org-tree-summary">
         <span class="tree-expander"></span>
         <span class="folder-icon"></span>
@@ -3218,7 +3224,7 @@ function renderJobDescMgmt(user) {
           ${statCard("공석", `${vacant}자리`, totalTO ? `공석률 ${ratePct(vacant, totalTO)}%` : "", "red", "App.openJobPositionListModal('vacant')")}
           ${statCard("겸직", `${concurrent}자리`, "", "amber", "App.openJobPositionListModal('concurrent')")}
         </div>` : ""}
-        <div class="org-tree-box">
+        <div class="org-tree-box" ondragover="App.allowJobPositionDrop(event)">
           ${roots.length ? roots.map(r => renderJobPositionNode(r, user, isAdminEditor, openableIds)).join("") : `<div class="empty">등록된 포지션이 없습니다.</div>`}
         </div>
       </div>
@@ -20680,6 +20686,36 @@ const App = {
     render();
   },
   // ── 직무기술서(포지션) 관리 ──
+  // 드래그 앤 드롭으로 포지션을 다른 포지션 아래로 옮긴다(하위 폴더로 넣기·상위 폴더로
+  // 꺼내기 모두 "어디에 놓느냐"만 다를 뿐 같은 동작 — 상위 폴더로 꺼내려면 그 상위
+  // 포지션 위에 직접 놓으면 된다). 실제 "조직 관리" 트리의 드래그 앤 드롭과 동일한 패턴.
+  startJobPositionDrag(event, id) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", id);
+  },
+  allowJobPositionDrop(event) {
+    event.preventDefault();
+  },
+  dropOnJobPosition(event, targetId) {
+    event.preventDefault();
+    event.stopPropagation(); // 조상 포지션의 drop 핸들러까지 같이 걸리지 않도록
+    const sourceId = event.dataTransfer.getData("text/plain");
+    if (!sourceId || sourceId === targetId) return;
+    const source = state.jobPositions.find(p => p.id === sourceId);
+    const target = state.jobPositions.find(p => p.id === targetId);
+    if (!source || !target) return;
+    if (source.parentId === target.id) return; // 이미 그 아래에 있음
+    if (target.level === "member") return window.alert("팀원 레벨 포지션 아래로는 이동할 수 없습니다.");
+    if (jobPositionDescendants(sourceId).some(p => p.id === target.id)) {
+      return window.alert("자기 자신의 하위 포지션 아래로는 이동할 수 없습니다.");
+    }
+    source.parentId = target.id;
+    const siblings = state.jobPositions.filter(p => p.parentId === target.id && p.id !== source.id);
+    source.order = siblings.length;
+    saveState();
+    state.ui.flash = `'${source.name}'을(를) '${target.name}' 아래로 옮겼습니다.`;
+    render();
+  },
   // 트리에서 포지션 폴더를 접었다/펼쳤다 할 때 그 상태를 저장해, 이후 편집·추가 등으로
   // 화면이 다시 그려져도 접어둔 상태가 풀리지 않고 유지되게 한다. <details>가 이미
   // 자체적으로 시각적 토글을 처리하므로 여기서는 render()를 다시 부르지 않는다.
