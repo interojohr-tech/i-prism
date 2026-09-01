@@ -2980,8 +2980,14 @@ function renderJobPositionNode(pos, user, isAdminEditor, openableIds) {
         ${adminBtns}
       </div>`;
   }
+  // 접힘 상태를 state에 저장해두지 않으면(<details>의 open은 DOM에만 있는 상태이므로)
+  // 편집/추가 등으로 render()가 다시 불릴 때마다 항상 펼쳐진 채로 리셋되어 버린다.
+  // ontoggle로 사용자가 직접 여닫을 때만 상태를 기록하고(재렌더 시 새로 만들어지는
+  // <details>는 toggle 이벤트가 발생하지 않으므로 이 값이 재귀적으로 덮어써질 걱정은 없다),
+  // 다음 렌더부터는 그 값을 그대로 반영해 접어둔 상태가 유지되게 한다.
+  const collapsed = Boolean(state.ui.jobPosCollapsed?.[pos.id]);
   return `
-    <details class="org-tree-node" open>
+    <details class="org-tree-node" ${collapsed ? "" : "open"} ontoggle="App.setJobPositionCollapsed('${pos.id}', !this.open)">
       <summary class="org-tree-summary">
         <span class="tree-expander"></span>
         <span class="folder-icon"></span>
@@ -20674,6 +20680,15 @@ const App = {
     render();
   },
   // ── 직무기술서(포지션) 관리 ──
+  // 트리에서 포지션 폴더를 접었다/펼쳤다 할 때 그 상태를 저장해, 이후 편집·추가 등으로
+  // 화면이 다시 그려져도 접어둔 상태가 풀리지 않고 유지되게 한다. <details>가 이미
+  // 자체적으로 시각적 토글을 처리하므로 여기서는 render()를 다시 부르지 않는다.
+  setJobPositionCollapsed(id, collapsed) {
+    state.ui.jobPosCollapsed = state.ui.jobPosCollapsed || {};
+    if (collapsed) state.ui.jobPosCollapsed[id] = true;
+    else delete state.ui.jobPosCollapsed[id];
+    saveState();
+  },
   // 요약 카드의 "공석"/"겸직" 클릭 시 해당 목록 팝업을 연다.
   openJobPositionListModal(kind) {
     state.ui.jobPosListModalKind = kind;
