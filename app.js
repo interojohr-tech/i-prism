@@ -2730,13 +2730,21 @@ function renderGoalDashboard(user) {
 const JOB_DESC_SIMPLE_FIELDS = [["jobGroup", "직군"], ["jobSeries", "직렬"], ["jobRole", "직무"]];
 // 직군/직렬/직무는 값이 짧아 세로로 쌓으면 공간을 많이 차지한다 — 읽기 전용 화면에서는
 // 라벨 1행 + 값 1행, 총 두 행짜리 표로 가로 배치해 보여준다(편집 폼의 입력창은 그대로 둔다).
+// 바깥 <div>로 한 번 더 감싸는 이유: .goal-modal-body가 display:grid인데, overflow:auto인
+// .table-wrap을 그 그리드에 바로(감싸지 않고) 놓으면 그리드 아이템의 자동 최소 높이가
+// 0으로 계산되어 표가 2~3px로 짜부라져 거의 안 보이는 문제가 있었다(직무목적 등 다른
+// 표들은 .field로 한 번 더 감싸여 있어서 이 문제를 우연히 피해가고 있었음). overflow
+// 속성이 없는 바깥 껍데기를 하나 더 두면 그 껍데기가 그리드 아이템이 되어 정상적으로
+// 콘텐츠 높이만큼 커진다.
 function renderJobDescSimpleFieldsView(source) {
   return `
-    <div class="table-wrap" style="margin-bottom:12px;">
-      <table>
-        <thead><tr>${JOB_DESC_SIMPLE_FIELDS.map(([, label]) => `<th>${label}</th>`).join("")}</tr></thead>
-        <tbody><tr>${JOB_DESC_SIMPLE_FIELDS.map(([key]) => `<td>${esc(source[key] || "-")}</td>`).join("")}</tr></tbody>
-      </table>
+    <div style="margin-bottom:12px;">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${JOB_DESC_SIMPLE_FIELDS.map(([, label]) => `<th>${label}</th>`).join("")}</tr></thead>
+          <tbody><tr>${JOB_DESC_SIMPLE_FIELDS.map(([key]) => `<td>${esc(source[key] || "-")}</td>`).join("")}</tr></tbody>
+        </table>
+      </div>
     </div>`;
 }
 // 여러 항목을 표(행)로 입력하는 필드 — [필드key, 라벨, 컬럼정의[]]
