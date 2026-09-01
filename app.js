@@ -2728,6 +2728,17 @@ function renderGoalDashboard(user) {
 // 포지션은 공석일 수 있고, 관리자가 자유롭게 추가·삭제·재배치·구성원 배치를 할 수 있다.
 // 직군/직렬/직무처럼 값이 하나뿐인 단순 필드
 const JOB_DESC_SIMPLE_FIELDS = [["jobGroup", "직군"], ["jobSeries", "직렬"], ["jobRole", "직무"]];
+// 직군/직렬/직무는 값이 짧아 세로로 쌓으면 공간을 많이 차지한다 — 읽기 전용 화면에서는
+// 라벨 1행 + 값 1행, 총 두 행짜리 표로 가로 배치해 보여준다(편집 폼의 입력창은 그대로 둔다).
+function renderJobDescSimpleFieldsView(source) {
+  return `
+    <div class="table-wrap" style="margin-bottom:12px;">
+      <table>
+        <thead><tr>${JOB_DESC_SIMPLE_FIELDS.map(([, label]) => `<th>${label}</th>`).join("")}</tr></thead>
+        <tbody><tr>${JOB_DESC_SIMPLE_FIELDS.map(([key]) => `<td>${esc(source[key] || "-")}</td>`).join("")}</tr></tbody>
+      </table>
+    </div>`;
+}
 // 여러 항목을 표(행)로 입력하는 필드 — [필드key, 라벨, 컬럼정의[]]
 const JOB_DESC_LIST_FIELDS = [
   ["purposes", "직무목적", [
@@ -3085,7 +3096,7 @@ function renderJobDescModal(user) {
           </div>
           ${mode === "review" && pos.pendingEdit ? `<div class="notice info" style="font-size:12px;margin-bottom:10px;">${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}님이 ${esc(formatDateTime(pos.pendingEdit.editedAt))}에 제출한 변경 제안입니다.</div>` : ""}
           ${source
-            ? JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="white-space:pre-wrap;margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")
+            ? renderJobDescSimpleFieldsView(source)
               + JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")
             : `<div class="empty">${JOB_DESC_OPTIONAL_LEVELS.includes(pos.level) ? "이 포지션은 직무기술서 작성이 필요하지 않습니다." : "아직 작성된 직무기술서가 없습니다."}</div>`}
         </div>
@@ -3171,8 +3182,8 @@ function renderJobDescMgmt(user) {
   const vacant = totalTO - occupied;
   const concurrent = allPos.filter(p => p.occupantConcurrent).length;
   const ratePct = (n, d) => d ? Math.round((n / d) * 1000) / 10 : 0;
-  const statCard = (label, value, note, dot) => `
-    <div class="evd-card">
+  const statCard = (label, value, note, dot, onclick) => `
+    <div class="evd-card"${onclick ? ` style="cursor:pointer;" onclick="${onclick}"` : ""}>
       <span class="evd-dot ${dot}"></span>
       <div class="evd-label">${label}</div>
       <div class="evd-value">${value}</div>
@@ -3186,21 +3197,55 @@ function renderJobDescMgmt(user) {
         ${isAdminEditor ? `<button class="button" onclick="App.openJobPositionAddModal('')">+ 포지션 추가</button>` : ""}
       </div>
       <div class="panel-body">
+        ${isAdminEditor ? `
         <div class="evd-metrics-grid" style="margin-bottom:18px;">
           ${statCard("전사 TO", `${totalTO}자리`, "", "blue")}
           ${statCard("배치 인원", `${occupied}명`, totalTO ? `배치율 ${ratePct(occupied, totalTO)}%` : "", "green")}
-          ${statCard("공석", `${vacant}자리`, totalTO ? `공석률 ${ratePct(vacant, totalTO)}%` : "", "red")}
-          ${statCard("겸직", `${concurrent}자리`, "", "amber")}
-        </div>
+          ${statCard("공석", `${vacant}자리`, totalTO ? `공석률 ${ratePct(vacant, totalTO)}%` : "", "red", "App.openJobPositionListModal('vacant')")}
+          ${statCard("겸직", `${concurrent}자리`, "", "amber", "App.openJobPositionListModal('concurrent')")}
+        </div>` : ""}
         <div class="org-tree-box">
           ${roots.length ? roots.map(r => renderJobPositionNode(r, user, isAdminEditor, openableIds)).join("") : `<div class="empty">등록된 포지션이 없습니다.</div>`}
         </div>
       </div>
     </section>
+    ${state.ui.jobPosListModalKind ? renderJobPositionListModal() : ""}
     ${state.ui.jobPosAddModal ? renderJobPositionAddModal() : ""}
     ${state.ui.jobPosAssignId ? renderJobPositionAssignModal() : ""}
     ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
   `;
+}
+
+// 요약 카드의 "공석"/"겸직" 클릭 시 해당하는 포지션 목록을 보여주는 팝업(관리자 전용).
+function renderJobPositionListModal() {
+  const kind = state.ui.jobPosListModalKind;
+  if (!kind) return "";
+  const title = kind === "vacant" ? "공석 포지션 목록" : "겸직 포지션 목록";
+  const list = state.jobPositions
+    .filter(p => kind === "vacant" ? !p.occupantUserId : p.occupantConcurrent)
+    .slice().sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobPositionListModal()">
+      <div class="goal-modal" style="max-width:620px;width:92vw;max-height:80vh;overflow-y:auto;">
+        <div class="goal-modal-head"><h2>${title} (${list.length}자리)</h2><button class="modal-x" onclick="App.closeJobPositionListModal()">×</button></div>
+        <div class="goal-modal-body">
+          ${list.length ? `
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>포지션명</th><th>레벨</th><th>상위 포지션</th><th>담당자</th></tr></thead>
+              <tbody>${list.map(p => `
+                <tr style="cursor:pointer;" onclick="App.openJobDescDetailFromList('${p.id}')">
+                  <td>${esc(p.name)}</td>
+                  <td>${JOB_POSITION_LEVEL_LABELS[p.level] || "-"}</td>
+                  <td>${esc(state.jobPositions.find(x => x.id === p.parentId)?.name || "-")}</td>
+                  <td>${jobPositionOccupantLabel(p)}</td>
+                </tr>`).join("")}</tbody>
+            </table>
+          </div>` : `<div class="empty">해당하는 포지션이 없습니다.</div>`}
+        </div>
+        <div class="goal-modal-foot"><button class="button secondary" onclick="App.closeJobPositionListModal()">닫기</button></div>
+      </div>
+    </div>`;
 }
 
 // 탭 2: 직무기술서 작성 — 본인이 배치된 포지션만, 저장 시 승인 요청
@@ -3234,7 +3279,7 @@ function renderJobDescWrite(user) {
           </div>
         </div>
         <div class="panel-body">
-          ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `<div class="field"><label>${label}</label><p style="margin:4px 0 0;">${esc(source[key] || "-")}</p></div>`).join("")}
+          ${renderJobDescSimpleFieldsView(source)}
           ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")}
         </div>
       </section>
@@ -20621,6 +20666,17 @@ const App = {
     render();
   },
   // ── 직무기술서(포지션) 관리 ──
+  // 요약 카드의 "공석"/"겸직" 클릭 시 해당 목록 팝업을 연다.
+  openJobPositionListModal(kind) {
+    state.ui.jobPosListModalKind = kind;
+    saveState(); render();
+  },
+  closeJobPositionListModal() { state.ui.jobPosListModalKind = ""; saveState(); render(); },
+  // 목록에서 포지션 행을 클릭하면 목록 팝업은 닫고 그 포지션의 직무기술서 상세를 연다.
+  openJobDescDetailFromList(positionId) {
+    state.ui.jobPosListModalKind = "";
+    App.openJobDescDetail(positionId);
+  },
   openJobPositionAddModal(parentId) {
     state.ui.jobPosAddParentId = parentId || "";
     state.ui.jobPosAddModal = true;
