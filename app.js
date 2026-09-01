@@ -3162,6 +3162,23 @@ function renderJobDescMgmt(user) {
   const isAdminEditor = user.role === "admin";
   const roots = jobPositionTreeRootsForUser(user);
   const openableIds = jobPositionOpenableIds(user);
+
+  // 전사 TO 현황 요약 — 조회 범위와 무관하게 항상 전사 전체 기준(패널 제목이 "전사
+  // TO 조직도"이므로 트리는 보는 사람 권한에 따라 일부만 보여도 요약 숫자는 전체로 보여준다).
+  const allPos = state.jobPositions;
+  const totalTO = allPos.length;
+  const occupied = allPos.filter(p => p.occupantUserId).length;
+  const vacant = totalTO - occupied;
+  const concurrent = allPos.filter(p => p.occupantConcurrent).length;
+  const ratePct = (n, d) => d ? Math.round((n / d) * 1000) / 10 : 0;
+  const statCard = (label, value, note, dot) => `
+    <div class="evd-card">
+      <span class="evd-dot ${dot}"></span>
+      <div class="evd-label">${label}</div>
+      <div class="evd-value">${value}</div>
+      ${note ? `<div class="evd-note">${note}</div>` : ""}
+    </div>`;
+
   return `
     <section class="panel">
       <div class="panel-head">
@@ -3169,6 +3186,12 @@ function renderJobDescMgmt(user) {
         ${isAdminEditor ? `<button class="button" onclick="App.openJobPositionAddModal('')">+ 포지션 추가</button>` : ""}
       </div>
       <div class="panel-body">
+        <div class="evd-metrics-grid" style="margin-bottom:18px;">
+          ${statCard("전사 TO", `${totalTO}자리`, "", "blue")}
+          ${statCard("배치 인원", `${occupied}명`, totalTO ? `배치율 ${ratePct(occupied, totalTO)}%` : "", "green")}
+          ${statCard("공석", `${vacant}자리`, totalTO ? `공석률 ${ratePct(vacant, totalTO)}%` : "", "red")}
+          ${statCard("겸직", `${concurrent}자리`, "", "amber")}
+        </div>
         <div class="org-tree-box">
           ${roots.length ? roots.map(r => renderJobPositionNode(r, user, isAdminEditor, openableIds)).join("") : `<div class="empty">등록된 포지션이 없습니다.</div>`}
         </div>
