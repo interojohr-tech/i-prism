@@ -2917,7 +2917,9 @@ function jobPositionOpenableIds(user) {
 function jobPositionOccupantLabel(pos) {
   const occupant = pos.occupantUserId ? userById(pos.occupantUserId) : null;
   if (!occupant) return `<span class="muted">공석</span>`;
-  return `${esc(occupant.name)}${occupant.title ? ` ${esc(occupant.title)}` : ""}`;
+  const tags = [pos.occupantConcurrent ? "겸직" : "", pos.occupantActing ? "대행" : ""].filter(Boolean)
+    .map(t => `<span class="pill" style="font-size:10px;margin-left:4px;">${t}</span>`).join("");
+  return `${esc(occupant.name)}${occupant.title ? ` ${esc(occupant.title)}` : ""}${tags}`;
 }
 
 // 포지션 행의 관리자 액션 버튼 — 팀원 레벨은 그 아래에 아무것도 둘 수 없으므로
@@ -3025,6 +3027,14 @@ function renderJobPositionAssignModal() {
             </datalist>
             <span class="muted" style="font-size:11px;">목록에서 이름을 선택해 주세요. 비워두면 공석으로 배치 해제됩니다.</span>
           </div>
+          <div class="field">
+            <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
+              <input type="checkbox" id="jobpos_assign_concurrent" style="width:16px;height:16px;" ${pos.occupantConcurrent ? "checked" : ""} /> 겸직
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-weight:400;margin-top:6px;">
+              <input type="checkbox" id="jobpos_assign_acting" style="width:16px;height:16px;" ${pos.occupantActing ? "checked" : ""} /> 대행
+            </label>
+          </div>
         </div>
         <div class="goal-modal-foot">
           <button class="button secondary" onclick="App.closeJobPositionAssignModal()">취소</button>
@@ -3056,7 +3066,8 @@ function renderJobDescModal(user) {
             <button class="button" onclick="App.saveJobDescriptionAdmin('${pos.id}')">저장</button>
           </div>
         </div>
-      </div>`;
+      </div>
+      ${state.ui.jobPosHistoryId === pos.id ? renderJobPositionHistoryModal(pos) : ""}`;
   }
 
   const source = mode === "review" ? pos.pendingEdit : pos.jobDescription;
@@ -3070,7 +3081,7 @@ function renderJobDescModal(user) {
         <div class="goal-modal-body">
           <div class="goal-info-rows" style="margin-bottom:12px;">
             <div><span>레벨</span><b>${JOB_POSITION_LEVEL_LABELS[pos.level] || "-"}</b></div>
-            <div><span>담당자</span><b>${pos.occupantUserId ? esc(userById(pos.occupantUserId)?.name || "-") : "공석"}</b></div>
+            <div><span>담당자</span><b>${jobPositionOccupantLabel(pos)}</b></div>
           </div>
           ${mode === "review" && pos.pendingEdit ? `<div class="notice info" style="font-size:12px;margin-bottom:10px;">${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}님이 ${esc(formatDateTime(pos.pendingEdit.editedAt))}에 제출한 변경 제안입니다.</div>` : ""}
           ${source
@@ -3081,7 +3092,66 @@ function renderJobDescModal(user) {
         <div class="goal-modal-foot">
           ${mode === "review"
             ? `<button class="button secondary" onclick="App.rejectJobDescriptionEdit('${pos.id}')">반려</button><button class="button" onclick="App.approveJobDescriptionEdit('${pos.id}')">승인</button>`
-            : (isAdminEditor ? `<button class="button" onclick="App.openJobDescDetail('${pos.id}','edit')">수정</button>` : "")}
+            : (isAdminEditor ? `<button class="button secondary" onclick="App.openJobPositionHistoryModal('${pos.id}')">포지션 기록 확인</button><button class="button" onclick="App.openJobDescDetail('${pos.id}','edit')">수정</button>` : "")}
+        </div>
+      </div>
+    </div>
+    ${state.ui.jobPosHistoryId === pos.id ? renderJobPositionHistoryModal(pos) : ""}`;
+}
+
+// 포지션 담당자 변경 기록 확인/편집 팝업 — 직무기술서 상세 팝업 위에 겹쳐 뜬다
+// (같은 .goal-modal-overlay를 DOM상 더 나중에 렌더링해 같은 z-index에서도 맨 앞에 오도록 한다).
+function renderJobPositionHistoryModal(pos) {
+  const entries = (pos.assignmentHistory || []).slice().sort((a, b) => new Date(b.at) - new Date(a.at));
+  const candidates = state.users.filter(u => !isAdminAccount(u)).sort(compareEmployeesForDisplay);
+  const editingId = state.ui.jobPosHistoryEditId;
+  const nameOf = (id) => id ? (userById(id)?.name || "(삭제된 사용자)") : "공석";
+  const row = (entry) => {
+    if (editingId === entry.id) {
+      const dt = entry.at ? new Date(entry.at) : new Date();
+      const localValue = isNaN(dt) ? "" : new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      return `
+        <tr>
+          <td><input type="datetime-local" id="jph_at_${entry.id}" value="${localValue}" style="width:100%;" /></td>
+          <td><input id="jph_from_${entry.id}" list="jobpos_history_options" value="${entry.fromUserId ? esc(userOptionLabel(userById(entry.fromUserId))) : ""}" placeholder="공석" style="width:100%;" /></td>
+          <td><input id="jph_to_${entry.id}" list="jobpos_history_options" value="${entry.toUserId ? esc(userOptionLabel(userById(entry.toUserId))) : ""}" placeholder="공석" style="width:100%;" /></td>
+          <td style="text-align:center;"><input type="checkbox" id="jph_concurrent_${entry.id}" ${entry.concurrent ? "checked" : ""} /></td>
+          <td style="text-align:center;"><input type="checkbox" id="jph_acting_${entry.id}" ${entry.acting ? "checked" : ""} /></td>
+          <td class="nowrap">
+            <button class="button secondary" onclick="App.cancelEditJobPositionHistory()">취소</button>
+            <button class="button" onclick="App.saveJobPositionHistoryEdit('${pos.id}','${entry.id}')">저장</button>
+          </td>
+        </tr>`;
+    }
+    return `
+      <tr>
+        <td>${esc(formatDateTime(entry.at))}</td>
+        <td>${esc(nameOf(entry.fromUserId))}</td>
+        <td>${esc(nameOf(entry.toUserId))}</td>
+        <td style="text-align:center;">${entry.concurrent ? "✓" : ""}</td>
+        <td style="text-align:center;">${entry.acting ? "✓" : ""}</td>
+        <td class="nowrap">
+          <button class="button secondary" onclick="App.startEditJobPositionHistory('${pos.id}','${entry.id}')">수정</button>
+          <button class="button danger" onclick="App.deleteJobPositionHistory('${pos.id}','${entry.id}')">삭제</button>
+        </td>
+      </tr>`;
+  };
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeJobPositionHistoryModal()">
+      <div class="goal-modal" style="max-width:820px;width:92vw;max-height:85vh;overflow-y:auto;">
+        <div class="goal-modal-head"><h2>포지션 담당자 변경 기록 — ${esc(pos.name)}</h2><button class="modal-x" onclick="App.closeJobPositionHistoryModal()">×</button></div>
+        <datalist id="jobpos_history_options">${candidates.map(u => `<option value="${esc(userOptionLabel(u))}"></option>`).join("")}</datalist>
+        <div class="goal-modal-body">
+          ${entries.length ? `
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>일시</th><th>이전 담당자</th><th>신규 담당자</th><th>겸직</th><th>대행</th><th></th></tr></thead>
+              <tbody>${entries.map(row).join("")}</tbody>
+            </table>
+          </div>` : `<div class="empty">아직 담당자 변경 기록이 없습니다.</div>`}
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeJobPositionHistoryModal()">닫기</button>
         </div>
       </div>
     </div>`;
@@ -20584,16 +20654,92 @@ const App = {
     const pos = state.jobPositions.find(p => p.id === state.ui.jobPosAssignId);
     if (!pos) return;
     const typed = (valueOf("jobpos_assign_search") || "").trim();
-    if (!typed) {
-      pos.occupantUserId = "";
-    } else {
+    let newOccupantId = "";
+    if (typed) {
       const target = state.users.find(u => !isAdminAccount(u) && userOptionLabel(u) === typed);
       if (!target) return window.alert("목록에서 이름을 선택해 주세요.");
-      pos.occupantUserId = target.id;
+      newOccupantId = target.id;
     }
+    const concurrent = Boolean(document.getElementById("jobpos_assign_concurrent")?.checked);
+    const acting = Boolean(document.getElementById("jobpos_assign_acting")?.checked);
+    // 담당자나 겸직/대행 여부가 실제로 바뀐 경우에만 변경 기록을 남긴다(내용 그대로
+    // 저장을 눌러도 의미 없는 기록이 쌓이지 않도록).
+    const changed = pos.occupantUserId !== newOccupantId
+      || Boolean(pos.occupantConcurrent) !== concurrent
+      || Boolean(pos.occupantActing) !== acting;
+    if (changed) {
+      pos.assignmentHistory = pos.assignmentHistory || [];
+      pos.assignmentHistory.push({
+        id: `jobposhist-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        at: new Date().toISOString(),
+        by: currentUser().id,
+        fromUserId: pos.occupantUserId || "",
+        toUserId: newOccupantId,
+        concurrent, acting,
+      });
+    }
+    pos.occupantUserId = newOccupantId;
+    pos.occupantConcurrent = concurrent;
+    pos.occupantActing = acting;
     state.ui.jobPosAssignId = "";
     saveState();
     state.ui.flash = "구성원 배치를 저장했습니다.";
+    render();
+  },
+  // ── 포지션 담당자 변경 기록 확인/편집(관리자) ──
+  openJobPositionHistoryModal(positionId) {
+    state.ui.jobPosHistoryId = positionId;
+    state.ui.jobPosHistoryEditId = "";
+    saveState(); render();
+  },
+  closeJobPositionHistoryModal() {
+    state.ui.jobPosHistoryId = "";
+    state.ui.jobPosHistoryEditId = "";
+    saveState(); render();
+  },
+  startEditJobPositionHistory(positionId, entryId) {
+    state.ui.jobPosHistoryId = positionId;
+    state.ui.jobPosHistoryEditId = entryId;
+    saveState(); render();
+  },
+  cancelEditJobPositionHistory() {
+    state.ui.jobPosHistoryEditId = "";
+    saveState(); render();
+  },
+  saveJobPositionHistoryEdit(positionId, entryId) {
+    const pos = state.jobPositions.find(p => p.id === positionId);
+    const entry = pos?.assignmentHistory?.find(h => h.id === entryId);
+    if (!entry) return;
+    const candidates = state.users.filter(u => !isAdminAccount(u));
+    const resolve = (text) => {
+      text = (text || "").trim();
+      if (!text) return "";
+      const match = candidates.find(u => userOptionLabel(u) === text);
+      return match ? match.id : undefined;
+    };
+    const fromText = valueOf(`jph_from_${entryId}`);
+    const toText = valueOf(`jph_to_${entryId}`);
+    const fromId = resolve(fromText);
+    const toId = resolve(toText);
+    if (fromId === undefined || toId === undefined) return window.alert("목록에서 이름을 선택해 주세요.");
+    const atRaw = valueOf(`jph_at_${entryId}`);
+    entry.at = atRaw ? new Date(atRaw).toISOString() : entry.at;
+    entry.fromUserId = fromId;
+    entry.toUserId = toId;
+    entry.concurrent = Boolean(document.getElementById(`jph_concurrent_${entryId}`)?.checked);
+    entry.acting = Boolean(document.getElementById(`jph_acting_${entryId}`)?.checked);
+    state.ui.jobPosHistoryEditId = "";
+    saveState();
+    state.ui.flash = "기록을 수정했습니다.";
+    render();
+  },
+  deleteJobPositionHistory(positionId, entryId) {
+    const pos = state.jobPositions.find(p => p.id === positionId);
+    if (!pos?.assignmentHistory) return;
+    if (!window.confirm("이 기록을 삭제할까요?")) return;
+    pos.assignmentHistory = pos.assignmentHistory.filter(h => h.id !== entryId);
+    saveState();
+    state.ui.flash = "기록을 삭제했습니다.";
     render();
   },
   openJobDescDetail(positionId, mode = "view") {
