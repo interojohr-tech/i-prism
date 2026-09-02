@@ -136,6 +136,23 @@ function ensureMailSettings() {
   return cur;
 }
 
+// 적정인력 산출(직무기술서 핵심업무 기반 워크로드 분석)에 쓰는 전사 공통 상수.
+// availableHoursPerYear·bufferRate는 실무자(member) FTE 계산에, teamLeadSpan·
+// divisionHeadSpan은 조직장(team/division) 관리범위 계산에 쓰인다.
+function defaultWorkforcePlanning() {
+  return {
+    availableHoursPerYear: 1768, // 1인당 연간 표준 가용시간(365일 - 주말·공휴일·연차·교육 등)
+    bufferRate: 15,              // 여유율(%) — 과업표에 안 잡히는 회의·메일 등 보정
+    teamLeadSpan: 6,             // 팀장 1인당 적정 팀원 수
+    divisionHeadSpan: 4,         // 본부장 1인당 적정 팀(하위 team 레벨 포지션) 수
+  };
+}
+// 저장된 설정에 누락 필드 보강 (구버전 호환)
+function ensureWorkforcePlanningSettings() {
+  state.workforcePlanning = { ...defaultWorkforcePlanning(), ...(state.workforcePlanning || {}) };
+  return state.workforcePlanning;
+}
+
 const COMPONENT_LABELS = {
   performance: "업적평가",
   competency: "역량평가",
@@ -1034,6 +1051,9 @@ function normalizeState(nextState) {
   nextState.notices = Array.isArray(nextState.notices) ? nextState.notices : [];
   // 직무기술서 포지션 트리 — 실제 인사 배치(division/team)와는 별개의 인사기획용 OT 조직도.
   nextState.jobPositions = Array.isArray(nextState.jobPositions) ? nextState.jobPositions : [];
+  // 적정인력 산출(핵심업무 워크로드/관리범위 계산)에 쓰는 전사 공통 상수 — 여러 계산
+  // 함수가 읽으므로 매 사용처마다 보강하지 않고 여기서 한 번에 보장한다.
+  nextState.workforcePlanning = { ...defaultWorkforcePlanning(), ...(nextState.workforcePlanning || {}) };
   nextState.noticeReads = (nextState.noticeReads && typeof nextState.noticeReads === "object" && !Array.isArray(nextState.noticeReads)) ? nextState.noticeReads : {};
   nextState.refResources = normalizeRefResources(nextState.refResources);
   nextState.auditLog = Array.isArray(nextState.auditLog) ? nextState.auditLog : [];
@@ -2752,9 +2772,14 @@ const JOB_DESC_LIST_FIELDS = [
   ["purposes", "직무목적", [
     { key: "text", label: "내용", type: "textarea" },
   ]],
+  // 적정인력 산출(워크로드 분석)용 — annualVolume × minutesPerUnit로 연간 소요시간을
+  // 계산한다(computeCoreTaskAnnualHours). 기존에 이 두 컬럼 없이 저장된 행도 값이
+  // undefined일 뿐 그대로 호환되며, 계산 시 숫자가 아니면 0으로 취급한다.
   ["coreTasks", "핵심업무", [
     { key: "task", label: "주요과업 내용", type: "textarea" },
     { key: "output", label: "주요산출물", type: "textarea" },
+    { key: "annualVolume", label: "연간 처리량", type: "number" },
+    { key: "minutesPerUnit", label: "건당 소요시간(분)", type: "number" },
   ]],
   ["kpis", "KPI", [
     { key: "task", label: "주요과업 내용", type: "textarea" },
@@ -2830,6 +2855,13 @@ function jobDescListRowFieldInput(prefix, fieldKey, index, col, value) {
   if (col.type === "textarea") {
     return `<textarea id="${prefix}_${fieldKey}_${index}_${col.key}" rows="1" style="${style}min-height:34px;resize:vertical;">${esc(value || "")}</textarea>`;
   }
+  if (col.type === "number") {
+    // 핵심업무의 연간 처리량/건당 소요시간은 입력할 때마다 바로 아래 필요인원
+    // 요약이 갱신되게 한다(목표 가중치 합계 즉시 갱신과 동일한 패턴 — render() 재호출
+    // 없이 요약 span의 textContent만 바꾼다).
+    const recalc = fieldKey === "coreTasks" ? ` oninput="App.recalcCoreTaskFteSummary('${prefix}')"` : "";
+    return `<input type="number" min="0" id="${prefix}_${fieldKey}_${index}_${col.key}" value="${esc(value ?? "")}" style="${style}"${recalc} />`;
+  }
   return `<input id="${prefix}_${fieldKey}_${index}_${col.key}" value="${esc(value || "")}" style="${style}" />`;
 }
 // 리스트형 필드 하나의 편집 UI — 표 형태로 한 화면에서 여러 행을 한눈에 보고
@@ -2903,6 +2935,145 @@ function jobPositionDescendants(id, includeSelf = true) {
     result.push(...jobPositionDescendants(child.id, true));
   });
   return result;
+}
+
+// ═══════════════════ 적정인력 산출(워크로드/관리범위 분석) ═══════════════════
+// 실무자(member)는 핵심업무 워크로드 기반, 조직장(team/division)은 관리범위(Span of
+// Control) 기반으로 계산 방식 자체가 다르다 — 조직장은 본인이 처리하는 업무량이
+// 아니라 몇 명/몇 개 팀을 관리하는지가 인원 산정 기준이기 때문.
+
+// 핵심업무 각 행의 (연간 처리량 × 건당 소요시간)을 합산해 연간 소요시간(시간)으로 환산.
+// 두 값 중 하나라도 숫자가 아니면(과거 데이터·미입력) 그 행은 0으로 취급한다.
+function computeCoreTaskAnnualHours(coreTasks) {
+  return (coreTasks || []).reduce((sum, row) => {
+    const vol = parseFloat(row.annualVolume);
+    const min = parseFloat(row.minutesPerUnit);
+    return sum + (Number.isFinite(vol) && Number.isFinite(min) ? (vol * min) / 60 : 0);
+  }, 0);
+}
+
+// 실무자(member) 필요 인원(FTE) — 연간 소요시간에 여유율을 더해 1인당 연간 가용시간으로
+// 나눈다. 워크로드 데이터가 전혀 없으면(연간 소요시간 0) 계산할 근거가 없으므로 null.
+function computeMemberRequiredFTE(pos) {
+  if (!pos || pos.level !== "member") return null;
+  const annualHours = computeCoreTaskAnnualHours(pos.jobDescription?.coreTasks);
+  if (!annualHours) return null;
+  const s = state.workforcePlanning || defaultWorkforcePlanning();
+  const available = s.availableHoursPerYear || 1;
+  return Math.round(((annualHours * (1 + (s.bufferRate || 0) / 100)) / available) * 100) / 100;
+}
+
+// 조직장(team/division) 적정 인원 — 팀장은 직속 배치 인원 수, 본부장은 직속 팀(team
+// 레벨) 포지션 개수를 각각 회사 기준 관리범위로 나눈다. 관리 대상이 없으면 null.
+function computeManagerRequiredHeadcount(pos) {
+  if (!pos) return null;
+  const s = state.workforcePlanning || defaultWorkforcePlanning();
+  if (pos.level === "team") {
+    const directReports = state.jobPositions.filter(p => p.parentId === pos.id && p.occupantUserId).length;
+    if (!directReports) return null;
+    return Math.round((directReports / (s.teamLeadSpan || 1)) * 100) / 100;
+  }
+  if (pos.level === "division") {
+    const directTeams = state.jobPositions.filter(p => p.parentId === pos.id && p.level === "team").length;
+    if (!directTeams) return null;
+    return Math.round((directTeams / (s.divisionHeadSpan || 1)) * 100) / 100;
+  }
+  return null;
+}
+
+// 포지션 하나의 "산출 필요인원" — member는 워크로드 FTE, team/division은 관리범위
+// 기준 인원, company(회장/사장 등 회사 레벨)는 산출 대상이 아니므로 0으로 취급한다
+// (조직 단위 합산 시 값이 없다고 항 전체가 흔들리지 않도록 null 대신 0을 쓴다).
+function positionRequiredHeadcount(pos) {
+  if (!pos) return 0;
+  if (pos.level === "member") return computeMemberRequiredFTE(pos) || 0;
+  if (pos.level === "team" || pos.level === "division") return computeManagerRequiredHeadcount(pos) || 0;
+  return 0;
+}
+
+// 특정 포지션(주로 division/team) 기준 하위 전체(자기 포함)의 정원(TO)/배치인원/산출
+// 필요인원을 합산 — "조직 단위 비교" 표에서 본부·팀 행 하나하나를 채우는 데 쓴다.
+function computeOrgWorkforceRollup(rootPos) {
+  const all = jobPositionDescendants(rootPos.id, true);
+  return {
+    totalTO: all.length,
+    occupied: all.filter(p => p.occupantUserId).length,
+    required: Math.round(all.reduce((s, p) => s + positionRequiredHeadcount(p), 0) * 100) / 100,
+  };
+}
+
+// 이전 승인본 대비 이번 제출본의 연간 소요시간 변화율 — 승인자가 이상치를 눈치챌 수
+// 있게 승인 화면에 보여준다. member 레벨이고 "이전에 승인된" 값이 있을 때만 의미가
+// 있다(신규 작성은 비교 기준이 없으므로 null).
+function jobDescCoreTaskChangeInfo(pos) {
+  if (!pos || pos.level !== "member" || !pos.jobDescription || !pos.pendingEdit) return null;
+  const prevHours = computeCoreTaskAnnualHours(pos.jobDescription.coreTasks);
+  if (!prevHours) return null;
+  const newHours = computeCoreTaskAnnualHours(pos.pendingEdit.coreTasks);
+  const pctChange = Math.round(((newHours - prevHours) / prevHours) * 1000) / 10;
+  return { prevHours, newHours, pctChange };
+}
+
+// 같은 직무(jobRole)를 가진 다른 포지션들의 평균 연간 소요시간과 비교 — 표본이 너무
+// 적으면(동일 직무 2명 미만) 평균 자체가 무의미하므로 null.
+function jobDescPeerAverageInfo(pos, coreTasks, jobRole) {
+  if (!pos || pos.level !== "member" || !jobRole) return null;
+  const peers = state.jobPositions.filter(p =>
+    p.id !== pos.id && p.level === "member" && p.jobDescription?.jobRole === jobRole);
+  if (peers.length < 2) return null;
+  const avg = peers.reduce((s, p) => s + computeCoreTaskAnnualHours(p.jobDescription.coreTasks), 0) / peers.length;
+  if (!avg) return null;
+  const newHours = computeCoreTaskAnnualHours(coreTasks);
+  const deviationPct = Math.round(((newHours - avg) / avg) * 1000) / 10;
+  return { avg, peerCount: peers.length, newHours, deviationPct };
+}
+
+// 핵심업무 행들의 연간 소요시간 합계·필요 인원을 사람이 읽는 문장으로 — 초기 렌더와
+// 입력 중 라이브 갱신(App.recalcCoreTaskFteSummary) 양쪽에서 재사용한다.
+function coreTaskFteSummaryText(coreTasks) {
+  const annualHours = computeCoreTaskAnnualHours(coreTasks);
+  if (!annualHours) return "핵심업무에 연간 처리량·건당 소요시간을 입력하면 필요 인원이 계산됩니다.";
+  const s = state.workforcePlanning || defaultWorkforcePlanning();
+  const bufferedHours = Math.round(annualHours * (1 + (s.bufferRate || 0) / 100) * 10) / 10;
+  const fte = Math.round((bufferedHours / (s.availableHoursPerYear || 1)) * 100) / 100;
+  return `연간 소요시간 ${Math.round(annualHours * 10) / 10}시간 (여유율 ${s.bufferRate}% 반영 ${bufferedHours}시간) → 필요 인원 ${fte}명`;
+}
+// 핵심업무 표 바로 아래에 붙는 계산 결과 요약 박스.
+function renderCoreTaskFteSummary(prefix, coreTasks) {
+  return `<div class="notice info" id="${prefix}_coretask_fte_summary" style="font-size:12px;margin:6px 0 12px;">${esc(coreTaskFteSummaryText(coreTasks))}</div>`;
+}
+// 포지션 상세 팝업의 "레벨/담당자" 옆에 붙이는 적정인력 산출 결과 한 줄 — 계산 근거가
+// 없으면(핵심업무 미입력, 관리 대상 없음 등) 행 자체를 생략한다.
+function jobPositionRequiredHeadcountRow(pos) {
+  if (pos.level === "member") {
+    const fte = computeMemberRequiredFTE(pos);
+    return fte != null ? `<div><span>필요 인원(워크로드 기준)</span><b>${fte}명</b></div>` : "";
+  }
+  if (pos.level === "team" || pos.level === "division") {
+    const hc = computeManagerRequiredHeadcount(pos);
+    return hc != null ? `<div><span>적정 인원(관리범위 기준)</span><b>${hc}명</b></div>` : "";
+  }
+  return "";
+}
+// 승인 화면(review 모드)에서 이전 대비·동일 직무 평균 대비 이상치를 승인자에게
+// 알려준다 — 자기신고 과소/과대추정을 완전히 막을 수는 없지만, 승인자가 눈치채고
+// 되물어볼 수 있게 하는 장치. 비교 근거가 없으면(신규 작성, 동일 직무 표본 부족) 표시 없음.
+function renderJobDescChangeAnomalyNotice(pos) {
+  if (!pos.pendingEdit) return "";
+  const change = jobDescCoreTaskChangeInfo(pos);
+  const peer = jobDescPeerAverageInfo(pos, pos.pendingEdit.coreTasks, pos.pendingEdit.jobRole);
+  const lines = [];
+  if (change) {
+    const warn = Math.abs(change.pctChange) > 30;
+    const dir = change.pctChange >= 0 ? "증가" : "감소";
+    lines.push(`<div class="notice ${warn ? "warn" : "info"}" style="font-size:12px;margin-bottom:6px;">${warn ? "⚠ " : ""}이전 대비 연간 소요시간이 ${Math.abs(change.pctChange)}% ${dir}했습니다 (${Math.round(change.prevHours * 10) / 10}시간 → ${Math.round(change.newHours * 10) / 10}시간)</div>`);
+  }
+  if (peer) {
+    const warn = Math.abs(peer.deviationPct) > 50;
+    const dir = peer.deviationPct >= 0 ? "높습니다" : "낮습니다";
+    lines.push(`<div class="notice ${warn ? "warn" : "info"}" style="font-size:12px;margin-bottom:6px;">${warn ? "⚠ " : ""}같은 직무(${esc(pos.pendingEdit.jobRole || "-")}) 다른 ${peer.peerCount}명 평균 대비 ${Math.abs(peer.deviationPct)}% ${dir} (평균 ${Math.round(peer.avg * 10) / 10}시간)</div>`);
+  }
+  return lines.join("");
 }
 
 // 트리 화면에 보여줄 최상위 포지션들(구조 파악용 — 팀원은 팀장 노드까지는 보이되
@@ -3090,7 +3261,7 @@ function renderJobDescModal(user) {
           <div class="goal-modal-body">
             ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
               <div class="field"><label>${label}</label><input id="jd_${key}" value="${esc(draft[key] || "")}" /></div>`).join("")}
-            ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jd", key, label, columns, draft[key])).join("")}
+            ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jd", key, label, columns, draft[key]) + (key === "coreTasks" ? renderCoreTaskFteSummary("jd", draft[key]) : "")).join("")}
           </div>
           <div class="goal-modal-foot">
             <button class="button secondary" onclick="App.openJobDescDetail('${pos.id}')">취소</button>
@@ -3113,11 +3284,13 @@ function renderJobDescModal(user) {
           <div class="goal-info-rows" style="margin-bottom:12px;">
             <div><span>레벨</span><b>${JOB_POSITION_LEVEL_LABELS[pos.level] || "-"}</b></div>
             <div><span>담당자</span><b>${jobPositionOccupantLabel(pos)}</b></div>
+            ${jobPositionRequiredHeadcountRow(pos)}
           </div>
           ${mode === "review" && pos.pendingEdit ? `<div class="notice info" style="font-size:12px;margin-bottom:10px;">${esc(userById(pos.pendingEdit.editedBy)?.name || "-")}님이 ${esc(formatDateTime(pos.pendingEdit.editedAt))}에 제출한 변경 제안입니다.</div>` : ""}
+          ${mode === "review" ? renderJobDescChangeAnomalyNotice(pos) : ""}
           ${source
             ? renderJobDescSimpleFieldsView(source)
-              + JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")
+              + JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key]) + (key === "coreTasks" ? renderCoreTaskFteSummary("jdview", source[key]) : "")).join("")
             : `<div class="empty">${JOB_DESC_OPTIONAL_LEVELS.includes(pos.level) ? "이 포지션은 직무기술서 작성이 필요하지 않습니다." : "아직 작성된 직무기술서가 없습니다."}</div>`}
         </div>
         <div class="goal-modal-foot">
@@ -3188,6 +3361,43 @@ function renderJobPositionHistoryModal(pos) {
     </div>`;
 }
 
+// 적정인력 산출 기준값 설정 팝업(관리자 전용) — 실무자 워크로드 계산, 조직장 관리범위
+// 계산에 공통으로 쓰이는 전사 상수 4개를 편집한다.
+function renderWorkforcePlanningSettingsModal() {
+  const s = ensureWorkforcePlanningSettings();
+  return `
+    <div class="goal-modal-overlay" onclick="if(event.target===this)App.closeWorkforcePlanningSettings()">
+      <div class="goal-modal" style="max-width:480px;">
+        <div class="goal-modal-head"><h2>인력산정 기준 설정</h2><button class="modal-x" onclick="App.closeWorkforcePlanningSettings()">×</button></div>
+        <div class="goal-modal-body">
+          <p class="muted" style="font-size:12px;margin:0 0 12px;">직무기술서의 핵심업무(연간 처리량·건당 소요시간)와 조직 배치 인원을 바탕으로 필요 인원을 계산할 때 쓰는 전사 공통 기준값입니다.</p>
+          <div class="field">
+            <label>1인당 연간 표준 가용시간</label>
+            <input type="number" min="1" id="wfp_availableHoursPerYear" value="${esc(s.availableHoursPerYear)}" />
+            <span class="muted" style="font-size:11px;">365일 − 주말·공휴일·연차·교육 등을 뺀 실제 근무 가능 시간(예: 1,768시간)</span>
+          </div>
+          <div class="field">
+            <label>여유율(%)</label>
+            <input type="number" min="0" max="100" id="wfp_bufferRate" value="${esc(s.bufferRate)}" />
+            <span class="muted" style="font-size:11px;">과업표에 안 잡히는 회의·메일 등 비부가가치 시간 보정(예: 15%)</span>
+          </div>
+          <div class="field">
+            <label>팀장 1인당 적정 팀원 수</label>
+            <input type="number" min="1" id="wfp_teamLeadSpan" value="${esc(s.teamLeadSpan)}" />
+          </div>
+          <div class="field">
+            <label>본부장 1인당 적정 팀 수</label>
+            <input type="number" min="1" id="wfp_divisionHeadSpan" value="${esc(s.divisionHeadSpan)}" />
+          </div>
+        </div>
+        <div class="goal-modal-foot">
+          <button class="button secondary" onclick="App.closeWorkforcePlanningSettings()">취소</button>
+          <button class="button" onclick="App.saveWorkforcePlanningSettings()">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 // 탭 1: 직무기술서 관리 — 전 역할 조회(범위 제한), 어드민만 편집
 function renderJobDescMgmt(user) {
   const isAdminEditor = user.role === "admin";
@@ -3214,7 +3424,7 @@ function renderJobDescMgmt(user) {
     <section class="panel">
       <div class="panel-head">
         <div><h2>전사 TO 조직도</h2></div>
-        ${isAdminEditor ? `<button class="button" onclick="App.openJobPositionAddModal('')">+ 포지션 추가</button>` : ""}
+        ${isAdminEditor ? `<div class="toolbar"><button class="button secondary" onclick="App.openWorkforcePlanningSettings()">인력산정 기준 설정</button><button class="button" onclick="App.openJobPositionAddModal('')">+ 포지션 추가</button></div>` : ""}
       </div>
       <div class="panel-body">
         ${isAdminEditor ? `
@@ -3227,13 +3437,67 @@ function renderJobDescMgmt(user) {
         <div class="org-tree-box" ondragover="App.allowJobPositionDrop(event)">
           ${roots.length ? roots.map(r => renderJobPositionNode(r, user, isAdminEditor, openableIds)).join("") : `<div class="empty">등록된 포지션이 없습니다.</div>`}
         </div>
+        ${isAdminEditor ? renderWorkforceRollupTable() : ""}
       </div>
     </section>
     ${state.ui.jobPosListModalKind ? renderJobPositionListModal() : ""}
     ${state.ui.jobPosAddModal ? renderJobPositionAddModal() : ""}
     ${state.ui.jobPosAssignId ? renderJobPositionAssignModal() : ""}
     ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
+    ${state.ui.workforcePlanningModal ? renderWorkforcePlanningSettingsModal() : ""}
   `;
+}
+
+// 조직 단위(본부/팀) 정원(TO)·현원(배치)·산출 필요인원 비교표 — 관리자 전용.
+function renderWorkforceRollupTable() {
+  const divisions = state.jobPositions.filter(p => p.level === "division").sort((a, b) => (a.order || 0) - (b.order || 0));
+  const rows = [];
+  divisions.forEach(div => {
+    rows.push({ pos: div, indent: 0 });
+    state.jobPositions.filter(p => p.parentId === div.id && p.level === "team")
+      .sort((a, b) => (a.order || 0) - (b.order || 0))
+      .forEach(team => rows.push({ pos: team, indent: 1 }));
+  });
+  // 본부 밑이 아닌 팀(예: 최상위 직속 팀)도 누락 없이 보여준다.
+  const divisionIds = new Set(divisions.map(d => d.id));
+  state.jobPositions.filter(p => p.level === "team" && !divisionIds.has(p.parentId))
+    .forEach(team => rows.push({ pos: team, indent: 0 }));
+
+  if (!rows.length) return "";
+
+  const totalRollup = state.jobPositions.filter(p => !p.parentId).reduce((acc, root) => {
+    const r = computeOrgWorkforceRollup(root);
+    return { totalTO: acc.totalTO + r.totalTO, occupied: acc.occupied + r.occupied, required: Math.round((acc.required + r.required) * 100) / 100 };
+  }, { totalTO: 0, occupied: 0, required: 0 });
+
+  const gapCell = (required, occupied) => {
+    const gap = Math.round((required - occupied) * 10) / 10;
+    const color = gap >= 0.5 ? "var(--red)" : gap <= -0.5 ? "var(--primary)" : "var(--muted)";
+    return `<b style="color:${color};">${gap > 0 ? "+" : ""}${gap}</b>`;
+  };
+  const rollupRow = (label, r, indent, highlight) => `
+    <tr${highlight ? ` style="background:var(--surface-2);font-weight:700;"` : ""}>
+      <td style="padding-left:${12 + indent * 22}px;">${label}</td>
+      <td style="text-align:center;">${r.totalTO}</td>
+      <td style="text-align:center;">${r.occupied}</td>
+      <td style="text-align:center;">${r.required}</td>
+      <td style="text-align:center;">${gapCell(r.required, r.occupied)}</td>
+    </tr>`;
+
+  return `
+    <div style="margin-top:20px;">
+      <h3 style="font-size:14px;margin-bottom:8px;">조직별 적정인력 현황</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>조직</th><th style="text-align:center;">정원(TO)</th><th style="text-align:center;">현원(배치)</th><th style="text-align:center;">산출 필요인원</th><th style="text-align:center;">과부족</th></tr></thead>
+          <tbody>
+            ${rollupRow("전사 합계", totalRollup, 0, true)}
+            ${rows.map(({ pos, indent }) => rollupRow(`${JOB_POSITION_LEVEL_LABELS[pos.level] || ""} · ${esc(pos.name)}`, computeOrgWorkforceRollup(pos), indent, false)).join("")}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:11px;margin-top:6px;">과부족 = 산출 필요인원 − 현원(배치). 0.5명 이상 부족하면 빨강, 0.5명 이상 여유가 있으면 파랑으로 표시됩니다.</p>
+    </div>`;
 }
 
 // 요약 카드의 "공석"/"겸직" 클릭 시 해당하는 포지션 목록을 보여주는 팝업(관리자 전용).
@@ -3300,7 +3564,7 @@ function renderJobDescWrite(user) {
         </div>
         <div class="panel-body">
           ${renderJobDescSimpleFieldsView(source)}
-          ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")}
+          ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key]) + (key === "coreTasks" ? renderCoreTaskFteSummary("jdwview", source[key]) : "")).join("")}
         </div>
       </section>
       ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
@@ -3324,7 +3588,7 @@ function renderJobDescWrite(user) {
       <div class="panel-body">
         ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
           <div class="field"><label>${label}</label><input id="jdw_${key}" value="${esc(draft[key] || "")}" /></div>`).join("")}
-        ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jdw", key, label, columns, draft[key])).join("")}
+        ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jdw", key, label, columns, draft[key]) + (key === "coreTasks" ? renderCoreTaskFteSummary("jdw", draft[key]) : "")).join("")}
       </div>
     </section>
     ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
@@ -3335,12 +3599,21 @@ function renderJobDescWrite(user) {
 function renderJobDescApproval(user) {
   const pending = state.jobPositions.filter(p => p.pendingEdit?.status === "requested" && p.pendingEdit.approverId === user.id);
   const rejectedByMe = state.jobPositions.filter(p => p.pendingEdit?.status === "rejected" && p.pendingEdit.approverId === user.id);
+  // 목록에서 바로 이상치를 훑어볼 수 있게 이전 대비 변동률을 작은 배지로 보여준다
+  // (member 레벨이고 이전 승인본이 있을 때만 — 그 외는 빈 칸).
+  const changeBadge = (pos) => {
+    const change = jobDescCoreTaskChangeInfo(pos);
+    if (!change) return `<span class="muted">-</span>`;
+    const warn = Math.abs(change.pctChange) > 30;
+    return `<span class="pill ${warn ? "red" : ""}">${change.pctChange > 0 ? "+" : ""}${change.pctChange}%</span>`;
+  };
   const row = (pos) => {
     const submitter = userById(pos.pendingEdit.editedBy);
     return `<tr>
       <td><button onclick="App.openJobDescDetail('${pos.id}','review')" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;"><strong style="color:var(--primary);">${esc(pos.name)}</strong></button></td>
       <td>${esc(submitter?.name || "-")}</td>
       <td><span class="muted" style="font-size:12px;">${esc(formatDateTime(pos.pendingEdit.editedAt))}</span></td>
+      <td>${changeBadge(pos)}</td>
       <td><div class="toolbar"><button class="button sm" onclick="App.approveJobDescriptionEdit('${pos.id}')">승인</button><button class="button sm danger" onclick="App.rejectJobDescriptionEdit('${pos.id}')">반려</button></div></td>
     </tr>`;
   };
@@ -3349,8 +3622,8 @@ function renderJobDescApproval(user) {
       <div class="panel-head"><div><h2>직무기술서 승인 대기</h2></div><span class="pill ${pending.length ? "amber" : "green"}">${pending.length}건 대기</span></div>
       <div class="panel-body">
         <div class="table-wrap"><table>
-          <thead><tr><th>포지션</th><th>신청자</th><th>신청일</th><th>처리</th></tr></thead>
-          <tbody>${pending.length ? pending.map(row).join("") : `<tr><td colspan="4"><div class="empty" style="padding:24px;">승인 대기 중인 요청이 없습니다.</div></td></tr>`}</tbody>
+          <thead><tr><th>포지션</th><th>신청자</th><th>신청일</th><th>변동</th><th>처리</th></tr></thead>
+          <tbody>${pending.length ? pending.map(row).join("") : `<tr><td colspan="5"><div class="empty" style="padding:24px;">승인 대기 중인 요청이 없습니다.</div></td></tr>`}</tbody>
         </table></div>
       </div>
     </section>
@@ -20726,6 +20999,44 @@ const App = {
     if (collapsed) state.ui.jobPosCollapsed[id] = true;
     else delete state.ui.jobPosCollapsed[id];
     saveState();
+  },
+  // 적정인력 산출 기준값 설정 팝업.
+  openWorkforcePlanningSettings() {
+    ensureWorkforcePlanningSettings();
+    state.ui.workforcePlanningModal = true;
+    saveState(); render();
+  },
+  closeWorkforcePlanningSettings() { state.ui.workforcePlanningModal = false; saveState(); render(); },
+  saveWorkforcePlanningSettings() {
+    const availableHoursPerYear = parseFloat(valueOf("wfp_availableHoursPerYear"));
+    const bufferRate = parseFloat(valueOf("wfp_bufferRate"));
+    const teamLeadSpan = parseFloat(valueOf("wfp_teamLeadSpan"));
+    const divisionHeadSpan = parseFloat(valueOf("wfp_divisionHeadSpan"));
+    if (!Number.isFinite(availableHoursPerYear) || availableHoursPerYear <= 0) return window.alert("1인당 연간 표준 가용시간을 1 이상으로 입력해 주세요.");
+    if (!Number.isFinite(bufferRate) || bufferRate < 0) return window.alert("여유율을 0 이상으로 입력해 주세요.");
+    if (!Number.isFinite(teamLeadSpan) || teamLeadSpan <= 0) return window.alert("팀장 1인당 적정 팀원 수를 1 이상으로 입력해 주세요.");
+    if (!Number.isFinite(divisionHeadSpan) || divisionHeadSpan <= 0) return window.alert("본부장 1인당 적정 팀 수를 1 이상으로 입력해 주세요.");
+    state.workforcePlanning = { availableHoursPerYear, bufferRate, teamLeadSpan, divisionHeadSpan };
+    state.ui.workforcePlanningModal = false;
+    saveState();
+    state.ui.flash = "인력산정 기준을 저장했습니다.";
+    render();
+  },
+  // 핵심업무 표의 연간 처리량/건당 소요시간을 입력할 때마다, 화면을 통째로 다시
+  // 그리지 않고 그 아래 요약(연간 소요시간·필요 인원) span만 즉시 갱신한다(목표
+  // 가중치 합계 라이브 갱신과 동일한 패턴).
+  recalcCoreTaskFteSummary(prefix) {
+    const el = document.getElementById(`${prefix}_coretask_fte_summary`);
+    if (!el) return;
+    const columns = jobDescListFieldDef("coreTasks")[2];
+    const rowCount = document.querySelectorAll(`[id^="${prefix}_coreTasks_"][id$="_task"]`).length;
+    const rows = [];
+    for (let i = 0; i < rowCount; i++) {
+      const row = {};
+      columns.forEach(col => { row[col.key] = valueOf(`${prefix}_coreTasks_${i}_${col.key}`); });
+      rows.push(row);
+    }
+    el.textContent = coreTaskFteSummaryText(rows);
   },
   // 요약 카드의 "공석"/"겸직" 클릭 시 해당 목록 팝업을 연다.
   openJobPositionListModal(kind) {
