@@ -20387,7 +20387,7 @@ const App = {
             <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
             <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
-            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : (goal.qualitativeKpi ? `<div><span>KPI (정성)</span><b>${esc(goal.qualitativeKpi)}</b></div>` : "")}
             <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
             <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
             <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
@@ -20400,7 +20400,7 @@ const App = {
           <div class="bar" style="margin:8px 0;"><span style="width:${prog}%;"></span></div>
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>성과 결과: ${goal.metric.currentValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span><strong style="color:var(--primary);">${prog}%</strong></div>
           <div style="font-size:14px;color:var(--muted);margin-top:6px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
-        </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
+        </div>` : `<div class="component-card" style="margin-top:10px;">${goal.qualitativeKpi ? `<strong style="font-size:13px;">${esc(goal.qualitativeKpi)}</strong>` : ""}<div class="bar" style="${goal.qualitativeKpi?"margin-top:8px;":""}"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
         ${hideCheckins ? "" : `
         <div style="font-weight:700;margin:16px 0 6px;">체크인 기록</div>
         ${checkins.length ? checkins.map(ci => { const by=userById(ci.by); return `<div class="goal-checkin-item">
@@ -20478,6 +20478,9 @@ const App = {
       currentValue: goal.metric ? goal.metric.currentValue : (Number.isFinite(startValue)?startValue:0),
     } : null;
     if (JSON.stringify(goal.metric||null) !== JSON.stringify(newMetric)) changes.push("정량 지표 변경");
+    // 정량 지표를 끄고 KPI 이름만 적었으면 정성 지표로 저장한다.
+    const newQualitativeKpi = !hasMetric ? metricName : "";
+    if ((goal.qualitativeKpi || "") !== newQualitativeKpi) changes.push("정성 KPI 변경");
     const vis = collectGoalVisibilityFromDom(nextApproverForUser(user));
     const sortedOld = (goal.visibleUserIds || []).slice().sort();
     const sortedNew = vis.visibleUserIds.slice().sort();
@@ -20492,6 +20495,7 @@ const App = {
     goal.end = end || goal.end;
     goal.description = description;
     goal.metric = newMetric;
+    goal.qualitativeKpi = newQualitativeKpi;
     goal.visibility = vis.visibility;
     goal.visibleUserIds = vis.visibleUserIds;
     goal.progress = computeGoalProgress(goal);
@@ -20627,6 +20631,7 @@ const App = {
         team: user.team || "",
         weight: cartWeights[i],
         metric: draft.metric,
+        qualitativeKpi: draft.qualitativeKpi || "",
         progress: 0,
         checkins: [],
         feedbacks: [],
@@ -21936,6 +21941,9 @@ function readGoalDraftFromInputs(user) {
         targetValue: Number.isFinite(targetValue) ? targetValue : 100,
         currentValue: Number.isFinite(startValue) ? startValue : 0,
       } : null,
+      // 정량 지표를 끄고 KPI 이름만 적었으면 정성 지표로 저장한다(진행률은 기존과
+      // 동일하게 체크인으로 직접 입력하는 수동 진행률을 그대로 사용).
+      qualitativeKpi: !hasMetric ? metricName : "",
       ...collectGoalVisibilityFromDom(nextApproverForUser(user)),
     },
   };
@@ -22012,19 +22020,21 @@ function renderGoalCreateModal(user) {
         <div class="field"><label>종료일</label><input type="date" id="goal_end" value="${esc(cycle.end||"")}" /></div>
       </div>
       <label class="goal-metric-toggle on">
-        <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다.</small></span>
-        <input type="checkbox" id="goal_has_metric" checked onchange="document.getElementById('goal_metric_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
+        <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다. 꺼두면 KPI를 정성적으로만 기록합니다.</small></span>
+        <input type="checkbox" id="goal_has_metric" checked onchange="document.getElementById('goal_metric_quant_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
         <span class="goal-metric-switch"></span>
       </label>
       <div id="goal_metric_box" class="component-card" style="margin-top:10px;">
-        <div class="field"><label>KPI</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수" /></div>
-        <div class="form-grid">
-          <div class="field"><label>단위</label><input id="goal_metric_unit" placeholder="예) 억원, %, 점" /></div>
-          <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" /></div>
-        </div>
-        <div class="form-grid">
-          <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="0" /></div>
-          <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="100" /></div>
+        <div class="field"><label>KPI</label><input id="goal_metric_name" placeholder="예) 매출액(억), 만족도 점수 — 정성 지표라면 항목명만 적어도 됩니다" /></div>
+        <div id="goal_metric_quant_box">
+          <div class="form-grid">
+            <div class="field"><label>단위</label><input id="goal_metric_unit" placeholder="예) 억원, %, 점" /></div>
+            <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" /></div>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="0" /></div>
+            <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="100" /></div>
+          </div>
         </div>
       </div>
       <div class="field"><label>(선택) 상세 설명</label><textarea id="goal_desc" rows="3" placeholder="내용을 입력해 주세요."></textarea></div>
@@ -22154,19 +22164,21 @@ function renderGoalEditModal(user, goalId) {
             <div class="field"><label>종료일</label><input type="date" id="goal_end" value="${esc(goal.end||"")}" /></div>
           </div>
           <label class="goal-metric-toggle ${m?"on":""}">
-            <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다.</small></span>
-            <input type="checkbox" id="goal_has_metric" ${m?"checked":""} onchange="document.getElementById('goal_metric_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
+            <span><strong>정량 지표 사용</strong><small>시작값·목표값으로 진행률을 자동 계산합니다. 꺼두면 KPI를 정성적으로만 기록합니다.</small></span>
+            <input type="checkbox" id="goal_has_metric" ${m?"checked":""} onchange="document.getElementById('goal_metric_quant_box').style.display=this.checked?'block':'none';this.closest('.goal-metric-toggle').classList.toggle('on',this.checked);" />
             <span class="goal-metric-switch"></span>
           </label>
-          <div id="goal_metric_box" class="component-card" style="margin-top:10px;${m?"":"display:none;"}">
-            <div class="field"><label>KPI</label><input id="goal_metric_name" value="${esc(m?.name||"")}" placeholder="예) 매출액(억), 만족도 점수" /></div>
-            <div class="form-grid">
-              <div class="field"><label>단위</label><input id="goal_metric_unit" value="${esc(m?.unit||"")}" placeholder="예) 억원, %, 점" /></div>
-              <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" value="${esc(m?.lastYearValue ?? "")}" /></div>
-            </div>
-            <div class="form-grid">
-              <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="${esc(m?.startValue ?? 0)}" /></div>
-              <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="${esc(m?.targetValue ?? 100)}" /></div>
+          <div id="goal_metric_box" class="component-card" style="margin-top:10px;">
+            <div class="field"><label>KPI</label><input id="goal_metric_name" value="${esc(m?.name || goal.qualitativeKpi || "")}" placeholder="예) 매출액(억), 만족도 점수 — 정성 지표라면 항목명만 적어도 됩니다" /></div>
+            <div id="goal_metric_quant_box" style="${m?"":"display:none;"}">
+              <div class="form-grid">
+                <div class="field"><label>단위</label><input id="goal_metric_unit" value="${esc(m?.unit||"")}" placeholder="예) 억원, %, 점" /></div>
+                <div class="field"><label>전년 실적</label><input type="number" id="goal_metric_lastyear" value="${esc(m?.lastYearValue ?? "")}" /></div>
+              </div>
+              <div class="form-grid">
+                <div class="field"><label>시작 값</label><input type="number" id="goal_metric_start" value="${esc(m?.startValue ?? 0)}" /></div>
+                <div class="field"><label>목표 값</label><input type="number" id="goal_metric_target" value="${esc(m?.targetValue ?? 100)}" /></div>
+              </div>
             </div>
           </div>
           <div class="field"><label>(선택) 상세 설명</label><textarea id="goal_desc" rows="3">${esc(goal.description||"")}</textarea></div>
@@ -22254,7 +22266,7 @@ function renderGoalDetailPanel(goalId, user) {
             <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
             <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
             <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
-            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+            ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : (goal.qualitativeKpi ? `<div><span>KPI (정성)</span><b>${esc(goal.qualitativeKpi)}</b></div>` : "")}
             <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
             <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
             <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
@@ -22271,7 +22283,7 @@ function renderGoalDetailPanel(goalId, user) {
             <span>성과 결과: ${goal.metric.currentValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span><strong style="color:var(--primary);">${prog}%</strong>
           </div>
           <div style="font-size:14px;color:var(--muted);margin-top:6px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
-        </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
+        </div>` : `<div class="component-card" style="margin-top:10px;">${goal.qualitativeKpi ? `<strong style="font-size:13px;">${esc(goal.qualitativeKpi)}</strong>` : ""}<div class="bar" style="${goal.qualitativeKpi?"margin-top:8px;":""}"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
 
         <div class="toolbar" style="margin:12px 0;">
           ${isOwner && !cycle?.readOnly ? `<button class="button" onclick="App.openGoalCheckin('${goal.id}')">✓ 체크인하기</button>` : ""}
@@ -22507,7 +22519,7 @@ function renderDashboardGoalModal(user) {
               <div><span>담당자</span><b>${esc(owner?.name||"-")}</b></div>
               <div><span>담당 조직</span><b>${esc(goal.team||goal.division||"-")}</b></div>
               <div><span>상세 설명</span><b>${esc(goal.description||"없음")}</b></div>
-              ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : ""}
+              ${goal.metric ? `<div><span>KPI</span><b>${esc(goal.metric.name)}${goal.metric.unit ? ` (${esc(goal.metric.unit)})` : ""}</b></div>${goal.metric.lastYearValue != null ? `<div><span>전년 실적</span><b>${goal.metric.lastYearValue}</b></div>` : ""}<div><span>시작 값</span><b>${goal.metric.startValue}</b></div><div><span>목표 값</span><b>${goal.metric.targetValue}</b></div>` : (goal.qualitativeKpi ? `<div><span>KPI (정성)</span><b>${esc(goal.qualitativeKpi)}</b></div>` : "")}
               <div><span>가중치</span><b>${goal.weight != null ? `${esc(goal.weight)}%` : "-"}</b></div>
               <div><span>목표 레벨</span><b>${GOAL_LEVEL_LABELS[goal.level]||"-"}</b></div>
               <div><span>상위 목표</span><b>${parent ? esc(parent.title) : "-"}</b></div>
@@ -22524,7 +22536,7 @@ function renderDashboardGoalModal(user) {
               <span>성과 결과: ${goal.metric.currentValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</span><strong style="color:var(--primary);">${prog}%</strong>
             </div>
             <div style="font-size:14px;color:var(--muted);margin-top:6px;">${goal.metric.lastYearValue != null ? `전년 ${goal.metric.lastYearValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | ` : ""}시작 ${goal.metric.startValue}${goal.metric.unit ? esc(goal.metric.unit) : ""} | 목표 ${goal.metric.targetValue}${goal.metric.unit ? esc(goal.metric.unit) : ""}</div>
-          </div>` : `<div class="component-card" style="margin-top:10px;"><div class="bar"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
+          </div>` : `<div class="component-card" style="margin-top:10px;">${goal.qualitativeKpi ? `<strong style="font-size:13px;">${esc(goal.qualitativeKpi)}</strong>` : ""}<div class="bar" style="${goal.qualitativeKpi?"margin-top:8px;":""}"><span style="width:${prog}%;"></span></div><div style="text-align:right;font-size:12px;font-weight:700;color:var(--primary);margin-top:4px;">${prog}%</div></div>`}
 
           <div class="goal-detail-tabs" style="margin-top:16px;">
             ${tabBtn("checkin","체크인",checkins.length)}
