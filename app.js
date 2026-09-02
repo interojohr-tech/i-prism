@@ -20167,7 +20167,7 @@ const App = {
     };
 
     const users = state.users.filter(u => u.role !== "admin" && u.active !== false);
-    const president = users.find(u => u.role === "president");
+    // 사장은 더미 목표를 만들지 않으므로(요청사항) 이 목록에서 조회하지 않는다.
     const chairman = users.find(u => u.role === "chairman");
     const divisionHeads = users.filter(u => u.role === "divisionHead");
     const teamLeads = users.filter(u => u.role === "teamLead");
@@ -20199,9 +20199,9 @@ const App = {
       divisionHeadCount.set(head.division, cap(available));
     });
 
-    // 회장과 사장은 둘 다 "회사" 레벨로 같은 위계다 — 한쪽이 다른 쪽의 하위 목표가
-    // 되면 안 된다. 대신 본부장들의 목표 총량을 함께 나눠 받는다(먼저 배정받는 쪽이
-    // 필요한 만큼 가져가고, 남은 만큼 다음 사람이 받는 순차 배분).
+    // 회장만 "회사" 레벨 목표를 가진다 — 관리자_목표관리 요청에 따라 더미 데이터
+    // 생성 시 사장은 목표를 만들지 않는다(사장 계정 자체는 그대로 두되, 이 더미
+    // 생성기에서만 제외). 본부장들의 목표 총량 전체를 회장 혼자 나눠 받는다.
     const totalDivisionGoals = divisionHeads.reduce((s, h) => s + divisionHeadCount.get(h.division), 0);
     let remainingCompanyBudget = totalDivisionGoals;
     const drawCompanyGoalCount = () => {
@@ -20210,19 +20210,16 @@ const App = {
       return count;
     };
     const chairmanGoalCount = chairman ? drawCompanyGoalCount() : 0;
-    const presidentGoalCount = president ? drawCompanyGoalCount() : 0;
-    // 회장·사장·관리자_목표관리는 회사 레벨 가중치를 하나의 계정처럼 공유한다(실제
-    // 화면의 "목표 가중치 관리"와 동일한 규칙). 더미 데이터도 회장+사장 목표 전체의
-    // 가중치 합이 100이 되도록 한 번에 배분한 뒤 각자의 몫만큼 나눠 가진다.
-    const companySharedWeights = randomWeights(chairmanGoalCount + presidentGoalCount || 1);
+    // 회장·관리자_목표관리는 회사 레벨 가중치를 하나의 계정처럼 공유한다(실제 화면의
+    // "목표 가중치 관리"와 동일한 규칙). 더미 데이터도 회장 목표 전체의 가중치 합이
+    // 100이 되도록 배분한다.
+    const companySharedWeights = randomWeights(chairmanGoalCount || 1);
     const chairmanWeights = companySharedWeights.slice(0, chairmanGoalCount);
-    const presidentWeights = companySharedWeights.slice(chairmanGoalCount, chairmanGoalCount + presidentGoalCount);
 
-    // ── 2단계: 위에서 정한 개수대로 회장·사장(동급, 위계 없음) → 본부장 → 팀장 → 팀원
-    // 순서로 실제 목표를 생성하고, 상위 목표 세트 전체에 고르게 분산 연결한다.
+    // ── 2단계: 위에서 정한 개수대로 회장(사장은 더미 목표 미생성) → 본부장 → 팀장 →
+    // 팀원 순서로 실제 목표를 생성하고, 상위 목표 세트 전체에 고르게 분산 연결한다.
     const chairGoals = chairman ? makeGoalSet(chairman, "company", null, companyGoalTitles, chairmanGoalCount, 1, chairmanWeights) : [];
-    const presGoals = president ? makeGoalSet(president, "company", null, companyGoalTitles, presidentGoalCount, 1, presidentWeights) : [];
-    const topGoals = [...chairGoals, ...presGoals];
+    const topGoals = [...chairGoals];
 
     const divParentPicker = makeParentPicker(topGoals);
     const divGoalsByDivision = {};
@@ -20273,7 +20270,7 @@ const App = {
         donorChildren[donorChildren.length - 1].parentGoalId = emptyGoal.id;
       });
     };
-    [chairman, president, ...divisionHeads, ...teamLeads].filter(Boolean).forEach(owner => fillEmptyGoalsFromSiblings(owner.id));
+    [chairman, ...divisionHeads, ...teamLeads].filter(Boolean).forEach(owner => fillEmptyGoalsFromSiblings(owner.id));
 
     invalidateCycleCache();
     saveState();
