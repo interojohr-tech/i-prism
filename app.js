@@ -3475,14 +3475,41 @@ function renderWorkforceRollupTable() {
     const color = gap >= 0.5 ? "var(--red)" : gap <= -0.5 ? "var(--primary)" : "var(--muted)";
     return `<b style="color:${color};">${gap > 0 ? "+" : ""}${gap}</b>`;
   };
-  const rollupRow = (label, r, indent, highlight) => `
-    <tr${highlight ? ` style="background:var(--surface-2);font-weight:700;"` : ""}>
-      <td style="padding-left:${12 + indent * 22}px;">${label}</td>
+  // opts.toggleId가 있으면(팀 행이고 팀원이 1명 이상 있으면) 이름 앞에 ▶/▼ 토글 버튼을 붙인다.
+  const rollupRow = (label, r, indent, opts = {}) => `
+    <tr${opts.highlight ? ` style="background:var(--surface-2);font-weight:700;"` : ""}>
+      <td style="padding-left:${12 + indent * 22}px;">${opts.toggleId
+        ? `<button type="button" onclick="App.toggleWorkforceRollupTeam('${opts.toggleId}')" style="background:none;border:none;cursor:pointer;padding:0 4px 0 0;font-size:10px;color:var(--muted);vertical-align:1px;">${opts.expanded ? "▼" : "▶"}</button>`
+        : ""}${label}</td>
       <td style="text-align:center;">${r.totalTO}</td>
       <td style="text-align:center;">${r.occupied}</td>
       <td style="text-align:center;">${r.required}</td>
       <td style="text-align:center;">${gapCell(r.required, r.occupied)}</td>
     </tr>`;
+  // 팀 아래 펼쳤을 때 보여주는 팀원 개인별 행 — 정원은 항상 1(그 자리 자체), 산출
+  // 필요인원은 워크로드 데이터가 없으면(계산 근거 없음) "-"로 표시한다.
+  const memberRow = (pos, indent) => {
+    const fte = computeMemberRequiredFTE(pos);
+    const occ = pos.occupantUserId ? 1 : 0;
+    const who = pos.occupantUserId ? esc(userById(pos.occupantUserId)?.name || "-") : "공석";
+    return `
+      <tr>
+        <td style="padding-left:${12 + indent * 22}px;color:var(--muted);font-size:12.5px;">팀원 · ${esc(pos.name)} — ${who}</td>
+        <td style="text-align:center;">1</td>
+        <td style="text-align:center;">${occ}</td>
+        <td style="text-align:center;">${fte != null ? fte : `<span class="muted">-</span>`}</td>
+        <td style="text-align:center;">${fte != null ? gapCell(fte, occ) : `<span class="muted">-</span>`}</td>
+      </tr>`;
+  };
+  const expanded = state.ui.workforceRollupExpanded || {};
+  const bodyRows = rows.map(({ pos, indent }) => {
+    const label = `${JOB_POSITION_LEVEL_LABELS[pos.level] || ""} · ${esc(pos.name)}`;
+    if (pos.level !== "team") return rollupRow(label, computeOrgWorkforceRollup(pos), indent);
+    const members = state.jobPositions.filter(p => p.parentId === pos.id && p.level === "member").sort((a, b) => (a.order || 0) - (b.order || 0));
+    const isExpanded = Boolean(expanded[pos.id]);
+    const teamRowHtml = rollupRow(label, computeOrgWorkforceRollup(pos), indent, { toggleId: members.length ? pos.id : null, expanded: isExpanded });
+    return isExpanded && members.length ? teamRowHtml + members.map(m => memberRow(m, indent + 1)).join("") : teamRowHtml;
+  }).join("");
 
   return `
     <div style="margin-top:20px;">
@@ -3491,12 +3518,12 @@ function renderWorkforceRollupTable() {
         <table>
           <thead><tr><th>조직</th><th style="text-align:center;">정원(TO)</th><th style="text-align:center;">현원(배치)</th><th style="text-align:center;">산출 필요인원</th><th style="text-align:center;">과부족</th></tr></thead>
           <tbody>
-            ${rollupRow("전사 합계", totalRollup, 0, true)}
-            ${rows.map(({ pos, indent }) => rollupRow(`${JOB_POSITION_LEVEL_LABELS[pos.level] || ""} · ${esc(pos.name)}`, computeOrgWorkforceRollup(pos), indent, false)).join("")}
+            ${rollupRow("전사 합계", totalRollup, 0, { highlight: true })}
+            ${bodyRows}
           </tbody>
         </table>
       </div>
-      <p class="muted" style="font-size:11px;margin-top:6px;">과부족 = 산출 필요인원 − 현원(배치). 0.5명 이상 부족하면 빨강, 0.5명 이상 여유가 있으면 파랑으로 표시됩니다.</p>
+      <p class="muted" style="font-size:11px;margin-top:6px;">과부족 = 산출 필요인원 − 현원(배치). 0.5명 이상 부족하면 빨강, 0.5명 이상 여유가 있으면 파랑으로 표시됩니다. 팀 이름 옆 ▶를 누르면 팀원별 산출 필요인원을 볼 수 있습니다.</p>
     </div>`;
 }
 
@@ -21021,6 +21048,15 @@ const App = {
     saveState();
     state.ui.flash = "인력산정 기준을 저장했습니다.";
     render();
+  },
+  // "조직별 적정인력 현황" 표에서 팀 행의 ▶/▼를 눌러 그 팀 팀원별 산출 필요인원을
+  // 접었다 펼쳤다 한다. 평소엔 접혀 있고 필요할 때만 펼쳐보는 용도라 기본값은 항상
+  // 접힘(state에 없으면 collapsed)이며, 여러 행을 새로 넣고 빼야 하므로 render()를 다시 부른다.
+  toggleWorkforceRollupTeam(teamId) {
+    state.ui.workforceRollupExpanded = state.ui.workforceRollupExpanded || {};
+    if (state.ui.workforceRollupExpanded[teamId]) delete state.ui.workforceRollupExpanded[teamId];
+    else state.ui.workforceRollupExpanded[teamId] = true;
+    saveState(); render();
   },
   // 핵심업무 표의 연간 처리량/건당 소요시간을 입력할 때마다, 화면을 통째로 다시
   // 그리지 않고 그 아래 요약(연간 소요시간·필요 인원) span만 즉시 갱신한다(목표
