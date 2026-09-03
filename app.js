@@ -137,14 +137,12 @@ function ensureMailSettings() {
 }
 
 // 적정인력 산출(직무기술서 핵심업무 기반 워크로드 분석)에 쓰는 전사 공통 상수.
-// availableHoursPerYear·bufferRate는 실무자(member) FTE 계산에, teamLeadSpan·
-// divisionHeadSpan은 조직장(team/division) 관리범위 계산에 쓰인다.
+// 실무자(member) FTE 계산에만 쓰인다 — 팀장/본부장(조직장)은 관리범위 비율
+// 계산 없이 항상 1명으로 고정 처리한다(computeManagerRequiredHeadcount).
 function defaultWorkforcePlanning() {
   return {
     availableHoursPerYear: 1768, // 1인당 연간 표준 가용시간(365일 - 주말·공휴일·연차·교육 등)
     bufferRate: 15,              // 여유율(%) — 과업표에 안 잡히는 회의·메일 등 보정
-    teamLeadSpan: 6,             // 팀장 1인당 적정 팀원 수
-    divisionHeadSpan: 4,         // 본부장 1인당 적정 팀(하위 team 레벨 포지션) 수
   };
 }
 // 저장된 설정에 누락 필드 보강 (구버전 호환)
@@ -2963,21 +2961,11 @@ function computeMemberRequiredFTE(pos) {
   return Math.round(((annualHours * (1 + (s.bufferRate || 0) / 100)) / available) * 100) / 100;
 }
 
-// 조직장(team/division) 적정 인원 — 팀장은 직속 배치 인원 수, 본부장은 직속 팀(team
-// 레벨) 포지션 개수를 각각 회사 기준 관리범위로 나눈다. 관리 대상이 없으면 null.
+// 조직장(team/division) 적정 인원 — 관리범위 비율 계산 없이, 팀장·본부장 자리는
+// 항상 1명이 필요하다고 고정 처리한다.
 function computeManagerRequiredHeadcount(pos) {
   if (!pos) return null;
-  const s = state.workforcePlanning || defaultWorkforcePlanning();
-  if (pos.level === "team") {
-    const directReports = state.jobPositions.filter(p => p.parentId === pos.id && p.occupantUserId).length;
-    if (!directReports) return null;
-    return Math.round((directReports / (s.teamLeadSpan || 1)) * 100) / 100;
-  }
-  if (pos.level === "division") {
-    const directTeams = state.jobPositions.filter(p => p.parentId === pos.id && p.level === "team").length;
-    if (!directTeams) return null;
-    return Math.round((directTeams / (s.divisionHeadSpan || 1)) * 100) / 100;
-  }
+  if (pos.level === "team" || pos.level === "division") return 1;
   return null;
 }
 
@@ -3043,7 +3031,8 @@ function renderCoreTaskFteSummary(prefix, coreTasks) {
   return `<div class="notice info" id="${prefix}_coretask_fte_summary" style="font-size:12px;margin:6px 0 12px;">${esc(coreTaskFteSummaryText(coreTasks))}</div>`;
 }
 // 포지션 상세 팝업의 "레벨/담당자" 옆에 붙이는 적정인력 산출 결과 한 줄 — 계산 근거가
-// 없으면(핵심업무 미입력, 관리 대상 없음 등) 행 자체를 생략한다.
+// 없으면(핵심업무 미입력 등) 행 자체를 생략한다. 팀장/본부장은 항상 1명 고정이므로
+// 값이 없는 경우가 없다(computeManagerRequiredHeadcount 참고).
 function jobPositionRequiredHeadcountRow(pos) {
   if (pos.level === "member") {
     const fte = computeMemberRequiredFTE(pos);
@@ -3051,7 +3040,7 @@ function jobPositionRequiredHeadcountRow(pos) {
   }
   if (pos.level === "team" || pos.level === "division") {
     const hc = computeManagerRequiredHeadcount(pos);
-    return hc != null ? `<div><span>적정 인원(관리범위 기준)</span><b>${hc}명</b></div>` : "";
+    return hc != null ? `<div><span>필요 인원(조직장 고정)</span><b>${hc}명</b></div>` : "";
   }
   return "";
 }
@@ -3370,7 +3359,7 @@ function renderWorkforcePlanningSettingsModal() {
       <div class="goal-modal" style="max-width:480px;">
         <div class="goal-modal-head"><h2>인력산정 기준 설정</h2><button class="modal-x" onclick="App.closeWorkforcePlanningSettings()">×</button></div>
         <div class="goal-modal-body">
-          <p class="muted" style="font-size:12px;margin:0 0 12px;">직무기술서의 핵심업무(연간 처리량·건당 소요시간)와 조직 배치 인원을 바탕으로 필요 인원을 계산할 때 쓰는 전사 공통 기준값입니다.</p>
+          <p class="muted" style="font-size:12px;margin:0 0 12px;">직무기술서의 핵심업무(연간 처리량·건당 소요시간)를 바탕으로 실무자 필요 인원을 계산할 때 쓰는 전사 공통 기준값입니다. 팀장·본부장은 관리범위 계산 없이 항상 1명으로 처리됩니다.</p>
           <div class="field">
             <label>1인당 연간 표준 가용시간</label>
             <input type="number" min="1" id="wfp_availableHoursPerYear" value="${esc(s.availableHoursPerYear)}" />
@@ -3380,14 +3369,6 @@ function renderWorkforcePlanningSettingsModal() {
             <label>여유율(%)</label>
             <input type="number" min="0" max="100" id="wfp_bufferRate" value="${esc(s.bufferRate)}" />
             <span class="muted" style="font-size:11px;">과업표에 안 잡히는 회의·메일 등 비부가가치 시간 보정(예: 15%)</span>
-          </div>
-          <div class="field">
-            <label>팀장 1인당 적정 팀원 수</label>
-            <input type="number" min="1" id="wfp_teamLeadSpan" value="${esc(s.teamLeadSpan)}" />
-          </div>
-          <div class="field">
-            <label>본부장 1인당 적정 팀 수</label>
-            <input type="number" min="1" id="wfp_divisionHeadSpan" value="${esc(s.divisionHeadSpan)}" />
           </div>
         </div>
         <div class="goal-modal-foot">
@@ -21037,13 +21018,9 @@ const App = {
   saveWorkforcePlanningSettings() {
     const availableHoursPerYear = parseFloat(valueOf("wfp_availableHoursPerYear"));
     const bufferRate = parseFloat(valueOf("wfp_bufferRate"));
-    const teamLeadSpan = parseFloat(valueOf("wfp_teamLeadSpan"));
-    const divisionHeadSpan = parseFloat(valueOf("wfp_divisionHeadSpan"));
     if (!Number.isFinite(availableHoursPerYear) || availableHoursPerYear <= 0) return window.alert("1인당 연간 표준 가용시간을 1 이상으로 입력해 주세요.");
     if (!Number.isFinite(bufferRate) || bufferRate < 0) return window.alert("여유율을 0 이상으로 입력해 주세요.");
-    if (!Number.isFinite(teamLeadSpan) || teamLeadSpan <= 0) return window.alert("팀장 1인당 적정 팀원 수를 1 이상으로 입력해 주세요.");
-    if (!Number.isFinite(divisionHeadSpan) || divisionHeadSpan <= 0) return window.alert("본부장 1인당 적정 팀 수를 1 이상으로 입력해 주세요.");
-    state.workforcePlanning = { availableHoursPerYear, bufferRate, teamLeadSpan, divisionHeadSpan };
+    state.workforcePlanning = { availableHoursPerYear, bufferRate };
     state.ui.workforcePlanningModal = false;
     saveState();
     state.ui.flash = "인력산정 기준을 저장했습니다.";
