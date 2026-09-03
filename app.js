@@ -3849,7 +3849,7 @@ function renderJobDescWrite(user) {
         </div>
         <div class="panel-body">
           ${renderJobDescSimpleFieldsView(source)}
-          ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key]) + (key === "coreTasks" ? renderCoreTaskFteSummary("jdwview", source[key]) : "")).join("")}
+          ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListView(label, columns, source[key])).join("")}
         </div>
       </section>
       ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
@@ -3873,7 +3873,7 @@ function renderJobDescWrite(user) {
       <div class="panel-body">
         ${JOB_DESC_SIMPLE_FIELDS.map(([key, label]) => `
           <div class="field"><label>${label}</label><input id="jdw_${key}" value="${esc(draft[key] || "")}" /></div>`).join("")}
-        ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jdw", key, label, columns, draft[key]) + (key === "coreTasks" ? renderCoreTaskFteSummary("jdw", draft[key]) : "")).join("")}
+        ${JOB_DESC_LIST_FIELDS.map(([key, label, columns]) => renderJobDescListEditor("jdw", key, label, columns, draft[key])).join("")}
       </div>
     </section>
     ${state.ui.jobDescDetailId ? renderJobDescModal(user) : ""}
