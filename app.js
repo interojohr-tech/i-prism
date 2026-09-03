@@ -6841,6 +6841,21 @@ function roundingBeneficiaryGrades(gradeCounts, total, dist) {
     return !isIntegerRaw && gradeCounts[g] === Math.ceil(rawCt);
   });
 }
+// 모든 등급을 내림(floor)한 정원의 합 — 반올림 혜택을 전혀 안 쓰고 채울 수 있는
+// 최대 인원이다. 총원이 이 합보다 많으면, 그 차이만큼은 반드시 몇몇 등급이 올림
+// (ceil)까지 채워야만 정확히 총원을 맞출 수 있다 — 인원이 적은 조직일수록 이
+// "반드시 필요한 올림 등급 수"가 1보다 커질 수 있으므로(예: 7명·20/30/25/25
+// 가이드는 2개 등급이 동시에 올림을 써야만 정확히 7명이 됨), 그 개수까지는 정상
+// 배분으로 보고 허용해야 한다(그렇지 않으면 그 조직에서는 항상 경고가 뜨게 됨).
+// 최소 1건은 반올림 오차 수준으로 항상 허용한다.
+function requiredRoundingBeneficiaryCount(total, dist) {
+  const floorSum = GRADES.reduce((s, g) => {
+    const guidePct = Number(dist[g] ?? -1);
+    if (guidePct <= 0) return s;
+    return s + Math.floor(total * guidePct / 100);
+  }, 0);
+  return Math.max(1, total - floorSum);
+}
 
 function renderGradeDistCards(gradeCounts, total, headGrade) {
   const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
@@ -6851,7 +6866,8 @@ function renderGradeDistCards(gradeCounts, total, headGrade) {
   // 코너 배지)으로 표시한다. saveOrgResultSubmission과 같은 기준(roundingBeneficiaryGrades)
   // 을 재사용해 제출 시 차단과 화면 표시가 어긋나지 않게 한다.
   const roundingBeneficiaries = roundingBeneficiaryGrades(gradeCounts, total, dist);
-  const hasRoundingIssue = roundingBeneficiaries.length > 1;
+  const allowedRoundingCount = requiredRoundingBeneficiaryCount(total, dist);
+  const hasRoundingIssue = roundingBeneficiaries.length > allowedRoundingCount;
 
   return GRADES.map(g => {
     const cur      = gradeCounts[g] || 0;
@@ -6866,7 +6882,7 @@ function renderGradeDistCards(gradeCounts, total, headGrade) {
     const badgeText = over ? "⚠ 초과" : "⚠ 올림 중복";
     const footerText = over
       ? `가이드 대비 +${cur - guideCt}명 초과`
-      : (isRoundingFlag ? "올림 배분 혜택 중복 사용(한 등급만 허용)" : "");
+      : (isRoundingFlag ? `올림 배분 혜택 중복 사용(이 인원 기준 최대 ${allowedRoundingCount}개 등급까지 허용)` : "");
     const color    = gradeColors[g];
     const barPct   = guidePct > 0 ? Math.min(curPct / guidePct * 100, 150) : (cur > 0 ? 100 : 0);
 
@@ -12887,7 +12903,7 @@ function renderOrgSubmitGuideModal() {
             <h2 style="margin:0;font-size:17px;">등급 배분 가이드 초과 — 제출 불가</h2>
           </div>
           <p style="margin:4px 0 0;font-size:13px;color:var(--muted);">${ui.roundingIssue
-            ? "2개 이상 등급이 동시에 올림(소수점 반올림) 배분 혜택을 사용했습니다. 올림 혜택은 한 등급에서만 허용됩니다."
+            ? `올림(소수점 반올림) 배분 혜택을 쓴 등급이 ${ui.violations.length}개입니다. 이 인원 기준으로 허용되는 최대 개수는 ${ui.allowedRoundingCount ?? 1}개입니다.`
             : "현재 배분으로는 제출할 수 없습니다."}${adjSessionEnabled ? " 아래 중 하나를 선택하세요." : ""}</p>
         </div>
         <div style="padding:16px 24px;flex:1;overflow-y:auto;">
@@ -18765,13 +18781,19 @@ const App = {
         return; // 모달 확인 후 _finalizeOrgSubmission()으로 이어짐
       } else {
         // 정원 초과(위반)는 없지만, 소수점 가이드 정원을 올림(ceil)한 덕분에 정원을
-        // 딱 채운 등급이 2개 이상 동시에 있으면(예: A·B등급이 각각 2.1명→3명으로
+        // 딱 채운 등급이 여러 개 동시에 있으면(예: A·B등급이 각각 2.1명→3명으로
         // 올림되어 둘 다 3명씩 채워짐) 등급이 상위로 쏠리고 하위 등급은 비는 왜곡이
-        // 생길 수 있다. 올림 혜택을 쓴 등급이 1개까지는 반올림 오차로 보고 그대로
-        // 허용하되, 2개 이상 동시에 쓰면 배분을 다시 검토하거나 인사팀 면담을 받도록 막는다.
-        // (배분 화면의 실시간 경고와 같은 기준을 쓴다 — roundingBeneficiaryGrades)
+        // 생길 수 있다. 다만 총원이 적은 조직은 "내림(floor) 정원만으로는 총원을
+        // 못 채워서" 몇 개 등급은 반드시 올림까지 채워야만 하는 경우가 있다(예: 7명·
+        // 20/30/25/25 가이드는 언제나 2개 등급이 동시에 올림을 써야 정확히 7명이
+        // 됨) — 이런 경우까지 "1개 초과"로 막아버리면 그 조직은 아무리 배분을
+        // 바꿔도 항상 경고가 뜨는 상황이 된다. 그래서 허용 개수를 고정 1이 아니라
+        // "이 총원·가이드 조합에서 반드시 필요한 최소 올림 등급 수"로 동적으로
+        // 계산한다(requiredRoundingBeneficiaryCount, 배분 화면의 실시간 경고와
+        // 같은 기준 — roundingBeneficiaryGrades).
         const roundingBeneficiaries = roundingBeneficiaryGrades(gradeCounts, total, dist);
-        if (roundingBeneficiaries.length > 1) {
+        const allowedRoundingCount = requiredRoundingBeneficiaryCount(total, dist);
+        if (roundingBeneficiaries.length > allowedRoundingCount) {
           const roundingDetails = roundingBeneficiaries.map(g => ({
             grade: g,
             guidePct: Number(dist[g] || 0),
@@ -18796,6 +18818,7 @@ const App = {
             violations: roundingDetails,
             totalExcess: roundingBeneficiaries.length,
             roundingIssue: true,
+            allowedRoundingCount,
           };
           render();
           return; // 모달에서 등급 배분 수정 또는 인사팀 면담 요청으로만 진행 가능
