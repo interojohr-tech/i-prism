@@ -12807,10 +12807,12 @@ function renderOrgSubmitGuideModal() {
   const overlayStyle = `position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:4000;display:flex;align-items:center;justify-content:center;padding:16px;`;
   const boxStyle = `background:var(--surface);border-radius:16px;width:480px;max-width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden;`;
 
+  // roundingBenefit 항목은 정원(올림 기준)을 실제로 초과한 게 아니라 "올림 혜택으로
+  // 딱 정원만큼 채운" 경우라 +0명 초과로 보이면 오해의 소지가 있으므로 문구를 다르게 둔다.
   const detailHtml = ui.violations.map(v =>
     `<div style="font-size:13px;padding:6px 10px;background:var(--surface-2);border-radius:6px;margin-bottom:4px;">
       <strong>${esc(v.grade)}등급</strong>: 가이드 ${v.guideCt}명 (${v.guidePct}%) → 현재 <strong style="color:#dc2626;">${v.actual}명</strong>
-      <span style="color:#dc2626;font-weight:700;margin-left:6px;">+${v.actual - v.guideCt}명 초과</span>
+      <span style="color:#dc2626;font-weight:700;margin-left:6px;">${v.roundingBenefit ? "올림 배분 혜택 사용" : `+${v.actual - v.guideCt}명 초과`}</span>
     </div>`
   ).join("");
 
@@ -12855,7 +12857,9 @@ function renderOrgSubmitGuideModal() {
             <span style="font-size:20px;">🚫</span>
             <h2 style="margin:0;font-size:17px;">등급 배분 가이드 초과 — 제출 불가</h2>
           </div>
-          <p style="margin:4px 0 0;font-size:13px;color:var(--muted);">현재 배분으로는 제출할 수 없습니다.${adjSessionEnabled ? " 아래 중 하나를 선택하세요." : ""}</p>
+          <p style="margin:4px 0 0;font-size:13px;color:var(--muted);">${ui.roundingIssue
+            ? "2개 이상 등급이 동시에 올림(소수점 반올림) 배분 혜택을 사용했습니다. 올림 혜택은 한 등급에서만 허용됩니다."
+            : "현재 배분으로는 제출할 수 없습니다."}${adjSessionEnabled ? " 아래 중 하나를 선택하세요." : ""}</p>
         </div>
         <div style="padding:16px 24px;flex:1;overflow-y:auto;">
           ${detailHtml}
@@ -18731,6 +18735,47 @@ const App = {
         render();
         return; // 모달 확인 후 _finalizeOrgSubmission()으로 이어짐
       } else {
+        // 정원 초과(위반)는 없지만, 소수점 가이드 정원을 올림(ceil)한 덕분에 정원을
+        // 딱 채운 등급이 2개 이상 동시에 있으면(예: A·B등급이 각각 2.1명→3명으로
+        // 올림되어 둘 다 3명씩 채워짐) 등급이 상위로 쏠리고 하위 등급은 비는 왜곡이
+        // 생길 수 있다. 올림 혜택을 쓴 등급이 1개까지는 반올림 오차로 보고 그대로
+        // 허용하되, 2개 이상 동시에 쓰면 배분을 다시 검토하거나 인사팀 면담을 받도록 막는다.
+        const roundingBeneficiaries = GRADES.filter(g => {
+          const guidePct = Number(dist[g] ?? -1);
+          if (guidePct <= 0) return false;
+          const rawCt = total * guidePct / 100;
+          const isIntegerRaw = Math.abs(rawCt - Math.round(rawCt)) < 1e-9;
+          return !isIntegerRaw && gradeCounts[g] === Math.ceil(rawCt);
+        });
+        if (roundingBeneficiaries.length > 1) {
+          const roundingDetails = roundingBeneficiaries.map(g => ({
+            grade: g,
+            guidePct: Number(dist[g] || 0),
+            guideCt: Math.ceil(total * Number(dist[g] || 0) / 100),
+            actual: gradeCounts[g],
+            roundingBenefit: true,
+          }));
+          const stdInfoMapRound = useStdSubmit ? calculateStandardizedScores(rows) : new Map();
+          rows.forEach((employee) => {
+            const ev = evaluations()[employee.id];
+            if (!ev) return;
+            const sel = document.getElementById(`org_adj_grade_${employee.id}`);
+            if (!sel) return;
+            const result = calculateFinal(employee.id);
+            const selectedGrade = sel.value;
+            const hasManual = isOrgGradeSelectionManual(employee.id, selectedGrade, result.autoGrade, stdInfoMapRound);
+            ev.orgAdjustment.gradeManual = hasManual;
+            ev.orgAdjustment.grade = hasManual ? selectedGrade : "";
+          });
+          state.ui.orgSubmitGuideModal = {
+            step: "major",
+            violations: roundingDetails,
+            totalExcess: roundingBeneficiaries.length,
+            roundingIssue: true,
+          };
+          render();
+          return; // 모달에서 등급 배분 수정 또는 인사팀 면담 요청으로만 진행 가능
+        }
         if (!window.confirm(`${rows.length}명의 종합평가를 확정 제출하시겠습니까?`)) return;
       }
     }
