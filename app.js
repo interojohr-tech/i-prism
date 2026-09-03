@@ -6845,17 +6845,15 @@ function roundingBeneficiaryGrades(gradeCounts, total, dist) {
 function renderGradeDistCards(gradeCounts, total, headGrade) {
   const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
   const dist = (state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {});
-  // 개별 등급 카드는 "정원 초과"만 빨간 배지로 표시하고, 올림 혜택을 정확히 정원만큼만
-  // 쓴 등급은 초과가 아니라서 아무 표시가 없다 — 그래서 2개 이상 등급이 동시에 올림
-  // 혜택을 쓰는 경우(제출 시 막히는 상황)는 배분 중에는 조용히 지나가기 쉬웠다.
-  // saveOrgResultSubmission과 같은 기준(roundingBeneficiaryGrades)으로 미리 알려준다.
+  // 올림 혜택을 정확히 정원만큼만 쓴 등급은 "초과"가 아니라서 원래는 아무 표시가
+  // 없었다 — 2개 이상 등급이 동시에 올림 혜택을 쓰는(제출 시 막히는) 상황을 배분
+  // 중에도 바로 보이도록, 해당 등급들의 카드를 "초과" 카드와 같은 방식(빨간 테두리·
+  // 코너 배지)으로 표시한다. saveOrgResultSubmission과 같은 기준(roundingBeneficiaryGrades)
+  // 을 재사용해 제출 시 차단과 화면 표시가 어긋나지 않게 한다.
   const roundingBeneficiaries = roundingBeneficiaryGrades(gradeCounts, total, dist);
-  const roundingWarningHtml = roundingBeneficiaries.length > 1 ? `
-    <div style="grid-column:1/-1;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 14px;font-size:12.5px;color:#b91c1c;font-weight:600;display:flex;align-items:center;gap:8px;">
-      <span style="font-size:16px;">⚠</span>
-      <span>${roundingBeneficiaries.join("·")}등급이 동시에 올림(소수점 반올림) 배분 혜택을 사용했습니다. 올림 혜택은 한 등급에서만 허용되어 이 상태로 제출하면 막힙니다 — 등급 배분을 조정해 주세요.</span>
-    </div>` : "";
-  return roundingWarningHtml + GRADES.map(g => {
+  const hasRoundingIssue = roundingBeneficiaries.length > 1;
+
+  return GRADES.map(g => {
     const cur      = gradeCounts[g] || 0;
     const guidePct = Number(dist[g] ?? 0);
     // 가이드 정원은 ceil로 계산: 21명×30%=6.3 → 7명까지 허용(반올림 오차 수용)
@@ -6863,15 +6861,21 @@ function renderGradeDistCards(gradeCounts, total, headGrade) {
     const guideCt  = guidePct > 0 ? Math.ceil(total * guidePct / 100) : 0;
     const curPct   = total ? Math.round(cur / total * 100) : 0;
     const over     = (guidePct === 0 && cur > 0) || (guideCt > 0 && cur > guideCt);
+    const isRoundingFlag = !over && hasRoundingIssue && roundingBeneficiaries.includes(g);
+    const flagged  = over || isRoundingFlag;
+    const badgeText = over ? "⚠ 초과" : "⚠ 올림 중복";
+    const footerText = over
+      ? `가이드 대비 +${cur - guideCt}명 초과`
+      : (isRoundingFlag ? "올림 배분 혜택 중복 사용(한 등급만 허용)" : "");
     const color    = gradeColors[g];
     const barPct   = guidePct > 0 ? Math.min(curPct / guidePct * 100, 150) : (cur > 0 ? 100 : 0);
 
     return `
-    <div style="border:${over ? `2.5px solid #dc2626` : `1.5px solid ${color}33`};border-radius:12px;padding:14px 14px 10px;background:${over ? "#fff5f5" : "#fff"};position:relative;overflow:hidden;">
-      ${over ? `<div style="position:absolute;top:0;right:0;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:3px 9px;border-radius:0 12px 0 8px;letter-spacing:.03em;">⚠ 초과</div>` : ""}
+    <div style="border:${flagged ? `2.5px solid #dc2626` : `1.5px solid ${color}33`};border-radius:12px;padding:14px 14px 10px;background:${flagged ? "#fff5f5" : "#fff"};position:relative;overflow:hidden;">
+      ${flagged ? `<div style="position:absolute;top:0;right:0;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:3px 9px;border-radius:0 12px 0 8px;letter-spacing:.03em;">${badgeText}</div>` : ""}
 
       <!-- 등급 라벨 -->
-      <div style="font-size:12px;font-weight:800;color:${over?"#dc2626":color};margin-bottom:8px;letter-spacing:.04em;">${g}등급</div>
+      <div style="font-size:12px;font-weight:800;color:${flagged?"#dc2626":color};margin-bottom:8px;letter-spacing:.04em;">${g}등급</div>
 
       <!-- 가이드 vs 현재 (나란히 크게) -->
       <div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:10px;">
@@ -6882,20 +6886,20 @@ function renderGradeDistCards(gradeCounts, total, headGrade) {
           <div style="font-size:11px;color:var(--muted);">${guidePct}%</div>
         </div>
         <!-- 화살표 -->
-        <div style="font-size:16px;color:${over?"#dc2626":"var(--muted)"};padding-bottom:12px;">→</div>
+        <div style="font-size:16px;color:${flagged?"#dc2626":"var(--muted)"};padding-bottom:12px;">→</div>
         <!-- 현재 -->
-        <div style="flex:1;background:${over?"#fecaca":color+"22"};border-radius:8px;padding:8px 10px;text-align:center;border:${over?`1.5px solid #dc2626`:`1px solid ${color}33`};">
-          <div style="font-size:10.5px;font-weight:700;color:${over?"#dc2626":color};margin-bottom:3px;">현재</div>
-          <div style="font-size:20px;font-weight:800;color:${over?"#dc2626":color};">${cur}<span style="font-size:12px;font-weight:500;color:var(--muted);">명</span></div>
-          <div style="font-size:11px;color:${over?"#dc2626":"var(--muted)"};">${curPct}%</div>
+        <div style="flex:1;background:${flagged?"#fecaca":color+"22"};border-radius:8px;padding:8px 10px;text-align:center;border:${flagged?`1.5px solid #dc2626`:`1px solid ${color}33`};">
+          <div style="font-size:10.5px;font-weight:700;color:${flagged?"#dc2626":color};margin-bottom:3px;">현재</div>
+          <div style="font-size:20px;font-weight:800;color:${flagged?"#dc2626":color};">${cur}<span style="font-size:12px;font-weight:500;color:var(--muted);">명</span></div>
+          <div style="font-size:11px;color:${flagged?"#dc2626":"var(--muted)"};">${curPct}%</div>
         </div>
       </div>
 
       <!-- 진행 바 (가이드 대비) -->
       <div style="height:6px;border-radius:4px;background:var(--line);overflow:hidden;">
-        <div style="width:${Math.min(barPct,100)}%;height:100%;border-radius:4px;background:${over?"#dc2626":color};transition:width .3s;"></div>
+        <div style="width:${Math.min(barPct,100)}%;height:100%;border-radius:4px;background:${flagged?"#dc2626":color};transition:width .3s;"></div>
       </div>
-      ${over ? `<div style="font-size:10.5px;color:#dc2626;font-weight:700;margin-top:5px;text-align:center;">가이드 대비 +${cur - guideCt}명 초과</div>` : ""}
+      ${footerText ? `<div style="font-size:10.5px;color:#dc2626;font-weight:700;margin-top:5px;text-align:center;">${footerText}</div>` : ""}
     </div>`;
   }).join("");
 }
