@@ -2990,6 +2990,263 @@ function computeOrgWorkforceRollup(rootPos) {
   };
 }
 
+// ═══════════════════ 근태 현황(전월 평균 출퇴근/휴일 근로) ═══════════════════
+// "일근태 현황" 폴더의 2026년 8월 일별 원본 파일(260801~260831.xlsx)을 성명 기준으로
+// 집계한 스냅샷. 매달 자동으로 갱신되는 데이터가 아니라, 관리자가 전달한 그 달의 파일을
+// 기준으로 한 번 계산해 넣는 값이다 — 다음 달 데이터가 필요해지면 새 파일을 같은 방식으로
+// 다시 집계해 이 상수를 교체(또는 월별 키를 추가)해야 한다.
+// avgIn/avgOut: 8월 중 실제 출근/퇴근 기록이 있는 날짜만 평균한 시각("HH:MM"), 기록이
+// 전혀 없으면 null. holidayDays: 구분이 "유휴" 또는 "무휴"인 날짜 중 실제 출근/퇴근
+// 기록이 있는 날의 수(= 휴일 근로 일수, "주휴"는 포함하지 않음).
+const ATTENDANCE_STATS_202608 = {
+  "강기남": { avgIn: "08:40", avgOut: "18:19", holidayDays: 0 },
+  "강도윤": { avgIn: "08:56", avgOut: "17:13", holidayDays: 4 },
+  "강병규": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "강원재": { avgIn: "08:59", avgOut: "18:24", holidayDays: 1 },
+  "강주영2": { avgIn: "07:59", avgOut: "17:13", holidayDays: 0 },
+  "강지원": { avgIn: "08:40", avgOut: "18:00", holidayDays: 0 },
+  "강현우": { avgIn: "09:00", avgOut: "18:00", holidayDays: 1 },
+  "강혜돈": { avgIn: "08:27", avgOut: "18:20", holidayDays: 0 },
+  "고창빈": { avgIn: "07:47", avgOut: "16:41", holidayDays: 0 },
+  "곽동영": { avgIn: "08:42", avgOut: "17:57", holidayDays: 1 },
+  "구본광": { avgIn: "08:41", avgOut: "18:17", holidayDays: 0 },
+  "구진형": { avgIn: "08:59", avgOut: "18:31", holidayDays: 0 },
+  "국혜경": { avgIn: "08:45", avgOut: "17:52", holidayDays: 0 },
+  "권나연": { avgIn: "08:41", avgOut: "18:00", holidayDays: 2 },
+  "권민정": { avgIn: "07:55", avgOut: "17:14", holidayDays: 0 },
+  "권보승": { avgIn: "08:50", avgOut: "19:01", holidayDays: 0 },
+  "권정인": { avgIn: "08:50", avgOut: "18:08", holidayDays: 0 },
+  "기경옥": { avgIn: "10:00", avgOut: "14:30", holidayDays: 0 },
+  "김경민": { avgIn: "08:52", avgOut: "18:16", holidayDays: 0 },
+  "김경아": { avgIn: "08:41", avgOut: "17:58", holidayDays: 1 },
+  "김광오": { avgIn: "08:46", avgOut: "17:46", holidayDays: 1 },
+  "김규철": { avgIn: "08:46", avgOut: "16:58", holidayDays: 2 },
+  "김나영": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "김동옥": { avgIn: "08:54", avgOut: "18:04", holidayDays: 0 },
+  "김동일": { avgIn: "08:02", avgOut: "18:07", holidayDays: 2 },
+  "김령균": { avgIn: "08:56", avgOut: "17:56", holidayDays: 0 },
+  "김미진": { avgIn: "08:53", avgOut: "18:13", holidayDays: 0 },
+  "김병우": { avgIn: "08:48", avgOut: "18:20", holidayDays: 0 },
+  "김보성2": { avgIn: null, avgOut: null, holidayDays: 0 },
+  "김보영": { avgIn: null, avgOut: null, holidayDays: 0 },
+  "김보영2": { avgIn: "07:37", avgOut: "17:23", holidayDays: 0 },
+  "김선명": { avgIn: "08:53", avgOut: "18:10", holidayDays: 1 },
+  "김섭민": { avgIn: "07:24", avgOut: "17:00", holidayDays: 0 },
+  "김성섭": { avgIn: "07:29", avgOut: "17:31", holidayDays: 0 },
+  "김성진": { avgIn: "08:43", avgOut: "18:47", holidayDays: 0 },
+  "김소연3": { avgIn: "09:37", avgOut: "18:50", holidayDays: 1 },
+  "김영수": { avgIn: "08:35", avgOut: "17:46", holidayDays: 0 },
+  "김영진": { avgIn: null, avgOut: null, holidayDays: 0 },
+  "김예슬": { avgIn: "08:48", avgOut: "18:08", holidayDays: 0 },
+  "김예진": { avgIn: "09:03", avgOut: "18:25", holidayDays: 1 },
+  "김우현": { avgIn: "08:56", avgOut: "18:01", holidayDays: 0 },
+  "김일환": { avgIn: "08:44", avgOut: "17:43", holidayDays: 3 },
+  "김정태": { avgIn: "08:53", avgOut: "17:47", holidayDays: 1 },
+  "김종균": { avgIn: "09:01", avgOut: "18:35", holidayDays: 5 },
+  "김준우": { avgIn: "08:50", avgOut: "18:03", holidayDays: 2 },
+  "김지현": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "김지훈": { avgIn: "09:04", avgOut: "18:01", holidayDays: 2 },
+  "김지훈2": { avgIn: "08:30", avgOut: "17:50", holidayDays: 5 },
+  "김진기": { avgIn: "09:10", avgOut: "17:54", holidayDays: 1 },
+  "김진우": { avgIn: "09:10", avgOut: "17:27", holidayDays: 1 },
+  "김진희": { avgIn: "07:40", avgOut: "16:59", holidayDays: 0 },
+  "김찬종": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "김치원": { avgIn: "08:54", avgOut: "19:07", holidayDays: 4 },
+  "김태욱": { avgIn: "08:50", avgOut: "18:03", holidayDays: 3 },
+  "김태형": { avgIn: "08:44", avgOut: "18:11", holidayDays: 0 },
+  "김하정": { avgIn: "07:50", avgOut: "17:46", holidayDays: 0 },
+  "김한기": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "김현욱": { avgIn: "08:49", avgOut: "18:18", holidayDays: 0 },
+  "김현진": { avgIn: "08:59", avgOut: "18:02", holidayDays: 3 },
+  "김형석": { avgIn: "08:47", avgOut: "18:07", holidayDays: 0 },
+  "나정욱": { avgIn: "09:06", avgOut: "17:51", holidayDays: 1 },
+  "나하나": { avgIn: "09:02", avgOut: "18:17", holidayDays: 0 },
+  "남상규": { avgIn: "09:54", avgOut: "19:06", holidayDays: 0 },
+  "노우탁": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "노재호": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "노현": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "류미리": { avgIn: "07:41", avgOut: "16:51", holidayDays: 1 },
+  "명규식": { avgIn: "09:00", avgOut: "18:00", holidayDays: 1 },
+  "문성진": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "박기홍": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "박나은": { avgIn: "08:42", avgOut: "18:18", holidayDays: 0 },
+  "박문석": { avgIn: "08:37", avgOut: "18:28", holidayDays: 0 },
+  "박민지": { avgIn: "08:41", avgOut: "18:04", holidayDays: 0 },
+  "박보람": { avgIn: null, avgOut: null, holidayDays: 0 },
+  "박상민": { avgIn: "07:46", avgOut: "16:46", holidayDays: 1 },
+  "박상원": { avgIn: "08:22", avgOut: "17:55", holidayDays: 0 },
+  "박성륜": { avgIn: null, avgOut: null, holidayDays: 0 },
+  "박소영": { avgIn: "08:56", avgOut: "18:15", holidayDays: 0 },
+  "박수인": { avgIn: "10:17", avgOut: "20:22", holidayDays: 2 },
+  "박승희": { avgIn: "08:55", avgOut: "18:25", holidayDays: 2 },
+  "박애숙": { avgIn: "07:29", avgOut: "16:40", holidayDays: 6 },
+  "박애진": { avgIn: "08:57", avgOut: "19:28", holidayDays: 0 },
+  "박영훈": { avgIn: "07:17", avgOut: "16:44", holidayDays: 4 },
+  "박원기": { avgIn: "08:38", avgOut: "18:46", holidayDays: 0 },
+  "박유진": { avgIn: "08:35", avgOut: "17:00", holidayDays: 0 },
+  "박윤지": { avgIn: "08:47", avgOut: "18:21", holidayDays: 0 },
+  "박은정": { avgIn: "08:00", avgOut: "18:22", holidayDays: 1 },
+  "박준수": { avgIn: "08:54", avgOut: "17:42", holidayDays: 0 },
+  "박찬희": { avgIn: "08:36", avgOut: "17:59", holidayDays: 0 },
+  "방승언": { avgIn: "08:52", avgOut: "18:00", holidayDays: 0 },
+  "백복규": { avgIn: "09:04", avgOut: "17:39", holidayDays: 1 },
+  "백인남": { avgIn: "08:54", avgOut: "18:11", holidayDays: 4 },
+  "백지윤": { avgIn: "08:42", avgOut: "18:08", holidayDays: 0 },
+  "변준영": { avgIn: "08:30", avgOut: "18:34", holidayDays: 0 },
+  "서민경": { avgIn: "09:56", avgOut: "18:54", holidayDays: 0 },
+  "서민택": { avgIn: "09:03", avgOut: "17:57", holidayDays: 2 },
+  "서윤희": { avgIn: "08:39", avgOut: "17:50", holidayDays: 1 },
+  "서현수": { avgIn: "09:02", avgOut: "18:18", holidayDays: 1 },
+  "손예진": { avgIn: "09:00", avgOut: "13:30", holidayDays: 0 },
+  "손지윤": { avgIn: "09:53", avgOut: "19:05", holidayDays: 0 },
+  "송미정": { avgIn: "07:48", avgOut: "17:11", holidayDays: 0 },
+  "송민경": { avgIn: "09:00", avgOut: "19:01", holidayDays: 0 },
+  "송재용": { avgIn: "08:38", avgOut: "17:00", holidayDays: 2 },
+  "신상배": { avgIn: "08:45", avgOut: "18:26", holidayDays: 0 },
+  "신언중": { avgIn: "08:49", avgOut: "17:58", holidayDays: 0 },
+  "신영은": { avgIn: "08:43", avgOut: "18:10", holidayDays: 0 },
+  "안영진": { avgIn: "08:41", avgOut: "18:26", holidayDays: 0 },
+  "양병호": { avgIn: "07:54", avgOut: "18:25", holidayDays: 1 },
+  "양진영": { avgIn: "08:00", avgOut: "18:20", holidayDays: 3 },
+  "엄태랑": { avgIn: "08:49", avgOut: "19:10", holidayDays: 1 },
+  "여국원": { avgIn: "08:56", avgOut: "17:56", holidayDays: 0 },
+  "오덕근": { avgIn: "08:33", avgOut: "17:57", holidayDays: 0 },
+  "오성영": { avgIn: "08:46", avgOut: "17:47", holidayDays: 0 },
+  "오은미": { avgIn: "08:44", avgOut: "17:54", holidayDays: 0 },
+  "오의택": { avgIn: "08:39", avgOut: "18:04", holidayDays: 0 },
+  "오종성": { avgIn: "08:45", avgOut: "16:58", holidayDays: 4 },
+  "유경현": { avgIn: "08:37", avgOut: "17:49", holidayDays: 2 },
+  "유기강": { avgIn: "09:00", avgOut: "13:30", holidayDays: 0 },
+  "유수민": { avgIn: "08:50", avgOut: "17:46", holidayDays: 1 },
+  "유현아": { avgIn: "08:55", avgOut: "18:46", holidayDays: 0 },
+  "유혜선": { avgIn: "08:57", avgOut: "17:57", holidayDays: 0 },
+  "윤승준": { avgIn: "07:31", avgOut: "17:24", holidayDays: 3 },
+  "윤지영": { avgIn: "09:00", avgOut: "17:58", holidayDays: 0 },
+  "윤형낙": { avgIn: "09:34", avgOut: "19:44", holidayDays: 3 },
+  "윤희자": { avgIn: "08:10", avgOut: "16:46", holidayDays: 5 },
+  "윤희태": { avgIn: "09:00", avgOut: "13:30", holidayDays: 0 },
+  "이강남": { avgIn: "09:00", avgOut: "13:30", holidayDays: 0 },
+  "이강현2": { avgIn: "08:50", avgOut: "18:10", holidayDays: 0 },
+  "이광준": { avgIn: "07:13", avgOut: "17:40", holidayDays: 5 },
+  "이기현": { avgIn: "07:18", avgOut: "16:59", holidayDays: 0 },
+  "이덕용": { avgIn: "08:38", avgOut: "17:47", holidayDays: 1 },
+  "이동아": { avgIn: "07:37", avgOut: "17:33", holidayDays: 0 },
+  "이명완": { avgIn: "08:36", avgOut: "17:24", holidayDays: 3 },
+  "이상원": { avgIn: "08:40", avgOut: "17:58", holidayDays: 0 },
+  "이상윤": { avgIn: "07:56", avgOut: "17:09", holidayDays: 1 },
+  "이상혁": { avgIn: "08:56", avgOut: "18:47", holidayDays: 1 },
+  "이상호": { avgIn: "08:28", avgOut: "17:42", holidayDays: 0 },
+  "이성준": { avgIn: "09:21", avgOut: "17:45", holidayDays: 2 },
+  "이수진": { avgIn: "08:58", avgOut: "17:57", holidayDays: 0 },
+  "이연구": { avgIn: "07:14", avgOut: "17:33", holidayDays: 0 },
+  "이윤수": { avgIn: "09:01", avgOut: "17:09", holidayDays: 1 },
+  "이재구": { avgIn: "08:38", avgOut: "18:16", holidayDays: 0 },
+  "이재구2": { avgIn: "09:18", avgOut: "18:40", holidayDays: 0 },
+  "이재철": { avgIn: "09:01", avgOut: "18:51", holidayDays: 0 },
+  "이정석": { avgIn: "08:46", avgOut: "17:27", holidayDays: 0 },
+  "이정엽": { avgIn: "09:00", avgOut: "18:00", holidayDays: 1 },
+  "이종민": { avgIn: "08:29", avgOut: "18:45", holidayDays: 0 },
+  "이종범": { avgIn: "08:44", avgOut: "17:14", holidayDays: 0 },
+  "이주찬": { avgIn: "09:08", avgOut: "21:15", holidayDays: 1 },
+  "이준환": { avgIn: "09:00", avgOut: "13:30", holidayDays: 0 },
+  "이철은": { avgIn: "10:06", avgOut: "19:04", holidayDays: 0 },
+  "이태훈": { avgIn: "09:49", avgOut: "18:45", holidayDays: 0 },
+  "이희연": { avgIn: "08:49", avgOut: "18:04", holidayDays: 0 },
+  "임건훈": { avgIn: "08:55", avgOut: "18:12", holidayDays: 0 },
+  "임수빈": { avgIn: "08:55", avgOut: "17:12", holidayDays: 2 },
+  "임승진": { avgIn: "08:13", avgOut: "18:57", holidayDays: 0 },
+  "임은진": { avgIn: "09:12", avgOut: "17:54", holidayDays: 0 },
+  "임재하": { avgIn: "08:36", avgOut: "18:15", holidayDays: 0 },
+  "임종욱": { avgIn: "08:12", avgOut: "18:02", holidayDays: 2 },
+  "임하현": { avgIn: "08:48", avgOut: "18:21", holidayDays: 0 },
+  "임현우": { avgIn: "08:57", avgOut: "18:20", holidayDays: 0 },
+  "장명수": { avgIn: "08:14", avgOut: "18:06", holidayDays: 3 },
+  "장명호": { avgIn: "08:42", avgOut: "18:39", holidayDays: 0 },
+  "장유경": { avgIn: "08:17", avgOut: "16:45", holidayDays: 1 },
+  "장철웅": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "전영욱": { avgIn: "09:00", avgOut: "17:44", holidayDays: 2 },
+  "전태수": { avgIn: "09:48", avgOut: "19:15", holidayDays: 0 },
+  "전하경": { avgIn: "08:43", avgOut: "17:43", holidayDays: 1 },
+  "정경진": { avgIn: "08:45", avgOut: "18:03", holidayDays: 0 },
+  "정문현": { avgIn: "08:00", avgOut: "18:22", holidayDays: 2 },
+  "정미경": { avgIn: "09:50", avgOut: "19:16", holidayDays: 0 },
+  "정세희": { avgIn: "07:44", avgOut: "16:30", holidayDays: 2 },
+  "정재훈": { avgIn: "08:29", avgOut: "19:03", holidayDays: 4 },
+  "정창율": { avgIn: "07:22", avgOut: "18:23", holidayDays: 3 },
+  "정휘종": { avgIn: "08:55", avgOut: "18:18", holidayDays: 2 },
+  "조명근": { avgIn: "08:53", avgOut: "17:59", holidayDays: 0 },
+  "조민정": { avgIn: "08:20", avgOut: "18:34", holidayDays: 0 },
+  "조영근": { avgIn: "08:00", avgOut: "18:00", holidayDays: 0 },
+  "조용호": { avgIn: "08:54", avgOut: "17:41", holidayDays: 0 },
+  "조은서2": { avgIn: "08:54", avgOut: "18:14", holidayDays: 0 },
+  "조진미": { avgIn: "09:03", avgOut: "18:15", holidayDays: 0 },
+  "주명권": { avgIn: "08:48", avgOut: "18:51", holidayDays: 0 },
+  "주은혜": { avgIn: "08:54", avgOut: "16:21", holidayDays: 0 },
+  "지명순": { avgIn: "09:03", avgOut: "17:53", holidayDays: 0 },
+  "지세광": { avgIn: "08:53", avgOut: "18:02", holidayDays: 4 },
+  "지홍비": { avgIn: "07:51", avgOut: "17:06", holidayDays: 0 },
+  "차화현": { avgIn: "08:38", avgOut: "17:38", holidayDays: 2 },
+  "최아현": { avgIn: "08:59", avgOut: "17:00", holidayDays: 0 },
+  "최완영": { avgIn: "08:34", avgOut: "18:45", holidayDays: 0 },
+  "최원재": { avgIn: "08:48", avgOut: "18:28", holidayDays: 0 },
+  "최유정": { avgIn: "07:55", avgOut: "17:05", holidayDays: 0 },
+  "최인규": { avgIn: "08:22", avgOut: "18:12", holidayDays: 0 },
+  "최인정": { avgIn: "08:56", avgOut: "17:56", holidayDays: 0 },
+  "하상준": { avgIn: "08:34", avgOut: "19:35", holidayDays: 0 },
+  "하성진": { avgIn: "08:47", avgOut: "17:58", holidayDays: 3 },
+  "한민국": { avgIn: "09:00", avgOut: "18:00", holidayDays: 1 },
+  "한아린": { avgIn: "09:00", avgOut: "18:00", holidayDays: 1 },
+  "한윤수": { avgIn: "07:51", avgOut: "18:29", holidayDays: 0 },
+  "한철희": { avgIn: "08:30", avgOut: "19:09", holidayDays: 0 },
+  "한태희": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+  "함지안": { avgIn: "08:49", avgOut: "17:39", holidayDays: 0 },
+  "허수영": { avgIn: "09:00", avgOut: "18:00", holidayDays: 2 },
+  "허정학": { avgIn: "08:37", avgOut: "17:44", holidayDays: 1 },
+  "허태민": { avgIn: "08:54", avgOut: "18:21", holidayDays: 0 },
+  "허태영": { avgIn: "08:51", avgOut: "19:46", holidayDays: 0 },
+  "현주용": { avgIn: "07:02", avgOut: "16:58", holidayDays: 5 },
+  "홍석천": { avgIn: "08:37", avgOut: "17:30", holidayDays: 5 },
+  "홍수진": { avgIn: "08:48", avgOut: "18:20", holidayDays: 0 },
+  "황배준": { avgIn: "09:00", avgOut: "18:00", holidayDays: 0 },
+};
+
+function attendanceStatsForUser(user) {
+  if (!user) return null;
+  return ATTENDANCE_STATS_202608[user.name] || null;
+}
+
+function attendanceTimeToMinutes(hhmm) {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function attendanceMinutesToTime(mins) {
+  if (mins == null || !Number.isFinite(mins)) return null;
+  const rounded = Math.round(mins);
+  const h = Math.floor(rounded / 60), m = rounded % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// 특정 포지션(주로 division/team) 하위 전체(자기 포함) 중 실제 배치되어 있고 근태
+// 데이터가 매칭되는 인원만 모아 평균 출근/퇴근 시각과 휴일 근로 일수 합계를 낸다.
+// 근태 파일에 없는 인원(매칭 실패)은 평균 계산에서 자연히 제외된다.
+function computeOrgAttendanceRollup(rootPos) {
+  if (!rootPos) return { avgIn: null, avgOut: null, holidayDays: 0 };
+  const all = jobPositionDescendants(rootPos.id, true);
+  const stats = all
+    .filter(p => p.occupantUserId)
+    .map(p => attendanceStatsForUser(userById(p.occupantUserId)))
+    .filter(Boolean);
+  const inMinutes = stats.map(s => attendanceTimeToMinutes(s.avgIn)).filter(v => v != null);
+  const outMinutes = stats.map(s => attendanceTimeToMinutes(s.avgOut)).filter(v => v != null);
+  return {
+    avgIn: inMinutes.length ? attendanceMinutesToTime(inMinutes.reduce((a, b) => a + b, 0) / inMinutes.length) : null,
+    avgOut: outMinutes.length ? attendanceMinutesToTime(outMinutes.reduce((a, b) => a + b, 0) / outMinutes.length) : null,
+    holidayDays: stats.reduce((s, x) => s + (x.holidayDays || 0), 0),
+  };
+}
+
 // 이전 승인본 대비 이번 제출본의 연간 소요시간 변화율 — 승인자가 이상치를 눈치챌 수
 // 있게 승인 화면에 보여준다. member 레벨이고 "이전에 승인된" 값이 있을 때만 의미가
 // 있다(신규 작성은 비교 기준이 없으므로 null).
@@ -3456,6 +3713,10 @@ function renderWorkforceRollupTable() {
     const color = gap >= 0.5 ? "var(--red)" : gap <= -0.5 ? "var(--primary)" : "var(--muted)";
     return `<b style="color:${color};">${gap > 0 ? "+" : ""}${gap}</b>`;
   };
+  const attendanceCells = (att) => `
+      <td style="text-align:center;">${att.avgIn || `<span class="muted">-</span>`}</td>
+      <td style="text-align:center;">${att.avgOut || `<span class="muted">-</span>`}</td>
+      <td style="text-align:center;">${att.holidayDays || 0}</td>`;
   // opts.toggleId가 있으면(팀 행이고 팀원이 1명 이상 있으면) 이름 앞에 ▶/▼ 토글 버튼을 붙인다.
   const rollupRow = (label, r, indent, opts = {}) => `
     <tr${opts.highlight ? ` style="background:var(--surface-2);font-weight:700;"` : ""}>
@@ -3466,6 +3727,7 @@ function renderWorkforceRollupTable() {
       <td style="text-align:center;">${r.occupied}</td>
       <td style="text-align:center;">${r.required}</td>
       <td style="text-align:center;">${gapCell(r.required, r.occupied)}</td>
+      ${attendanceCells(computeOrgAttendanceRollup(opts.attendancePos))}
     </tr>`;
   // 팀 아래 펼쳤을 때 보여주는 팀원 개인별 행 — 정원은 항상 1(그 자리 자체), 산출
   // 필요인원은 워크로드 데이터가 없으면(계산 근거 없음) "-"로 표시한다.
@@ -3473,6 +3735,7 @@ function renderWorkforceRollupTable() {
     const fte = computeMemberRequiredFTE(pos);
     const occ = pos.occupantUserId ? 1 : 0;
     const who = pos.occupantUserId ? esc(userById(pos.occupantUserId)?.name || "-") : "공석";
+    const att = pos.occupantUserId ? attendanceStatsForUser(userById(pos.occupantUserId)) : null;
     return `
       <tr>
         <td style="padding-left:${12 + indent * 22}px;color:var(--muted);font-size:12.5px;">팀원 · ${esc(pos.name)} — ${who}</td>
@@ -3480,31 +3743,54 @@ function renderWorkforceRollupTable() {
         <td style="text-align:center;">${occ}</td>
         <td style="text-align:center;">${fte != null ? fte : `<span class="muted">-</span>`}</td>
         <td style="text-align:center;">${fte != null ? gapCell(fte, occ) : `<span class="muted">-</span>`}</td>
+        ${attendanceCells(att || { avgIn: null, avgOut: null, holidayDays: 0 })}
       </tr>`;
   };
   const expanded = state.ui.workforceRollupExpanded || {};
   const bodyRows = rows.map(({ pos, indent }) => {
     const label = `${JOB_POSITION_LEVEL_LABELS[pos.level] || ""} · ${esc(pos.name)}`;
-    if (pos.level !== "team") return rollupRow(label, computeOrgWorkforceRollup(pos), indent);
+    if (pos.level !== "team") return rollupRow(label, computeOrgWorkforceRollup(pos), indent, { attendancePos: pos });
     const members = state.jobPositions.filter(p => p.parentId === pos.id && p.level === "member").sort((a, b) => (a.order || 0) - (b.order || 0));
     const isExpanded = Boolean(expanded[pos.id]);
-    const teamRowHtml = rollupRow(label, computeOrgWorkforceRollup(pos), indent, { toggleId: members.length ? pos.id : null, expanded: isExpanded });
+    const teamRowHtml = rollupRow(label, computeOrgWorkforceRollup(pos), indent, { toggleId: members.length ? pos.id : null, expanded: isExpanded, attendancePos: pos });
     return isExpanded && members.length ? teamRowHtml + members.map(m => memberRow(m, indent + 1)).join("") : teamRowHtml;
   }).join("");
+
+  const totalAttendance = state.jobPositions.filter(p => !p.parentId).reduce((acc, root) => {
+    const a = computeOrgAttendanceRollup(root);
+    const inM = attendanceTimeToMinutes(a.avgIn), outM = attendanceTimeToMinutes(a.avgOut);
+    return {
+      inSum: acc.inSum + (inM != null ? inM : 0), inCnt: acc.inCnt + (inM != null ? 1 : 0),
+      outSum: acc.outSum + (outM != null ? outM : 0), outCnt: acc.outCnt + (outM != null ? 1 : 0),
+      holidayDays: acc.holidayDays + a.holidayDays,
+    };
+  }, { inSum: 0, inCnt: 0, outSum: 0, outCnt: 0, holidayDays: 0 });
+  const totalAttendanceRollup = {
+    avgIn: totalAttendance.inCnt ? attendanceMinutesToTime(totalAttendance.inSum / totalAttendance.inCnt) : null,
+    avgOut: totalAttendance.outCnt ? attendanceMinutesToTime(totalAttendance.outSum / totalAttendance.outCnt) : null,
+    holidayDays: totalAttendance.holidayDays,
+  };
 
   return `
     <div style="margin-top:20px;">
       <h3 style="font-size:14px;margin-bottom:8px;">조직별 적정인력 현황</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>조직</th><th style="text-align:center;">정원(TO)</th><th style="text-align:center;">현원(배치)</th><th style="text-align:center;">산출 필요인원</th><th style="text-align:center;">과부족</th></tr></thead>
+          <thead><tr><th>조직</th><th style="text-align:center;">정원(TO)</th><th style="text-align:center;">현원(배치)</th><th style="text-align:center;">산출 필요인원</th><th style="text-align:center;">과부족</th><th style="text-align:center;">전월 평균 출근시간</th><th style="text-align:center;">전월 평균 퇴근시간</th><th style="text-align:center;">전월 휴일 근로 일수</th></tr></thead>
           <tbody>
-            ${rollupRow("전사 합계", totalRollup, 0, { highlight: true })}
+            <tr style="background:var(--surface-2);font-weight:700;">
+              <td style="padding-left:12px;">전사 합계</td>
+              <td style="text-align:center;">${totalRollup.totalTO}</td>
+              <td style="text-align:center;">${totalRollup.occupied}</td>
+              <td style="text-align:center;">${totalRollup.required}</td>
+              <td style="text-align:center;">${gapCell(totalRollup.required, totalRollup.occupied)}</td>
+              ${attendanceCells(totalAttendanceRollup)}
+            </tr>
             ${bodyRows}
           </tbody>
         </table>
       </div>
-      <p class="muted" style="font-size:11px;margin-top:6px;">과부족 = 산출 필요인원 − 현원(배치). 0.5명 이상 부족하면 빨강, 0.5명 이상 여유가 있으면 파랑으로 표시됩니다. 팀 이름 옆 ▶를 누르면 팀원별 산출 필요인원을 볼 수 있습니다.</p>
+      <p class="muted" style="font-size:11px;margin-top:6px;">과부족 = 산출 필요인원 − 현원(배치). 0.5명 이상 부족하면 빨강, 0.5명 이상 여유가 있으면 파랑으로 표시됩니다. 팀 이름 옆 ▶를 누르면 팀원별 산출 필요인원을 볼 수 있습니다. 전월 출퇴근/휴일 근로 항목은 2026년 8월 근태 자료를 성명 기준으로 매칭해 집계한 값으로, 근태 자료에 없는 인원은 "-"로 표시됩니다.</p>
     </div>`;
 }
 
