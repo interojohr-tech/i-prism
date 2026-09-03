@@ -6827,10 +6827,35 @@ function renderApprovalPage(user) {
     </section>`;
 }
 
+// 가이드 정원(%)이 소수점이라 올림(ceil)으로 정원이 +1 된 등급 중, 실제 배분 인원이
+// 그 올림된 정원과 정확히 같아서 "올림 혜택"을 쓴 등급들을 찾는다. saveOrgResultSubmission
+// (제출 시 차단)과 renderGradeDistCards(배분 중 실시간 경고) 양쪽에서 재사용해, 두
+// 곳의 판정 기준이 어긋나지 않게 한다. 1개까지는 반올림 오차로 보고 허용하지만, 2개
+// 이상 동시에 쓰면 상위 등급 쏠림 등 왜곡이 생길 수 있어 별도로 표시/차단한다.
+function roundingBeneficiaryGrades(gradeCounts, total, dist) {
+  return GRADES.filter(g => {
+    const guidePct = Number(dist[g] ?? -1);
+    if (guidePct <= 0) return false;
+    const rawCt = total * guidePct / 100;
+    const isIntegerRaw = Math.abs(rawCt - Math.round(rawCt)) < 1e-9;
+    return !isIntegerRaw && gradeCounts[g] === Math.ceil(rawCt);
+  });
+}
+
 function renderGradeDistCards(gradeCounts, total, headGrade) {
   const gradeColors = { S: "#6941c6", A: "#2454c6", B: "#107c41", C: "#b46b00", D: "#c6352b" };
   const dist = (state.distributionMatrix[headGrade] || state.distributionMatrix["B"] || {});
-  return GRADES.map(g => {
+  // 개별 등급 카드는 "정원 초과"만 빨간 배지로 표시하고, 올림 혜택을 정확히 정원만큼만
+  // 쓴 등급은 초과가 아니라서 아무 표시가 없다 — 그래서 2개 이상 등급이 동시에 올림
+  // 혜택을 쓰는 경우(제출 시 막히는 상황)는 배분 중에는 조용히 지나가기 쉬웠다.
+  // saveOrgResultSubmission과 같은 기준(roundingBeneficiaryGrades)으로 미리 알려준다.
+  const roundingBeneficiaries = roundingBeneficiaryGrades(gradeCounts, total, dist);
+  const roundingWarningHtml = roundingBeneficiaries.length > 1 ? `
+    <div style="grid-column:1/-1;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 14px;font-size:12.5px;color:#b91c1c;font-weight:600;display:flex;align-items:center;gap:8px;">
+      <span style="font-size:16px;">⚠</span>
+      <span>${roundingBeneficiaries.join("·")}등급이 동시에 올림(소수점 반올림) 배분 혜택을 사용했습니다. 올림 혜택은 한 등급에서만 허용되어 이 상태로 제출하면 막힙니다 — 등급 배분을 조정해 주세요.</span>
+    </div>` : "";
+  return roundingWarningHtml + GRADES.map(g => {
     const cur      = gradeCounts[g] || 0;
     const guidePct = Number(dist[g] ?? 0);
     // 가이드 정원은 ceil로 계산: 21명×30%=6.3 → 7명까지 허용(반올림 오차 수용)
@@ -18740,13 +18765,8 @@ const App = {
         // 올림되어 둘 다 3명씩 채워짐) 등급이 상위로 쏠리고 하위 등급은 비는 왜곡이
         // 생길 수 있다. 올림 혜택을 쓴 등급이 1개까지는 반올림 오차로 보고 그대로
         // 허용하되, 2개 이상 동시에 쓰면 배분을 다시 검토하거나 인사팀 면담을 받도록 막는다.
-        const roundingBeneficiaries = GRADES.filter(g => {
-          const guidePct = Number(dist[g] ?? -1);
-          if (guidePct <= 0) return false;
-          const rawCt = total * guidePct / 100;
-          const isIntegerRaw = Math.abs(rawCt - Math.round(rawCt)) < 1e-9;
-          return !isIntegerRaw && gradeCounts[g] === Math.ceil(rawCt);
-        });
+        // (배분 화면의 실시간 경고와 같은 기준을 쓴다 — roundingBeneficiaryGrades)
+        const roundingBeneficiaries = roundingBeneficiaryGrades(gradeCounts, total, dist);
         if (roundingBeneficiaries.length > 1) {
           const roundingDetails = roundingBeneficiaries.map(g => ({
             grade: g,
