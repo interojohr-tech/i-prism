@@ -3228,13 +3228,18 @@ function attendanceMinutesToTime(mins) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-// 특정 포지션(주로 division/team) 하위 전체(자기 포함) 중 실제 배치되어 있고 근태
-// 데이터가 매칭되는 인원만 모아 평균 출근/퇴근 시각과 휴일 근로 일수 합계를 낸다.
-// 근태 파일에 없는 인원(매칭 실패)은 평균 계산에서 자연히 제외된다.
-function computeOrgAttendanceRollup(rootPos) {
-  if (!rootPos) return { avgIn: null, avgOut: null, holidayDays: 0 };
-  const all = jobPositionDescendants(rootPos.id, true);
-  const stats = all
+// 포지션 하나(그 포지션에 배치된 사람 본인)의 근태 통계 — 하위 조직을 합산하지 않고,
+// 그 자리를 맡은 사람 개인의 값만 그대로 보여준다. 공석이거나 근태 파일에 매칭되는
+// 기록이 없으면(예: 근태 시스템 대상이 아닌 임원 등) 빈 값으로 표시한다.
+function attendanceStatsForPosition(pos) {
+  if (!pos || !pos.occupantUserId) return { avgIn: null, avgOut: null, holidayDays: 0 };
+  return attendanceStatsForUser(userById(pos.occupantUserId)) || { avgIn: null, avgOut: null, holidayDays: 0 };
+}
+
+// 전사 전체(배치된 모든 포지션) 중 근태 데이터가 매칭되는 인원 전원을 대상으로 평균
+// 출근/퇴근 시각과 휴일 근로 일수 합계를 낸다 — "전사 합계" 행에만 쓰인다.
+function computeCompanyAttendanceTotal() {
+  const stats = state.jobPositions
     .filter(p => p.occupantUserId)
     .map(p => attendanceStatsForUser(userById(p.occupantUserId)))
     .filter(Boolean);
@@ -3727,7 +3732,7 @@ function renderWorkforceRollupTable() {
       <td style="text-align:center;">${r.occupied}</td>
       <td style="text-align:center;">${r.required}</td>
       <td style="text-align:center;">${gapCell(r.required, r.occupied)}</td>
-      ${attendanceCells(computeOrgAttendanceRollup(opts.attendancePos))}
+      ${attendanceCells(attendanceStatsForPosition(opts.attendancePos))}
     </tr>`;
   // 팀 아래 펼쳤을 때 보여주는 팀원 개인별 행 — 정원은 항상 1(그 자리 자체), 산출
   // 필요인원은 워크로드 데이터가 없으면(계산 근거 없음) "-"로 표시한다.
@@ -3735,7 +3740,6 @@ function renderWorkforceRollupTable() {
     const fte = computeMemberRequiredFTE(pos);
     const occ = pos.occupantUserId ? 1 : 0;
     const who = pos.occupantUserId ? esc(userById(pos.occupantUserId)?.name || "-") : "공석";
-    const att = pos.occupantUserId ? attendanceStatsForUser(userById(pos.occupantUserId)) : null;
     return `
       <tr>
         <td style="padding-left:${12 + indent * 22}px;color:var(--muted);font-size:12.5px;">팀원 · ${esc(pos.name)} — ${who}</td>
@@ -3743,7 +3747,7 @@ function renderWorkforceRollupTable() {
         <td style="text-align:center;">${occ}</td>
         <td style="text-align:center;">${fte != null ? fte : `<span class="muted">-</span>`}</td>
         <td style="text-align:center;">${fte != null ? gapCell(fte, occ) : `<span class="muted">-</span>`}</td>
-        ${attendanceCells(att || { avgIn: null, avgOut: null, holidayDays: 0 })}
+        ${attendanceCells(attendanceStatsForPosition(pos))}
       </tr>`;
   };
   const expanded = state.ui.workforceRollupExpanded || {};
@@ -3756,20 +3760,7 @@ function renderWorkforceRollupTable() {
     return isExpanded && members.length ? teamRowHtml + members.map(m => memberRow(m, indent + 1)).join("") : teamRowHtml;
   }).join("");
 
-  const totalAttendance = state.jobPositions.filter(p => !p.parentId).reduce((acc, root) => {
-    const a = computeOrgAttendanceRollup(root);
-    const inM = attendanceTimeToMinutes(a.avgIn), outM = attendanceTimeToMinutes(a.avgOut);
-    return {
-      inSum: acc.inSum + (inM != null ? inM : 0), inCnt: acc.inCnt + (inM != null ? 1 : 0),
-      outSum: acc.outSum + (outM != null ? outM : 0), outCnt: acc.outCnt + (outM != null ? 1 : 0),
-      holidayDays: acc.holidayDays + a.holidayDays,
-    };
-  }, { inSum: 0, inCnt: 0, outSum: 0, outCnt: 0, holidayDays: 0 });
-  const totalAttendanceRollup = {
-    avgIn: totalAttendance.inCnt ? attendanceMinutesToTime(totalAttendance.inSum / totalAttendance.inCnt) : null,
-    avgOut: totalAttendance.outCnt ? attendanceMinutesToTime(totalAttendance.outSum / totalAttendance.outCnt) : null,
-    holidayDays: totalAttendance.holidayDays,
-  };
+  const totalAttendanceRollup = computeCompanyAttendanceTotal();
 
   return `
     <div style="margin-top:20px;">
